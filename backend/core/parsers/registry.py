@@ -32,10 +32,11 @@ class ParserRegistry:
         return list(cls._parsers.keys())
 
 
-# 导入即完成注册：HMC/FMECA/MFL、FTA/RBD、故障历史、系统架构与功能。
+# 导入即完成注册；适配器必须最后导入，以覆盖 Function Locator 的状态策略。
 from backend.core.parsers import (  # noqa: E402,F401
     excel_row,
     diagram,
     fault_history,
     function_architecture,
+    function_architecture_indexed,
 )
