@@ -29,10 +29,11 @@ export default function App() {
         <Route path="/" element={<MainLayout />}>
           <Route index element={<TypeHome />} />
 
-          {/* 七类 ICP 文档的上传、解析、结构化查看与图谱确认。 */}
+          {/* 上传统一在首页；类型页负责文档管理、解析、内容查看和图谱确认。 */}
           <Route path="type/:docType" element={<TypeLayout />}>
-            <Route index element={<Navigate to="upload" replace />} />
-            <Route path="upload" element={<TypeDocs />} />
+            <Route index element={<Navigate to="documents" replace />} />
+            <Route path="documents" element={<TypeDocs />} />
+            <Route path="upload" element={<Navigate to="../documents" replace />} />
             <Route path="view" element={<TypeView />} />
             <Route path="logs" element={<TypeLogs />} />
             <Route path="graph" element={<TypeGraph />} />
@@ -44,7 +45,6 @@ export default function App() {
           <Route path="agent" element={<Navigate to="/diagnosis" replace />} />
           <Route path="models" element={<Models />} />
 
-          {/* 旧通用知识库与图片画廊页面已从 ICP 产品入口移除。 */}
           <Route path="kb/*" element={<Navigate to="/" replace />} />
           <Route path="gallery" element={<Navigate to="/" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
