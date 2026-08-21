@@ -1,4 +1,4 @@
-"""ParserRegistry（策略模式）：按 doc_type 注册/获取解析器。"""
+"""ParserRegistry（策略模式）：按七类 ICP 文档注册/获取专用解析器。"""
 from typing import Dict
 
 from backend.core.parsers.base import Parser
@@ -9,7 +9,6 @@ class ParserRegistry:
 
     @classmethod
     def register(cls, doc_type: str):
-        """装饰器：`@ParserRegistry.register('hmc')` 将解析器类注册到 doc_type。"""
         def deco(parser_cls):
             instance = parser_cls()
             instance.doc_type = doc_type
@@ -33,5 +32,10 @@ class ParserRegistry:
         return list(cls._parsers.keys())
 
 
-# 触发各解析器模块完成注册（模块底部导入避免循环依赖）
-from backend.core.parsers import excel_row, fault_tree, text  # noqa: E402,F401
+# 导入即完成注册：HMC/FMECA/MFL、FTA/RBD、故障历史、系统架构与功能。
+from backend.core.parsers import (  # noqa: E402,F401
+    excel_row,
+    diagram,
+    fault_history,
+    function_architecture,
+)
