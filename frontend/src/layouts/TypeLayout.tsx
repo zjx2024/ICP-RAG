@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Layout, Menu, Typography, Space, Tag } from 'antd';
 import {
-  ArrowLeftOutlined, CloudUploadOutlined, EyeOutlined,
+  ArrowLeftOutlined, DatabaseOutlined, EyeOutlined,
   ApartmentOutlined, ShareAltOutlined, FileTextOutlined,
   LoadingOutlined,
 } from '@ant-design/icons';
@@ -11,14 +11,13 @@ import type { DocTypeInfo } from '@/types';
 
 const { Sider, Content } = Layout;
 
-// 全部类型共有的侧边栏项
+// 上传统一放在知识库首页；类型页只负责管理、解析、查看和日志。
 const BASE_MENU = [
-  { key: 'upload', icon: <CloudUploadOutlined />, label: '文档上传' },
+  { key: 'documents', icon: <DatabaseOutlined />, label: '文档管理' },
   { key: 'view', icon: <EyeOutlined />, label: '内容查看' },
   { key: 'logs', icon: <FileTextOutlined />, label: '日志管理' },
 ];
 
-// 图类（fta/rbd）额外侧边栏项：两阶段流程（确认三元组→生成图谱 / 可视化查看）
 const IMAGE_MENU = [
   { key: 'graph', icon: <ApartmentOutlined />, label: '知识图谱生成' },
   { key: 'visualize', icon: <ShareAltOutlined />, label: '知识图谱可视化' },
@@ -40,12 +39,10 @@ export default function TypeLayout() {
       .catch(() => setNotFound(true));
   }, [docType]);
 
-  // 解析当前子页 key（/type/:docType/upload -> upload；doc/:docId 视为内容查看）
-  const segments = location.pathname.split('/').filter(Boolean); // ['type', docType, 'upload']
-  const raw = segments.length >= 3 ? segments[2] : 'upload';
-  const selected = raw === 'doc' ? 'view' : raw;
+  const segments = location.pathname.split('/').filter(Boolean);
+  const raw = segments.length >= 3 ? segments[2] : 'documents';
+  const selected = raw === 'doc' || raw === 'upload' ? 'documents' : raw;
 
-  // 图类额外显示图谱生成/可视化菜单
   const isImage = typeInfo?.data_form === 'image';
   const SUB_MENU = isImage ? [...BASE_MENU, ...IMAGE_MENU] : BASE_MENU;
 
