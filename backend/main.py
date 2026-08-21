@@ -42,7 +42,7 @@ async def business_error_handler(request: Request, exc: BusinessError):
 
 @app.on_event("startup")
 def _startup():
-    """初始化 ICP 专用数据表、默认诊断 Agent，并恢复中断任务。"""
+    """初始化 ICP 专用数据表、七类类型注册、默认诊断 Agent，并恢复中断任务。"""
     try:
         agent_db.init_tables()
     except Exception as exc:
@@ -53,6 +53,12 @@ def _startup():
         icp_repository.init_tables()
     except Exception as exc:
         print(f"[ICP] 领域表初始化警告: {exc}")
+
+    try:
+        from backend.icp.document_types import normalize_document_types
+        normalize_document_types()
+    except Exception as exc:
+        print(f"[ICP] 七类文档注册表规范化警告: {exc}")
 
     try:
         from backend.agent.icp_defaults import ensure_icp_diagnosis_agent
