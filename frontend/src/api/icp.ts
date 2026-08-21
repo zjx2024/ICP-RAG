@@ -9,18 +9,16 @@ import type {
   ICPFaultTree,
 } from '@/types';
 
-// ---------- 类型注册表 ----------
 export const fetchDocumentTypes = () => request<DocTypeInfo[]>('/document-types');
 export const fetchDocumentType = (docType: string) =>
   request<DocTypeInfo>(`/document-types/${docType}`);
 
-// ---------- 类型下文档管理 ----------
 export const fetchIcpDocuments = (docType: string, status?: string) =>
   request<ICPDocument[]>(`/document-types/${docType}/documents${buildQuery({ status })}`);
 
 export const uploadIcpDocuments = (docType: string, files: File[]) => {
   const fd = new FormData();
-  for (const f of files) fd.append('files', f);
+  for (const file of files) fd.append('files', file);
   return request<Array<{ doc_id: string; file_name: string; status: string }>>(
     `/document-types/${docType}/documents/upload`,
     { method: 'POST', body: fd },
@@ -42,24 +40,21 @@ export const deleteIcpDocument = (docType: string, docId: string) =>
     { method: 'DELETE' },
   );
 
-// ---------- 四视图内容 ----------
 export const fetchOriginal = (
   docType: string,
   docId: string,
   params?: { page?: number; size?: number },
-) =>
-  request<ICPOriginalResponse>(
-    `/document-types/${docType}/documents/${docId}/original${buildQuery({ ...params })}`,
-  );
+) => request<ICPOriginalResponse>(
+  `/document-types/${docType}/documents/${docId}/original${buildQuery({ ...params })}`,
+);
 
 export const fetchVectors = (
   docType: string,
   docId: string,
   params?: { page?: number; size?: number },
-) =>
-  request<ICPVectorResponse>(
-    `/document-types/${docType}/documents/${docId}/vectors${buildQuery({ ...params })}`,
-  );
+) => request<ICPVectorResponse>(
+  `/document-types/${docType}/documents/${docId}/vectors${buildQuery({ ...params })}`,
+);
 
 export const fetchRows = (
   docType: string,
@@ -72,18 +67,38 @@ export const fetchRows = (
     api_reportable?: string;
     platform_test?: string;
   },
-) =>
-  request<ICPRowsResponse>(
-    `/document-types/${docType}/documents/${docId}/rows${buildQuery({ ...(params || {}) })}`,
-  );
+) => request<ICPRowsResponse>(
+  `/document-types/${docType}/documents/${docId}/rows${buildQuery({ ...(params || {}) })}`,
+);
+
+/** Function Locator 与故障历史使用专用结构表，其余表格类沿用 /rows。 */
+export const fetchDomainRows = (
+  docType: string,
+  docId: string,
+  params?: { page?: number; size?: number; keyword?: string },
+) => {
+  if (docType === 'function_locator') {
+    return request<ICPRowsResponse>(`/icp-domain/functions/${docId}${buildQuery({ ...(params || {}) })}`);
+  }
+  if (docType === 'fault_history') {
+    return request<ICPRowsResponse>(`/icp-domain/fault-history/${docId}${buildQuery({ ...(params || {}) })}`);
+  }
+  return fetchRows(docType, docId, params);
+};
 
 export const fetchFaultTrees = (docType: string, docId: string) =>
   request<ICPFaultTree[]>(`/document-types/${docType}/documents/${docId}/fault-trees`);
 
 export const fetchIcpGraphData = (docType: string, docId: string) =>
-  request<{ doc_id: string; doc_type: string; vertices: Array<Record<string, unknown>>; edges: Array<Record<string, unknown>>; total_vertices: number; total_edges: number; error?: string }>(
-    `/document-types/${docType}/documents/${docId}/graph-data`,
-  );
+  request<{
+    doc_id: string;
+    doc_type: string;
+    vertices: Array<Record<string, unknown>>;
+    edges: Array<Record<string, unknown>>;
+    total_vertices: number;
+    total_edges: number;
+    error?: string;
+  }>(`/document-types/${docType}/documents/${docId}/graph-data`);
 
 export const generateIcpKg = (docType: string, docId: string, modelId?: string | null) =>
   request<{ task_id: string; doc_id: string; doc_type: string; status: string }>(
@@ -91,7 +106,24 @@ export const generateIcpKg = (docType: string, docId: string, modelId?: string |
     { method: 'POST', body: JSON.stringify({ model_id: modelId ?? null }) },
   );
 
-// ---------- 混合检索 ----------
+export const fetchDiagnosisReadiness = () => request<{
+  types: Array<{ doc_type: string; name: string; doc_count: number; ready_count: number; failed_count: number }>;
+  all_types_present: boolean;
+  ready_type_count: number;
+}>('/icp-domain/readiness');
+
+export const calculateFta = (diagramId: string, missionTime?: number) =>
+  request<Record<string, unknown>>(`/icp-domain/fta/${diagramId}/calculate`, {
+    method: 'POST',
+    body: JSON.stringify({ mission_time: missionTime ?? null }),
+  });
+
+export const calculateRbd = (diagramId: string, missionTime?: number, maxPaths = 12) =>
+  request<Record<string, unknown>>(`/icp-domain/rbd/${diagramId}/calculate`, {
+    method: 'POST',
+    body: JSON.stringify({ mission_time: missionTime ?? null, max_paths: maxPaths }),
+  });
+
 export const icpStructuredSearch = (data: {
   doc_type: string;
   query: string;
@@ -102,6 +134,5 @@ export const icpStructuredSearch = (data: {
   { method: 'POST', body: JSON.stringify(data) },
 );
 
-// 任务 SSE 复用全局任务流端点（types.py 与 documents.py 共用 task_manager）
 export const openTaskStream = (taskId: string): EventSource =>
   new EventSource(`/api/v1/knowledge-bases/tasks/${taskId}/stream`);
