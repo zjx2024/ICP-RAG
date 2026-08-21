@@ -1,6 +1,6 @@
 """Agent 状态定义。
 
-基于方案的 AgentState，使用 LangGraph TypedDict。
+同时兼容旧通用 RAG Agent 与新的 ICP 故障诊断编排器。
 """
 from typing import TypedDict, Annotated, List, Dict
 import operator
@@ -8,51 +8,60 @@ import operator
 
 class AgentState(TypedDict, total=False):
     # ── 输入 ──
-    messages: Annotated[List[Dict], operator.add]   # 对话历史（累加）
-    query: str                                        # 用户原始问题
-    kb_id: str                                        # 主知识库ID（兼容旧逻辑）
-    kb_ids: List[str]                                 # 关联知识库列表（多库检索用）
-    agent_id: str                                     # Agent 配置ID
-    system_prompt: str                                # Agent 系统提示词
-    chat_model_id: str                                # 用户选择的对话模型ID（覆盖 agent_models 默认）
-    embedding_model_id: str                           # 用户选择的向量模型ID（覆盖系统默认）
-    rerank_model_id: str                              # 用户选择的重排序模型ID（未配置则不使用重排序）
+    messages: Annotated[List[Dict], operator.add]
+    query: str
+    kb_id: str
+    kb_ids: List[str]
+    agent_id: str
+    system_prompt: str
+    chat_model_id: str
+    embedding_model_id: str
+    rerank_model_id: str
 
-    # ── Agent 参数（来自 agent_configs / agent_retrieval_params）──
-    temperature: float                                # LLM 采样温度
-    top_p: float                                      # LLM Top P
-    max_tokens: int                                   # LLM 最大生成 token 数
-    max_reflections: int                              # 最大反思轮次
-    retrieval_top_k: int                              # 向量检索返回条数（vector_search）
-    kg_top_k: int                                     # 知识图谱检索返回条数（kg_search）
-    sql_limit: int                                    # 数据库查询返回条数（sql_query）
-    summary_threshold: int                            # 对话摘要阈值
-    keep_recent_turns: int                            # 保留最近对话轮数
-    memory_enabled: bool                              # 长期记忆开关（false 时不注入不抽取）
+    # ── Agent 参数 ──
+    temperature: float
+    top_p: float
+    max_tokens: int
+    max_reflections: int
+    retrieval_top_k: int
+    kg_top_k: int
+    sql_limit: int
+    summary_threshold: int
+    keep_recent_turns: int
+    memory_enabled: bool
 
     # ── 记忆 ──
-    memory_context: str                               # 注入的长期记忆
+    memory_context: str
 
     # ── Plan 阶段 ──
-    intent: str                                       # document|graph|table|hybrid
-    rewritten_query: str                              # 改写后的查询
-    entity_keywords: List[str]                        # 实体关键词
-    type_keywords: List[str]                          # 类型关键词
+    intent: str
+    rewritten_query: str
+    entity_keywords: List[str]
+    type_keywords: List[str]
+    tools_plan: List[Dict]
+    plan_reasoning: str
 
-    # ── Execute 阶段 ──
-    vector_results: List[Dict]                        # ES 向量+文本检索
-    kg_summary: str                                   # HG 图谱检索摘要
-    sql_results: List[Dict]                           # PG 元数据查询
+    # ── 旧通用执行结果（兼容）──
+    vector_results: List[Dict]
+    kg_summary: str
+    sql_results: List[Dict]
+
+    # ── ICP 专用执行结果 ──
+    domain_results: List[Dict]
+    diagnostic_context: str
+    candidate_faults: List[Dict]
+    diagnostic_confidence: float
+    clarification_question: str
 
     # ── Reflect 阶段 ──
     reflection: str
     need_more: bool
-    next_action: str                                  # retry_document|retry_graph|retry_table|done
+    next_action: str
 
     # ── 元信息 ──
-    tool_calls: Annotated[List[Dict], operator.add]   # 工具调用记录（累加）
-    citations: List[Dict]                             # 引用来源
-    iteration: int                                    # 迭代次数（防无限循环）
+    tool_calls: Annotated[List[Dict], operator.add]
+    citations: List[Dict]
+    iteration: int
     final_answer: str
 
 
@@ -71,7 +80,6 @@ def create_initial_state(query: str, agent_id: str, kb_id: str, kb_ids: List[str
         "messages": history or [],
         "query": query,
         "kb_id": kb_id,
-        # 多库关联：显式 kb_ids 优先，否则兼容 kb_id 单库
         "kb_ids": [k for k in (kb_ids or ([] if not kb_id else [kb_id])) if k],
         "agent_id": agent_id,
         "system_prompt": system_prompt,
@@ -93,9 +101,16 @@ def create_initial_state(query: str, agent_id: str, kb_id: str, kb_ids: List[str
         "rewritten_query": query,
         "entity_keywords": [],
         "type_keywords": [],
+        "tools_plan": [],
+        "plan_reasoning": "",
         "vector_results": [],
         "kg_summary": "",
         "sql_results": [],
+        "domain_results": [],
+        "diagnostic_context": "",
+        "candidate_faults": [],
+        "diagnostic_confidence": 0.0,
+        "clarification_question": "",
         "reflection": "",
         "need_more": False,
         "next_action": "done",
