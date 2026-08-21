@@ -2,6 +2,9 @@
 
 - ICP 专用 Agent：plan → 多源诊断 → FTA/RBD确定性计算 → answer
 - 历史通用 Agent：保留 vector/kg/sql → reflect → answer 兼容路径
+
+ICP 会话历史已经由 PostgreSQL 消息表在每次请求时显式注入，因此专用图不再叠加
+LangGraph checkpoint 状态，避免上一轮的工具调用、候选和消息被 reducer 重复累积。
 """
 import logging
 from typing import Dict
@@ -83,7 +86,7 @@ def _decide_next(state: AgentState) -> str:
     }.get(next_action, "answer")
 
 
-async def _compile(graph: StateGraph):
+async def _compile_legacy(graph: StateGraph):
     checkpointer = await get_checkpointer()
     store = await get_store()
     kwargs = {"checkpointer": checkpointer}
@@ -103,7 +106,8 @@ async def _build_icp_graph():
     graph.add_edge("icp_diagnosis", "icp_calculation")
     graph.add_edge("icp_calculation", "answer")
     graph.add_edge("answer", END)
-    return await _compile(graph)
+    # 每轮使用 chat_router 从数据库加载的显式历史，避免 checkpoint 与 reducer 重复叠加。
+    return graph.compile()
 
 
 async def _build_legacy_graph(enabled_tools):
@@ -147,7 +151,7 @@ async def _build_legacy_graph(enabled_tools):
             },
         )
     graph.add_edge("answer", END)
-    return await _compile(graph)
+    return await _compile_legacy(graph)
 
 
 async def build_graph(enabled_tools=None):
