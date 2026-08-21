@@ -91,6 +91,29 @@ class IcpRepository:
                     """
                 )
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_fault_history_steps_case ON fault_history_steps(case_pk)")
+
+                # 旧删除流程最终都会删除 icp_documents。通过数据库触发器清理新增领域表，
+                # 避免在通用删除服务中引入 ICP 特例，并确保失败重试仍然幂等。
+                cur.execute(
+                    """
+                    CREATE OR REPLACE FUNCTION cleanup_icp_domain_rows()
+                    RETURNS trigger AS $$
+                    BEGIN
+                        DELETE FROM icp_functions WHERE doc_id = OLD.doc_id;
+                        DELETE FROM fault_history_cases WHERE doc_id = OLD.doc_id;
+                        RETURN OLD;
+                    END;
+                    $$ LANGUAGE plpgsql
+                    """
+                )
+                cur.execute("DROP TRIGGER IF EXISTS trg_cleanup_icp_domain_rows ON icp_documents")
+                cur.execute(
+                    """
+                    CREATE TRIGGER trg_cleanup_icp_domain_rows
+                    AFTER DELETE ON icp_documents
+                    FOR EACH ROW EXECUTE FUNCTION cleanup_icp_domain_rows()
+                    """
+                )
             postgres_client.conn.commit()
             self._initialized = True
         except Exception as exc:
@@ -275,6 +298,59 @@ class IcpRepository:
                 )
                 row["steps"] = [item[1] for item in cur.fetchall()]
             return rows
+
+    def get_functions_by_doc(self, doc_id: str, page: int = 1, size: int = 50, keyword: str = "") -> Dict[str, Any]:
+        self.init_tables()
+        where = ["doc_id=%s"]
+        params: List[Any] = [doc_id]
+        if keyword:
+            where.append(
+                "(function_id ILIKE %s OR function_name ILIKE %s OR system_name ILIKE %s "
+                "OR subsystem_name ILIKE %s OR module_name ILIKE %s OR description ILIKE %s "
+                "OR failure_symptoms ILIKE %s OR aliases::text ILIKE %s)"
+            )
+            params.extend([f"%{keyword}%"] * 8)
+        where_sql = " AND ".join(where)
+        offset = max(page - 1, 0) * size
+        with postgres_client.conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) FROM icp_functions WHERE {where_sql}", tuple(params))
+            total = cur.fetchone()[0]
+            cur.execute(
+                f"SELECT * FROM icp_functions WHERE {where_sql} ORDER BY id DESC LIMIT %s OFFSET %s",
+                tuple(params + [size, offset]),
+            )
+            rows = self._rows_to_dicts(cur, cur.fetchall())
+        return {"total": total, "page": page, "size": size, "rows": rows}
+
+    def get_history_by_doc(self, doc_id: str, page: int = 1, size: int = 50, keyword: str = "") -> Dict[str, Any]:
+        self.init_tables()
+        where = ["doc_id=%s"]
+        params: List[Any] = [doc_id]
+        if keyword:
+            where.append(
+                "(case_id ILIKE %s OR occurred_at ILIKE %s OR device_type ILIKE %s "
+                "OR fault_symptom ILIKE %s OR related_module ILIKE %s OR root_cause ILIKE %s "
+                "OR final_solution ILIKE %s OR hmc_code ILIKE %s OR fmeca_code ILIKE %s "
+                "OR fta_ref ILIKE %s OR mfl_code ILIKE %s)"
+            )
+            params.extend([f"%{keyword}%"] * 11)
+        where_sql = " AND ".join(where)
+        offset = max(page - 1, 0) * size
+        with postgres_client.conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) FROM fault_history_cases WHERE {where_sql}", tuple(params))
+            total = cur.fetchone()[0]
+            cur.execute(
+                f"SELECT * FROM fault_history_cases WHERE {where_sql} ORDER BY id DESC LIMIT %s OFFSET %s",
+                tuple(params + [size, offset]),
+            )
+            rows = self._rows_to_dicts(cur, cur.fetchall())
+            for row in rows:
+                cur.execute(
+                    "SELECT step_no, content FROM fault_history_steps WHERE case_pk=%s ORDER BY step_no",
+                    (row["id"],),
+                )
+                row["steps"] = [value[1] for value in cur.fetchall()]
+        return {"total": total, "page": page, "size": size, "rows": rows}
 
     def delete_by_doc(self, doc_id: str) -> None:
         self.init_tables()
