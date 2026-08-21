@@ -3,14 +3,13 @@ import {
   Card, Button, Tag, Table, Space, Modal, Empty,
   Progress, Typography, message, Popconfirm, Alert,
 } from 'antd';
-import { Upload as AntdUpload, type UploadFile } from 'antd';
 import {
   CloudUploadOutlined, DeleteOutlined, PlayCircleOutlined, EyeOutlined,
-  SyncOutlined, InboxOutlined, FileOutlined, DownOutlined, CheckOutlined,
+  SyncOutlined, DownOutlined, CheckOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-  fetchDocumentType, fetchIcpDocuments, uploadIcpDocuments,
+  fetchDocumentType, fetchIcpDocuments,
   parseIcpDocument, deleteIcpDocument,
 } from '@/api/icp';
 import { openTaskStream, cancelTask } from '@/api/kb';
@@ -37,9 +36,6 @@ export default function TypeDocs() {
   const [models, setModels] = useState<any[]>([]);
   const [modelConfigStatus, setModelConfigStatus] = useState<any>(null);
   const [parseModel, setParseModel] = useState<string | undefined>();
-  const [uploadModalOpen, setUploadModalOpen] = useState(false);
-  const [uploadFileList, setUploadFileList] = useState<File[]>([]);
-  const [uploading, setUploading] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [logModal, setLogModal] = useState<{ open: boolean; docId: string; title: string } | null>(null);
   const [logContent, setLogContent] = useState<{ logs: string[]; progress: number }>({ logs: [], progress: 0 });
@@ -87,7 +83,7 @@ export default function TypeDocs() {
   }, [docType, loadType, loadDocs, loadModelsData]);
 
   useEffect(() => () => {
-    runningTasks.current.forEach((t) => t.source.close());
+    runningTasks.current.forEach((task) => task.source.close());
     runningTasks.current.clear();
   }, []);
 
@@ -97,46 +93,16 @@ export default function TypeDocs() {
     return '';
   };
 
-  const openUploadModal = () => { setUploadFileList([]); setUploadModalOpen(true); };
-
-  const handleUploadModalAdd = (files: File[]) => {
-    setUploadFileList((prev) => {
-      const seen = new Set(prev.map((f) => `${f.name}-${f.size}-${f.lastModified}`));
-      const add = files.filter((f) => !seen.has(`${f.name}-${f.size}-${f.lastModified}`));
-      return [...prev, ...add];
-    });
-  };
-
-  const handleUploadModalRemove = (index: number) => {
-    setUploadFileList((prev) => prev.filter((_, i) => i !== index));
-  };
-
-  const handleConfirmUpload = async () => {
-    if (uploadFileList.length === 0) { message.warning('请选择要上传的文件'); return; }
-    setUploading(true);
-    try {
-      const res = await uploadIcpDocuments(docType, uploadFileList);
-      message.success(`上传成功 ${res.length} 个文件`);
-      setUploadFileList([]);
-      setUploadModalOpen(false);
-      loadDocs(docType);
-    } catch (e) {
-      message.error(`上传失败: ${(e as Error).message}`);
-    } finally {
-      setUploading(false);
-    }
-  };
-
   const handleParse = async (doc: ICPDocument) => {
     const tip = checkModels();
     if (tip) { message.error(tip); return; }
-    setDocs((prev) => prev.map((d) => (d.doc_id === doc.doc_id ? { ...d, status: 'parsing' } : d)));
+    setDocs((prev) => prev.map((item) => (item.doc_id === doc.doc_id ? { ...item, status: 'parsing' } : item)));
     try {
-      const res = await parseIcpDocument(docType, doc.doc_id, parseModel);
-      startEventSource(doc.doc_id, res.task_id);
-    } catch (e) {
-      setDocs((prev) => prev.map((d) => (d.doc_id === doc.doc_id ? { ...d, status: 'failed' } : d)));
-      message.error(`解析启动失败: ${(e as Error).message}`);
+      const result = await parseIcpDocument(docType, doc.doc_id, parseModel);
+      startEventSource(doc.doc_id, result.task_id);
+    } catch (error) {
+      setDocs((prev) => prev.map((item) => (item.doc_id === doc.doc_id ? { ...item, status: 'failed' } : item)));
+      message.error(`解析启动失败: ${(error as Error).message}`);
     }
   };
 
@@ -154,12 +120,12 @@ export default function TypeDocs() {
       source.close();
       runningTasks.current.delete(key);
       loadDocs(docType);
-      forceUpdate((n) => n + 1);
+      forceUpdate((value) => value + 1);
     };
 
-    source.onmessage = (ev) => {
+    source.onmessage = (event) => {
       let data: any;
-      try { data = JSON.parse(ev.data); } catch { return; }
+      try { data = JSON.parse(event.data); } catch { return; }
       if (data.type === 'progress') {
         entry.progress = data.progress;
         entry.logs.push(`[${formatDateTime()}] ${data.log || ''}`);
@@ -171,7 +137,7 @@ export default function TypeDocs() {
       } else if (data.type === 'final') {
         cleanup();
       }
-      forceUpdate((n) => n + 1);
+      forceUpdate((value) => value + 1);
     };
     source.onerror = () => cleanup();
   };
@@ -183,20 +149,24 @@ export default function TypeDocs() {
 
   const showLogModal = (docId: string) => {
     const task = runningTasks.current.get(`${docType}|${docId}`);
-    const doc = docs.find((d) => d.doc_id === docId);
+    const doc = docs.find((item) => item.doc_id === docId);
     setLogContent({ logs: task?.logs || [], progress: task?.progress || 0 });
     setLogModal({ open: true, docId, title: doc?.file_name || docId });
   };
 
   const handleDeleteDoc = async (docId: string) => {
-    const task = runningTasks.current.get(`${docType}|${docId}`);
-    if (task) { task.source.close(); runningTasks.current.delete(task ? `${docType}|${docId}` : ''); }
+    const key = `${docType}|${docId}`;
+    const task = runningTasks.current.get(key);
+    if (task) {
+      task.source.close();
+      runningTasks.current.delete(key);
+    }
     try {
       await deleteIcpDocument(docType, docId);
       message.success('文档已删除');
       loadDocs(docType);
-    } catch (e) {
-      message.error(`删除失败: ${(e as Error).message}`);
+    } catch (error) {
+      message.error(`删除失败: ${(error as Error).message}`);
     }
   };
 
@@ -209,11 +179,11 @@ export default function TypeDocs() {
       title: '状态',
       dataIndex: 'status',
       width: 160,
-      render: (v: string, r: ICPDocument) => (
+      render: (value: string, record: ICPDocument) => (
         <Space direction="vertical" size={0}>
-          <Tag color={DOC_STATUS_COLOR[v]}>{DOC_STATUS_LABEL[v] || v}</Tag>
-          {RUNNING_STATUS.has(v) && (
-            <Progress percent={getDocProgress(r.doc_id)} size="small" style={{ width: 110 }} />
+          <Tag color={DOC_STATUS_COLOR[value]}>{DOC_STATUS_LABEL[value] || value}</Tag>
+          {RUNNING_STATUS.has(value) && (
+            <Progress percent={getDocProgress(record.doc_id)} size="small" style={{ width: 110 }} />
           )}
         </Space>
       ),
@@ -222,30 +192,30 @@ export default function TypeDocs() {
       title: '解析次数',
       dataIndex: 'parse_count',
       width: 90,
-      render: (v?: number) => v ?? 0,
+      render: (value?: number) => value ?? 0,
     },
-    { title: '更新时间', dataIndex: 'updated_at', width: 160, render: (v: string) => (v ? formatDateTime(v) : '-') },
+    { title: '更新时间', dataIndex: 'updated_at', width: 160, render: (value: string) => (value ? formatDateTime(value) : '-') },
     {
       title: '操作',
       width: 280,
-      render: (_: unknown, r: ICPDocument) => (
+      render: (_: unknown, record: ICPDocument) => (
         <Space size={4} className="kb-row-actions">
-          {(r.status === 'uploaded' || r.status === 'failed' || r.status === 'indexed' ||
-            r.status === 'kg_pending' || r.status === 'kg_done') && (
-            <GlassButton variant="primary" size="small" icon={<PlayCircleOutlined />} onClick={() => handleParse(r)}>
+          {(record.status === 'uploaded' || record.status === 'failed' || record.status === 'indexed' ||
+            record.status === 'kg_pending' || record.status === 'kg_done') && (
+            <GlassButton variant="primary" size="small" icon={<PlayCircleOutlined />} onClick={() => handleParse(record)}>
               解析
             </GlassButton>
           )}
-          {(r.status === 'parsing' || r.status === 'generating_kg') && (
+          {(record.status === 'parsing' || record.status === 'generating_kg') && (
             <>
-              <GlassButton variant="text" size="small" onClick={() => showLogModal(r.doc_id)}>日志</GlassButton>
-              <GlassButton variant="text" size="small" onClick={() => handleCancelTask(r.doc_id)}>取消</GlassButton>
+              <GlassButton variant="text" size="small" onClick={() => showLogModal(record.doc_id)}>日志</GlassButton>
+              <GlassButton variant="text" size="small" onClick={() => handleCancelTask(record.doc_id)}>取消</GlassButton>
             </>
           )}
-          <GlassButton size="small" icon={<EyeOutlined />} onClick={() => navigate(`/type/${docType}/doc/${r.doc_id}`)}>
+          <GlassButton size="small" icon={<EyeOutlined />} onClick={() => navigate(`/type/${docType}/doc/${record.doc_id}`)}>
             查看
           </GlassButton>
-          <Popconfirm title="确定删除该文档？" onConfirm={() => handleDeleteDoc(r.doc_id)}>
+          <Popconfirm title="确定删除该文档？" onConfirm={() => handleDeleteDoc(record.doc_id)}>
             <GlassButton className="glass-btn-black" size="small" icon={<DeleteOutlined />}>删除</GlassButton>
           </Popconfirm>
         </Space>
@@ -260,7 +230,7 @@ export default function TypeDocs() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap', flexShrink: 0 }}>
         <div>
           <Typography.Title level={5} style={{ margin: 0, color: '#262626' }}>
-            文档上传与解析
+            文档管理与解析
           </Typography.Title>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {typeInfo?.name || docType}
@@ -269,21 +239,26 @@ export default function TypeDocs() {
         </div>
         <div style={{ flex: 1 }} />
 
-        {/* 解析模型胶囊 */}
-        <div className="agent-picker agent-picker-sm" onClick={() => setModelPickerOpen(true)} style={{ width: 'auto', maxWidth: 260 }} title="选择解析用 Chat 模型">
+        <GlassButton
+          variant="text"
+          icon={<CloudUploadOutlined />}
+          onClick={() => navigate('/')}
+          title="返回七类文档首页的统一上传入口"
+        >
+          统一上传入口
+        </GlassButton>
+
+        <div
+          className="agent-picker agent-picker-sm"
+          onClick={() => setModelPickerOpen(true)}
+          style={{ width: 'auto', maxWidth: 260 }}
+          title="选择解析用 Chat 模型"
+        >
           <span className="agent-picker-label">解析模型</span>
           <span className="agent-picker-value">
-            {parseModel ? models.find((m) => m.model_id === parseModel)?.name || '已选择' : '使用默认'}
+            {parseModel ? models.find((model) => model.model_id === parseModel)?.name || '已选择' : '使用默认'}
             <DownOutlined />
           </span>
-        </div>
-
-        {/* 上传胶囊 */}
-        <div className="agent-picker agent-picker-sm" onClick={openUploadModal} style={{ width: 'auto', cursor: 'pointer' }} title="上传文件">
-          <span className="agent-picker-label" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <CloudUploadOutlined /> 上传文件
-          </span>
-          <span className="agent-picker-value"><DownOutlined /></span>
         </div>
 
         {(!modelConfigStatus?.chat_configured || !modelConfigStatus?.embedding_configured) && (
@@ -302,6 +277,14 @@ export default function TypeDocs() {
         )}
       </div>
 
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12, flexShrink: 0 }}
+        message="文档上传已统一到七类文档知识库首页"
+        description="当前页面只管理已归入该类型的文档，并负责解析、查看和删除。"
+      />
+
       <Card
         className="glass"
         style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
@@ -318,86 +301,43 @@ export default function TypeDocs() {
           className="kb-doc-table"
           dataSource={sortedDocs}
           columns={columns}
-          pagination={{ pageSize: 10, showSizeChanger: false, showTotal: (t) => `共 ${t} 份` }}
+          pagination={{ pageSize: 10, showSizeChanger: false, showTotal: (total) => `共 ${total} 份` }}
           size="small"
-          locale={{ emptyText: '暂无文档，请先上传' }}
-          scroll={{ y: 'calc(100vh - 320px)' }}
+          locale={{ emptyText: '该类型暂无文档，请通过首页统一上传入口添加' }}
+          scroll={{ y: 'calc(100vh - 360px)' }}
         />
       </Card>
 
-      {/* 上传弹窗 */}
       <Modal
-        title={`上传文件（${typeInfo?.name || docType}）`}
-        open={uploadModalOpen}
-        onCancel={() => { setUploadModalOpen(false); setUploadFileList([]); }}
-        footer={[
-          <Button key="cancel" onClick={() => { setUploadModalOpen(false); setUploadFileList([]); }}>取消</Button>,
-          <GlassButton key="confirm" variant="primary" icon={<CloudUploadOutlined />} loading={uploading} disabled={uploadFileList.length === 0} onClick={handleConfirmUpload}>
-            {uploading ? '上传中…' : `保存并上传${uploadFileList.length > 0 ? `（${uploadFileList.length}）` : ''}`}
-          </GlassButton>,
-        ]}
-        width={520}
+        title="选择解析模型"
+        open={modelPickerOpen}
+        onCancel={() => setModelPickerOpen(false)}
+        onOk={() => setModelPickerOpen(false)}
+        okText="确定"
+        cancelText="取消"
+        width={460}
+        okButtonProps={{ disabled: models.length === 0 }}
       >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <AntdUpload.Dragger
-            multiple
-            accept={typeInfo?.input_formats || undefined}
-            beforeUpload={() => false}
-            fileList={[]}
-            onChange={({ fileList: fl }: { fileList: UploadFile[] }) => {
-              const newFiles = fl.map((f) => f.originFileObj as File).filter(Boolean);
-              if (newFiles.length > 0) handleUploadModalAdd(newFiles);
-            }}
-          >
-            <p className="ant-upload-drag-icon">
-              <InboxOutlined style={{ fontSize: 42, color: 'rgba(0,0,0,0.4)' }} />
-            </p>
-            <p className="ant-upload-text">点击或拖拽文件到此处</p>
-            <p className="ant-upload-hint" style={{ fontSize: 12 }}>
-              {typeInfo?.input_formats ? `该类型支持格式：${typeInfo.input_formats}` : '仅支持该文档类型声明的格式'}
-            </p>
-          </AntdUpload.Dragger>
-
-          {uploadFileList.length > 0 && (
-            <div style={{ marginTop: 8 }}>
-              <Typography.Text strong style={{ fontSize: 13 }}>已选文件（{uploadFileList.length} 个）</Typography.Text>
-              <div style={{ maxHeight: 200, overflow: 'auto', marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                {uploadFileList.map((f, i) => (
-                  <div key={i} className="glass-dense" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 10px', borderRadius: 8, border: '1px solid rgba(0,0,0,0.12)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 }}>
-                      <FileOutlined style={{ color: 'rgba(0,0,0,0.5)', flexShrink: 0 }} />
-                      <div style={{ minWidth: 0, flex: 1 }}>
-                        <div style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</div>
-                        <div style={{ fontSize: 11, color: '#8c8c8c' }}>{(f.size / 1024).toFixed(1)} KB</div>
-                      </div>
-                    </div>
-                    <GlassButton variant="text" size="small" icon={<DeleteOutlined />} onClick={() => handleUploadModalRemove(i)} />
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      </Modal>
-
-      {/* 解析模型弹窗 */}
-      <Modal title="选择解析模型" open={modelPickerOpen} onCancel={() => setModelPickerOpen(false)} onOk={() => setModelPickerOpen(false)} okText="确定" cancelText="取消" width={460} okButtonProps={{ disabled: models.length === 0 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 400, overflow: 'auto' }}>
           {models.length === 0 ? (
             <Empty description="暂无 Chat 模型，请先到模型管理配置" style={{ marginTop: 40 }} />
           ) : (
             <>
-              {models.map((m) => {
-                const selected = parseModel === m.model_id;
+              {models.map((model) => {
+                const selected = parseModel === model.model_id;
                 return (
-                  <div key={m.model_id} className={`agent-picker-option${selected ? ' selected' : ''}`} onClick={() => setParseModel(m.model_id)}>
+                  <div
+                    key={model.model_id}
+                    className={`agent-picker-option${selected ? ' selected' : ''}`}
+                    onClick={() => setParseModel(model.model_id)}
+                  >
                     <div style={{ minWidth: 0 }}>
                       <div className="agent-picker-option-name">
-                        {m.name}
+                        {model.name}
                         <Tag style={{ marginLeft: 6 }}>Chat LLM</Tag>
-                        {m.is_default && <Tag color="gold" style={{ marginLeft: 4 }}>★ 默认</Tag>}
+                        {model.is_default && <Tag color="gold" style={{ marginLeft: 4 }}>★ 默认</Tag>}
                       </div>
-                      <div className="agent-picker-option-sub">解析文档 / 表格 / 图片用</div>
+                      <div className="agent-picker-option-sub">解析文档、表格和工程图</div>
                     </div>
                     {selected && <CheckOutlined style={{ color: '#1a1a1a', flexShrink: 0 }} />}
                   </div>
@@ -412,7 +352,6 @@ export default function TypeDocs() {
         </div>
       </Modal>
 
-      {/* 日志弹窗 */}
       <Modal
         title={`任务日志：${logModal?.title || ''}`}
         open={logModal?.open}
