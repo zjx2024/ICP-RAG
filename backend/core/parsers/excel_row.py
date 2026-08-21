@@ -92,7 +92,6 @@ def _match_alias(value: str, alias_map: Dict[str, str]) -> Optional[str]:
         return None
     if norm in alias_map:
         return alias_map[norm]
-    # 多级表头会形成“故障影响局部影响”等组合，允许别名被组合表头包含。
     matches = [(alias, canonical) for alias, canonical in alias_map.items() if alias and alias in norm]
     if not matches:
         return None
@@ -145,7 +144,6 @@ class ExcelRowParser(Parser):
                 if not any(cells):
                     continue
                 if _looks_like_header(cells, alias_map):
-                    # Word 跨页续表常会重复表头。
                     continue
                 total += 1
                 row = {
@@ -219,7 +217,7 @@ class ExcelRowParser(Parser):
         required: Sequence[str],
         doc_type: str,
     ) -> Optional[Tuple[int, Dict[str, int], List[str]]]:
-        """在前 10 行中尝试 1~4 层表头组合。"""
+        """在前 10 行中尝试 1~4 层表头组合，优先使用最底层叶子表头。"""
         max_scan = min(10, len(rows))
         best = None
         best_score = -1
@@ -238,7 +236,16 @@ class ExcelRowParser(Parser):
                             parts.append(value)
                     combined = " ".join(parts)
                     labels.append(combined)
-                    canonical = _match_alias(combined, alias_map)
+
+                    # 例如“ HMC代码 / LCN ”：必须优先识别叶子 LCN，不能被父表头 HMC代码吞掉。
+                    canonical = None
+                    for part in reversed(parts):
+                        direct = alias_map.get(_norm(part))
+                        if direct:
+                            canonical = direct
+                            break
+                    if not canonical:
+                        canonical = _match_alias(combined, alias_map)
                     if canonical and canonical not in mapping:
                         mapping[canonical] = col_idx
 
