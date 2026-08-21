@@ -107,9 +107,17 @@ export const generateIcpKg = (docType: string, docId: string, modelId?: string |
   );
 
 export const fetchDiagnosisReadiness = () => request<{
-  types: Array<{ doc_type: string; name: string; doc_count: number; ready_count: number; failed_count: number }>;
+  types: Array<{
+    doc_type: string;
+    name: string;
+    doc_count: number;
+    ready_count: number;
+    failed_count: number;
+    record_count: number;
+  }>;
   all_types_present: boolean;
   ready_type_count: number;
+  total_records: number;
 }>('/icp-domain/readiness');
 
 export const calculateFta = (diagramId: string, missionTime?: number) =>
