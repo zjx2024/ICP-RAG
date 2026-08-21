@@ -1,24 +1,41 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -e
 cd "$(dirname "$0")"
 
-echo "启动 ICP_RAG 新一代知识图谱服务（热启动模式）..."
+echo "启动 ICP 故障诊断知识系统（后端热重载）..."
 echo "监听端口: 19999"
-echo "修改代码后会自动重载，无需手动重启"
-echo ""
-echo "前置：请先运行 ./start.sh 启动基础设施（postgres 5433 / ES 9201 / minio 9002 / hugegraph 8082）"
+echo "前置：请先运行 ./start.sh 启动 PostgreSQL / ES / MinIO / HugeGraph"
 echo ""
 
-# ===== 独立基础设施：宿主机端口映射（对应 docker-compose.yml，与 RAG_Agent_v1.0 完全隔离）=====
 export ES_PORT=9201
 export POSTGRES_PORT=5433
 export MINIO_ENDPOINT=localhost:9002
 export HUGEGRAPH_PORT=8082
-# SERVER_PORT 同时被 docx_parser 用于拼接图片 URL，必须与下方 uvicorn 端口一致
 export SERVER_PORT=19999
 
-# 宿主机直跑时，图片目录需指向 docker-compose 的挂载目录（./app/storage/images），
-# 与镜像模式保持同一份图片，避免画廊图片落到 backend/storage/images 导致不一致
+# 图片目录保存 FTA、RBD 与系统架构原图/证据，不再用于独立画廊。
 export IMAGE_STORAGE_DIR="$(pwd)/app/storage/images"
+mkdir -p "$IMAGE_STORAGE_DIR"
 
-# 只监听 backend 源码目录：避免 --reload 全目录扫描 volumes/（root 属主不可读）导致 reload 守护崩溃
-/home/kdfy/.local/bin/uvicorn backend.main:app --host 0.0.0.0 --port 19999 --log-level info --reload --reload-dir backend
+# backend.main 直接服务 static/dist；本地启动前默认编译当前 React 源码。
+# 前端单独使用 npm run dev 时可设置 ICP_SKIP_FRONTEND_BUILD=1 跳过。
+if [[ "${ICP_SKIP_FRONTEND_BUILD:-0}" != "1" ]]; then
+  if command -v npm >/dev/null 2>&1; then
+    echo "[INFO] 构建 ICP 专用前端..."
+    (
+      cd frontend
+      [[ -d node_modules ]] || npm ci
+      npm run build
+    )
+  else
+    echo "[WARN] 未找到 npm，将使用 static/dist 中已有构建产物"
+  fi
+fi
+
+PYTHON_BIN="${PYTHON_BIN:-python}"
+exec "$PYTHON_BIN" -m uvicorn backend.main:app \
+  --host 0.0.0.0 \
+  --port 19999 \
+  --log-level info \
+  --reload \
+  --reload-dir backend
