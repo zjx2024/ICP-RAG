@@ -43,29 +43,57 @@ export default function MainLayout() {
           top: 0,
           zIndex: 100,
           height: 64,
+          lineHeight: 'normal',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 260 }}>
-          <div
+        <button
+          type="button"
+          aria-label="返回 ICP 七类文档知识库首页"
+          onClick={() => navigate('/')}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            minWidth: 260,
+            padding: 0,
+            border: 0,
+            background: 'transparent',
+            cursor: 'pointer',
+            textAlign: 'left',
+          }}
+        >
+          <span
+            aria-hidden="true"
             style={{
-              width: 34,
-              height: 34,
-              borderRadius: 10,
-              display: 'grid',
-              placeItems: 'center',
-              background: '#111',
+              width: 38,
+              height: 38,
+              borderRadius: 11,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+              overflow: 'hidden',
+              background: 'linear-gradient(145deg, #0b0b0b, #222)',
               color: '#fff',
-              fontWeight: 700,
-              letterSpacing: 1,
+              boxShadow: '0 5px 14px rgba(0,0,0,.18), inset 0 0 0 1px rgba(255,255,255,.10)',
+              fontFamily: 'Arial, Helvetica, sans-serif',
+              fontSize: 10,
+              fontWeight: 800,
+              lineHeight: '11px',
+              letterSpacing: '0.8px',
+              paddingLeft: 1,
+              boxSizing: 'border-box',
             }}
           >
             ICP
-          </div>
-          <div style={{ lineHeight: 1.25 }}>
-            <div style={{ fontWeight: 700, color: '#1f1f1f' }}>ICP 故障诊断知识系统</div>
-            <div style={{ fontSize: 11, color: '#8c8c8c' }}>七类文档 · 混合检索 · 多源证据</div>
-          </div>
-        </div>
+          </span>
+          <span style={{ lineHeight: 1.25 }}>
+            <span style={{ display: 'block', fontWeight: 700, color: '#1f1f1f' }}>ICP 故障诊断知识系统</span>
+            <span style={{ display: 'block', fontSize: 11, color: '#8c8c8c', marginTop: 2 }}>
+              七类文档 · 混合检索 · 多源证据
+            </span>
+          </span>
+        </button>
 
         <div className="glass-tabbar" style={{ flexWrap: 'wrap' }}>
           {NAV.map((item) => (
