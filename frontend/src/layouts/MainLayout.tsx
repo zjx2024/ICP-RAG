@@ -1,37 +1,31 @@
-import React from 'react';
 import { Layout } from 'antd';
 import {
   FolderOpenOutlined,
   SettingOutlined,
   RobotOutlined,
-  PictureOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
-
-/* ============================================================
-   主布局：一级导航改为「顶部居中玻璃标签栏」（macOS 风格）
-   改造决策：一级菜单仅 4 项（文档类型/模型管理/智能体/图片画廊），
-   按方案「3-4 项 → 居中玻璃标签栏」由侧边栏改为顶部标签栏；
-   文档类型详情（/type/...）视为「文档类型」下的子页面，高亮对应标签。
-   ============================================================ */
 
 const { Header, Content } = Layout;
 
 const NAV = [
-  { key: '/', icon: <FolderOpenOutlined />, label: '文档类型' },
-  { key: '/models', icon: <SettingOutlined />, label: '模型管理' },
-  { key: '/agent', icon: <RobotOutlined />, label: '智能体' },
-  { key: '/gallery', icon: <PictureOutlined />, label: '图片画廊' },
+  { key: '/', icon: <FolderOpenOutlined />, label: '七类文档知识库' },
+  { key: '/diagnosis', icon: <RobotOutlined />, label: 'ICP 故障诊断' },
+  { key: '/models', icon: <SettingOutlined />, label: '系统设置' },
 ];
 
 export default function MainLayout() {
   const navigate = useNavigate();
   const location = useLocation();
-  // 文档类型详情（/type/...）与知识库详情（/kb/...）视为「文档类型」下的子页面，高亮对应标签
+
   let selected = '/';
-  if (location.pathname.startsWith('/models')) selected = '/models';
-  else if (location.pathname.startsWith('/agent')) selected = '/agent';
-  else if (location.pathname.startsWith('/gallery')) selected = '/gallery';
+  if (location.pathname.startsWith('/diagnosis') || location.pathname.startsWith('/agent')) {
+    selected = '/diagnosis';
+  } else if (location.pathname.startsWith('/models')) {
+    selected = '/models';
+  }
+
+  const isFullWorkspace = location.pathname.startsWith('/type/') || location.pathname.startsWith('/diagnosis');
 
   return (
     <Layout style={{ minHeight: '100vh', height: '100vh', overflow: 'hidden', background: 'transparent' }}>
@@ -43,7 +37,7 @@ export default function MainLayout() {
           borderBottom: '1px solid rgba(255,255,255,0.55)',
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'center',
+          justifyContent: 'space-between',
           padding: '0 24px',
           position: 'sticky',
           top: 0,
@@ -51,6 +45,28 @@ export default function MainLayout() {
           height: 64,
         }}
       >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 260 }}>
+          <div
+            style={{
+              width: 34,
+              height: 34,
+              borderRadius: 10,
+              display: 'grid',
+              placeItems: 'center',
+              background: '#111',
+              color: '#fff',
+              fontWeight: 700,
+              letterSpacing: 1,
+            }}
+          >
+            ICP
+          </div>
+          <div style={{ lineHeight: 1.25 }}>
+            <div style={{ fontWeight: 700, color: '#1f1f1f' }}>ICP 故障诊断知识系统</div>
+            <div style={{ fontSize: 11, color: '#8c8c8c' }}>七类文档 · 混合检索 · 多源证据</div>
+          </div>
+        </div>
+
         <div className="glass-tabbar" style={{ flexWrap: 'wrap' }}>
           {NAV.map((item) => (
             <button
@@ -64,8 +80,12 @@ export default function MainLayout() {
             </button>
           ))}
         </div>
+
+        <div style={{ minWidth: 260, textAlign: 'right', color: '#8c8c8c', fontSize: 12 }}>
+          诊断结果需结合正式维修程序复核
+        </div>
       </Header>
-      <Content style={{ padding: location.pathname.startsWith('/kb/') || location.pathname.startsWith('/type/') ? 0 : '24px 24px 0', overflow: 'auto' }}>
+      <Content style={{ padding: isFullWorkspace ? 0 : '24px 24px 0', overflow: 'auto' }}>
         <Outlet />
       </Content>
     </Layout>
