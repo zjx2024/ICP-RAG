@@ -1,10 +1,33 @@
-"""工具注册：按 Agent 配置动态启用工具节点。"""
+"""工具注册。
+
+保留旧通用工具用于兼容历史 Agent；默认 ICP 智能体使用 icp_diagnosis 编排器，
+编排器内部会按需调用七类文档的专用工具并逐项返回调用记录。
+"""
 from typing import Dict, Callable, List
 
 
+ICP_TOOL_DEFS = [
+    {"name": "function_locator", "label": "功能定位", "description": "将模糊现象定位到 ICP 系统、模块和功能候选"},
+    {"name": "hybrid_search", "label": "混合召回", "description": "在七类文档中执行关键词与向量混合检索"},
+    {"name": "hmc_query", "label": "HMC 查询", "description": "精确查询 LCN/HAMC/HSC 与故障现象、维修方法"},
+    {"name": "fmeca_query", "label": "FMECA 查询", "description": "查询故障模式、原因、影响、严酷度和检测方法"},
+    {"name": "fta_query", "label": "FTA 查询", "description": "查询顶事件、原因链与 AND/OR 逻辑"},
+    {"name": "rbd_query", "label": "RBD 查询", "description": "查询可靠性框图、串并联结构和成功判据"},
+    {"name": "mfl_query", "label": "MFL 查询", "description": "查询维修故障清单、功能电路和 API 信息"},
+    {"name": "fault_history_query", "label": "故障历史", "description": "检索历史排故案例、根因、步骤和最终处置"},
+    {"name": "fault_reasoning", "label": "故障推理", "description": "融合多源证据、排序候选并决定是否需要追问"},
+]
+
+
 def get_tool_nodes(enabled_tools: List[str]) -> Dict[str, Callable]:
-    """根据 Agent 配置动态返回启用的工具节点"""
-    nodes = {}
+    """根据 Agent 配置动态返回启用的 LangGraph 节点。"""
+    nodes: Dict[str, Callable] = {}
+    if "icp_diagnosis" in enabled_tools or any(
+        item["name"] in enabled_tools for item in ICP_TOOL_DEFS
+    ):
+        from backend.agent.tools.icp_diagnosis import icp_diagnosis_node
+        nodes["icp_diagnosis"] = icp_diagnosis_node
+
     if "vector_search" in enabled_tools:
         from backend.agent.tools.vector_search import vector_search_node
         nodes["vector_search"] = vector_search_node
@@ -18,9 +41,12 @@ def get_tool_nodes(enabled_tools: List[str]) -> Dict[str, Callable]:
 
 
 def get_available_tools() -> List[Dict]:
-    """列出所有可用工具（供前端展示）"""
+    """列出面向 ICP 产品的工具定义。"""
     return [
-        {"name": "vector_search", "label": "向量检索", "description": "ES 向量+关键词混合检索文档块"},
-        {"name": "kg_search", "label": "知识图谱检索", "description": "HugeGraph 实体关系+社区报告检索"},
-        {"name": "sql_query", "label": "数据库查询", "description": "查询图片/表格元数据"},
+        {
+            "name": "icp_diagnosis",
+            "label": "ICP 故障诊断编排器",
+            "description": "自动调度 Function Locator、HMC、FMECA、FTA、RBD、MFL 和故障历史工具",
+        },
+        *ICP_TOOL_DEFS,
     ]
