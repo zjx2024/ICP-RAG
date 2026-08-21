@@ -1,0 +1,613 @@
+/* ===== 白毛玻璃效果（White Glassmorphism）全局样式 ===== */
+
+/* 全局玻璃基类 */
+.glass {
+  background: rgba(255, 255, 255, 0.60);
+  backdrop-filter: blur(14px) saturate(160%);
+  -webkit-backdrop-filter: blur(14px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+  border-radius: 12px;
+  transition: all 0.25s ease;
+}
+
+.glass:hover {
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12);
+}
+
+/* 信息密度高的区域（社区报告、思考面板）取更高透明度保证可读性 */
+.glass-dense {
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(14px) saturate(160%);
+  -webkit-backdrop-filter: blur(14px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+  border-radius: 12px;
+}
+
+/* body 背景：白色为主 + 极淡黑色氛围光斑（毛玻璃"透出"的关键，白多黑少） */
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(600px 400px at 8% 10%, rgba(0, 0, 0, 0.05), transparent 60%),
+    radial-gradient(700px 500px at 92% 85%, rgba(0, 0, 0, 0.04), transparent 60%),
+    linear-gradient(135deg, #f6f6f7 0%, #ffffff 40%, #f0f0f2 100%);
+  background-attachment: fixed;
+  margin: 0;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* 全局滚动条美化 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.32);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 卡片淡入上浮过渡（进入页面时） */
+@keyframes glass-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.glass-fade-in {
+  animation: glass-fade-in 0.25s ease;
+}
+
+/* 动效可访问性：减少动态偏好下禁用动画 */
+@media (prefers-reduced-motion: reduce) {
+  .glass,
+  .glass-dense {
+    transition: none;
+  }
+  .glass-fade-in {
+    animation: none;
+  }
+}
+
+/* ============================================================
+   v2 组件形态层（白毛玻璃深度重构）
+   设计决策：所有高频交互组件统一为「玻璃悬浮 + 低饱和品牌色」，
+   保证与玻璃背景对比度 ≥4.5:1（文字统一 #262626 / #595959）。
+   ============================================================ */
+
+/* 顶部居中玻璃标签栏（一级导航，macOS 风格） */
+.glass-tabbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px;
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(18px) saturate(170%);
+  -webkit-backdrop-filter: blur(18px) saturate(170%);
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  border-radius: 999px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.10);
+}
+.glass-tabbar-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 20px;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  color: #595959;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.25s ease;
+}
+.glass-tabbar-item:hover {
+  color: #262626;
+  background: rgba(255, 255, 255, 0.5);
+}
+.glass-tabbar-item.active {
+  background: rgba(20, 20, 20, 0.92);
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22);
+}
+
+/* 玻璃悬浮主按钮：黑色（白多黑少里的"黑"点缀），hover 时"浮起" */
+.glass-btn-primary {
+  position: relative;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: linear-gradient(135deg, rgba(64, 64, 64, 0.95), rgba(15, 15, 15, 0.97));
+  color: #fff;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.22);
+  transition: all 0.25s ease;
+}
+.glass-btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.30);
+}
+.glass-btn-primary:active {
+  transform: translateY(0);
+}
+
+/* 玻璃描边红危险按钮：红色玻璃底 + 红描边（语义色保留） */
+.glass-btn-danger {
+  border: 1px solid rgba(255, 77, 79, 0.35);
+  background: rgba(255, 77, 79, 0.12);
+  color: #cf1322;
+  backdrop-filter: blur(8px);
+  transition: all 0.25s ease;
+}
+.glass-btn-danger:hover {
+  background: rgba(255, 77, 79, 0.22);
+  color: #a8071a;
+  border-color: rgba(255, 77, 79, 0.55);
+}
+
+/* 文字 + 细下划线次按钮：纯黑文字，hover 加黑下划线 */
+.glass-btn-text {
+  border: none;
+  background: transparent;
+  color: #1a1a1a;
+  box-shadow: none;
+  border-radius: 4px;
+  transition: all 0.25s ease;
+}
+.glass-btn-text:hover {
+  color: #000000;
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.55);
+}
+
+/* 黑色删除按钮：纯黑底白字，hover 加深 */
+.glass-btn-black {
+  border: 1px solid #1f1f1f;
+  background: #1f1f1f;
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  transition: all 0.25s ease;
+}
+.glass-btn-black:hover {
+  background: #000000;
+  border-color: #000000;
+  color: #ffffff;
+}
+
+/* 表格行操作列：默认隐藏，鼠标悬停该行时显示 */
+.kb-row-actions {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.18s ease, visibility 0.18s ease;
+}
+.ant-table-row:hover .kb-row-actions {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+/* 强边界卡片：黑色描边 + 阴影，用于白色玻璃背景下勾勒组件轮廓 */
+.glass-card-bordered {
+  border: 1.5px solid rgba(0, 0, 0, 0.55) !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12) !important;
+}
+.glass-card-bordered .ant-card-head {
+  border-bottom: 1px solid rgba(0, 0, 0, 0.25);
+}
+
+/* 底部固定玻璃工具栏（批量操作，类似 iOS 相册） */
+.glass-toolbar {
+  position: sticky;
+  bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(18px) saturate(170%);
+  -webkit-backdrop-filter: blur(18px) saturate(170%);
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  border-radius: 16px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.14);
+  z-index: 20;
+}
+
+/* 卡片式选择（radio/checkbox → 点击整卡选中，玻璃高亮边框） */
+.glass-option-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  background: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+.glass-option-card:hover {
+  background: rgba(255, 255, 255, 0.75);
+}
+.glass-option-card.selected {
+  border-color: rgba(0, 0, 0, 0.65);
+  background: rgba(0, 0, 0, 0.06);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.30), 0 6px 18px rgba(0, 0, 0, 0.12);
+}
+.glass-option-card.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 下划线式玻璃输入框：聚焦整块变亮 */
+.glass-input {
+  background: transparent !important;
+  border: none !important;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.18) !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  transition: all 0.25s ease;
+}
+.glass-input:hover {
+  border-bottom-color: rgba(0, 0, 0, 0.40) !important;
+}
+.glass-input:focus {
+  background: rgba(255, 255, 255, 0.75) !important;
+  border-bottom-color: #1a1a1a !important;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.10) !important;
+}
+
+/* 大号统计玻璃角标 */
+.glass-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 18px 22px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(14px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+  transition: all 0.25s ease;
+}
+.glass-stat:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.12);
+}
+.glass-stat .value {
+  font-size: 32px;
+  font-weight: 700;
+  color: #262626;
+  line-height: 1.1;
+}
+.glass-stat .label {
+  font-size: 13px;
+  color: #595959;
+}
+
+/* 空状态玻璃占位 */
+.glass-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 56px 24px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.4);
+  backdrop-filter: blur(10px);
+  border: 1px dashed rgba(0, 0, 0, 0.25);
+  color: #595959;
+}
+
+/* 顶部下滑玻璃横幅（antd message 玻璃化，配合 Message token） */
+.glass-message {
+  margin-top: 0;
+  padding: 12px 20px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.75) !important;
+  backdrop-filter: blur(18px) saturate(170%);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  box-shadow: 0 10px 36px rgba(0, 0, 0, 0.16);
+}
+
+/* 展开式搜索：默认图标，hover/focus 展开 */
+.glass-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  background: rgba(255, 255, 255, 0.5);
+  padding: 6px 6px 6px 14px;
+  cursor: pointer;
+  transition: all 0.25s ease;
+  width: 40px;
+}
+.glass-search:focus-within,
+.glass-search.open {
+  width: 260px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+.glass-search input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  outline: none;
+  color: #262626;
+  font-size: 14px;
+  min-width: 0;
+}
+
+/* 内联引用（答案正文中的引用来源标签，点击展开/收起引用原文）
+   还原旧版 agent.html 的 toggleInlineCite 交互，样式改为黑白玻璃 */
+.inline-cite {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(0, 0, 0, 0.06);
+  color: #333333;
+  border: 1px solid rgba(0, 0, 0, 0.20);
+  border-radius: 6px;
+  padding: 1px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  margin: 0 2px;
+  vertical-align: baseline;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  transition: all 0.2s ease;
+}
+.inline-cite:hover {
+  background: rgba(0, 0, 0, 0.12);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.14);
+}
+.cite-caret {
+  font-size: 10px;
+  color: #1a1a1a;
+  transition: transform 0.2s ease;
+}
+.inline-cite-body {
+  display: none;
+  margin: 6px 0 8px 16px;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(12px) saturate(160%);
+  -webkit-backdrop-filter: blur(12px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-left: 3px solid rgba(0, 0, 0, 0.55);
+  border-radius: 0 10px 10px 0;
+  font-size: 12px;
+  color: #262626;
+  line-height: 1.7;
+  word-break: break-all;
+  max-height: 260px;
+  overflow-y: auto;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
+}
+
+/* 黑白主题：装饰性预设标签统一灰度化（保留语义色 success/error/warning/processing/default）
+   让思考面板/检索页不再五颜六色，仅剩灰阶 */
+.ant-tag.ant-tag-blue,
+.ant-tag.ant-tag-geekblue,
+.ant-tag.ant-tag-purple,
+.ant-tag.ant-tag-cyan,
+.ant-tag.ant-tag-gold,
+.ant-tag.ant-tag-orange,
+.ant-tag.ant-tag-magenta,
+.ant-tag.ant-tag-volcano,
+.ant-tag.ant-tag-lime,
+.ant-tag.ant-tag-green {
+  background: rgba(0, 0, 0, 0.06) !important;
+  border-color: rgba(0, 0, 0, 0.18) !important;
+  color: #404040 !important;
+}
+
+/* 智能体会话列表：重命名/删除操作默认隐藏，仅悬停到该会话时显示 */
+.agent-session-item .ant-list-item-action {
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.agent-session-item:hover .ant-list-item-action {
+  opacity: 1;
+}
+
+/* ============================================================
+   Agent 页组件描边增强（黑色勾勒，保证白毛玻璃背景下边界清晰）
+   ============================================================ */
+
+/* 用户输入框：默认黑色描边 + 阴影，hover/focus 加深 */
+.agent-input.ant-input {
+  border: 1px solid rgba(0, 0, 0, 0.30);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.75) !important;
+  border-radius: 10px;
+  transition: all 0.2s ease;
+}
+.agent-input.ant-input:hover {
+  border-color: rgba(0, 0, 0, 0.50);
+}
+.agent-input.ant-input:focus {
+  border-color: #1a1a1a;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.12), 0 4px 16px rgba(0, 0, 0, 0.14);
+}
+
+/* 侧边栏下拉选择器：黑色描边增强 */
+.agent-select .ant-select-selector {
+  border: 1px solid rgba(0, 0, 0, 0.25) !important;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+  background: rgba(255, 255, 255, 0.75) !important;
+}
+.agent-select:hover .ant-select-selector {
+  border-color: rgba(0, 0, 0, 0.45) !important;
+}
+.agent-select.ant-select-focused .ant-select-selector {
+  border-color: #1a1a1a !important;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.10) !important;
+}
+
+/* 上下文栏：玻璃卡片 + 黑色描边 + 阴影 */
+.agent-context-bar {
+  border: 1px solid rgba(0, 0, 0, 0.18) !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12) !important;
+}
+
+/* 消息气泡/思考面板：黑色描边勾勒边界 */
+.agent-bubble {
+  border: 1px solid rgba(0, 0, 0, 0.14) !important;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.10) !important;
+}
+
+/* 会话列表选中项：黑边高亮 */
+.agent-session-item.ant-list-item-active {
+  border: 1px solid rgba(0, 0, 0, 0.35) !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.10);
+}
+
+/* 侧边栏配置项胶囊选择器：替代原生下拉，点击弹出卡片列表 */
+.agent-picker {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  background: rgba(255, 255, 255, 0.75);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+.agent-picker:hover {
+  border-color: rgba(0, 0, 0, 0.50);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+}
+.agent-picker .agent-picker-label {
+  font-size: 12px;
+  color: #595959;
+  flex-shrink: 0;
+}
+.agent-picker .agent-picker-value {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: #262626;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-picker .agent-picker-value .anticon {
+  font-size: 10px;
+  color: #8c8c8c;
+  flex-shrink: 0;
+}
+
+/* 小号胶囊选择器（上传页顶部工具栏用） */
+.agent-picker-sm {
+  padding: 4px 10px;
+  gap: 6px;
+  border-radius: 8px;
+  box-shadow: none;
+}
+.agent-picker-sm .agent-picker-label {
+  font-size: 11px;
+}
+.agent-picker-sm .agent-picker-value {
+  font-size: 12px;
+  font-weight: 500;
+}
+.agent-picker-sm .agent-picker-value .anticon {
+  font-size: 9px;
+}
+
+/* 选择弹窗内卡片项 */
+.agent-picker-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  background: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+.agent-picker-option:hover {
+  background: rgba(255, 255, 255, 0.8);
+  border-color: rgba(0, 0, 0, 0.30);
+}
+.agent-picker-option.selected {
+  border-color: rgba(0, 0, 0, 0.65);
+  background: rgba(0, 0, 0, 0.06);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.30), 0 6px 18px rgba(0, 0, 0, 0.12);
+}
+.agent-picker-option .agent-picker-option-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: #262626;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-picker-option .agent-picker-option-sub {
+  font-size: 11px;
+  color: #8c8c8c;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 分块勾选框：黑色描边保证在白色玻璃背景下清晰可见 */
+.chunk-checkbox .ant-checkbox-inner {
+  border-color: rgba(0, 0, 0, 0.55) !important;
+  background: rgba(255, 255, 255, 0.9) !important;
+}
+.chunk-checkbox .ant-checkbox:hover .ant-checkbox-inner {
+  border-color: #000 !important;
+}
+.chunk-checkbox .ant-checkbox-checked .ant-checkbox-inner {
+  background: #1a1a1a !important;
+  border-color: #1a1a1a !important;
+}
+.chunk-checkbox .ant-checkbox-checked .ant-checkbox-inner::after {
+  border-color: #ffffff !important;
+}
+
+/* 文档上传列表：每行显眼边界 + 隔行底色，提升可读性 */
+.kb-doc-table .ant-table-tbody > tr > td {
+  border-bottom: 1.5px solid rgba(0, 0, 0, 0.22) !important;
+  background: rgba(255, 255, 255, 0.55);
+  transition: background 0.15s ease;
+}
+.kb-doc-table .ant-table-tbody > tr:nth-child(odd) > td {
+  background: rgba(255, 255, 255, 0.32);
+}
+.kb-doc-table .ant-table-tbody > tr:hover > td {
+  background: rgba(0, 0, 0, 0.06) !important;
+}
+.kb-doc-table .ant-table-tbody > tr:last-child > td {
+  border-bottom: 1.5px solid rgba(0, 0, 0, 0.22) !important;
+}

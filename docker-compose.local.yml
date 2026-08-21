@@ -1,0 +1,16 @@
+services:
+  postgres:
+    # 5433 已由 knowledge-forge-postgres 占用；应用在 compose 网络内仍使用 postgres:5432。
+    ports: !override
+      - "5434:5432"
+  app:
+    # 复用的本机基础镜像未包含 nc；依赖健康检查已由 compose 完成，直接启动应用。
+    entrypoint:
+      - uvicorn
+      - backend.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "9999"
+      - --log-level
+      - info

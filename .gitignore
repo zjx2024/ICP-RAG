@@ -1,0 +1,25 @@
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Frontend dependencies and generated build metadata
+frontend/node_modules/
+frontend/*.tsbuildinfo
+
+# Runtime data produced by Docker and document processing
+volumes/
+app/storage/
+logs/
+*.log
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
