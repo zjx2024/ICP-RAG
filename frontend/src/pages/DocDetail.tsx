@@ -49,6 +49,10 @@ export default function DocDetail() {
     );
   }
 
+  const parseMessage = document.last_result && typeof document.last_result === 'object'
+    ? String((document.last_result as Record<string, unknown>).message || '')
+    : '';
+
   return (
     <div className="glass-fade-in">
       <Card
@@ -74,7 +78,7 @@ export default function DocDetail() {
         <Space size={[8, 8]} wrap>
           <Typography.Text type="secondary">更新时间：{formatDateTime(document.updated_at)}</Typography.Text>
           <Typography.Text type="secondary">解析次数：{document.parse_count || 0}</Typography.Text>
-          {document.last_result?.message ? <Typography.Text type="secondary">{document.last_result.message}</Typography.Text> : null}
+          {parseMessage ? <Typography.Text type="secondary">{parseMessage}</Typography.Text> : null}
         </Space>
       </Card>
 
