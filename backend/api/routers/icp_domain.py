@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-from typing import Optional
 
 from fastapi import APIRouter, Body, HTTPException, Query
 
@@ -33,9 +32,28 @@ async def list_fault_history(
     return icp_repository.get_history_by_doc(doc_id, page, size, keyword)
 
 
+def _record_count(cur, doc_type: str) -> int:
+    """返回各类型真正的结构化记录数，而不是通用 document_chunks 近似值。"""
+    if doc_type == "hmc":
+        cur.execute("SELECT COUNT(*) FROM fault_hmc")
+    elif doc_type == "fmeca":
+        cur.execute("SELECT COUNT(*) FROM fmea")
+    elif doc_type == "mfl":
+        cur.execute("SELECT COUNT(*) FROM mfl")
+    elif doc_type in ("fta", "rbd"):
+        cur.execute("SELECT COUNT(*) FROM document_fault_trees WHERE kb_id=%s", (doc_type,))
+    elif doc_type == "function_locator":
+        cur.execute("SELECT COUNT(*) FROM icp_functions")
+    elif doc_type == "fault_history":
+        cur.execute("SELECT COUNT(*) FROM fault_history_cases")
+    else:
+        return 0
+    return int(cur.fetchone()[0])
+
+
 @router.get("/readiness")
 async def diagnosis_readiness():
-    """返回七类文档的上传/解析情况，供诊断页和运维检查。"""
+    """返回七类文档的上传、可用状态和结构化记录数。"""
     rows = []
     with postgres_client.conn.cursor() as cur:
         cur.execute(
@@ -51,18 +69,21 @@ async def diagnosis_readiness():
             ORDER BY dt.sort_order
             """
         )
-        for row in cur.fetchall():
+        base_rows = cur.fetchall()
+        for row in base_rows:
             rows.append({
                 "doc_type": row[0],
                 "name": row[1],
                 "doc_count": row[2],
                 "ready_count": row[3],
                 "failed_count": row[4],
+                "record_count": _record_count(cur, row[0]),
             })
     return {
         "types": rows,
         "all_types_present": len(rows) == 7 and all(item["ready_count"] > 0 for item in rows),
         "ready_type_count": sum(1 for item in rows if item["ready_count"] > 0),
+        "total_records": sum(item["record_count"] for item in rows),
     }
 
 
