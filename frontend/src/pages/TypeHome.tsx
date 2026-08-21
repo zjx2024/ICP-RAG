@@ -2,11 +2,12 @@ import { useCallback, useEffect, useState } from 'react';
 import { Row, Col, Card, Typography, Space, Tag, Spin, message, Button, Alert } from 'antd';
 import {
   TableOutlined, ApartmentOutlined, FileTextOutlined, ArrowRightOutlined,
-  RobotOutlined, ReloadOutlined,
+  RobotOutlined, ReloadOutlined, CloudUploadOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { fetchDiagnosisReadiness, fetchDocumentTypes } from '@/api/icp';
 import { GlassEmpty, GlassStatCard } from '@/components/GlassUI';
+import UnifiedUploadModal from '@/components/UnifiedUploadModal';
 import type { DocTypeInfo } from '@/types';
 
 const FORM_META: Record<string, { icon: React.ReactNode; color: string; label: string }> = {
@@ -35,6 +36,8 @@ export default function TypeHome() {
     total_records: 0,
   });
   const [loading, setLoading] = useState(false);
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [recentlyUploadedType, setRecentlyUploadedType] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -70,18 +73,27 @@ export default function TypeHome() {
 
   const totalDocs = types.reduce((sum, item) => sum + (item.doc_count || 0), 0);
 
+  const handleUploaded = async (docType: string) => {
+    setRecentlyUploadedType(docType);
+    await load();
+    window.setTimeout(() => setRecentlyUploadedType(''), 2200);
+  };
+
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, gap: 12 }}>
         <div>
           <Typography.Title level={4} style={{ margin: 0, color: '#262626' }}>ICP 七类文档知识库</Typography.Title>
           <Typography.Text type="secondary">
-            每类文档使用独立的预处理和存储方式；解析完成后共同服务于 ICP 故障诊断。
+            通过统一入口选择文档类型并上传；入库后自动归入对应卡片，再按类型执行解析和查看。
           </Typography.Text>
         </div>
-        <Space>
+        <Space wrap>
+          <Button type="primary" icon={<CloudUploadOutlined />} onClick={() => setUploadOpen(true)}>
+            上传文档
+          </Button>
           <Button icon={<ReloadOutlined />} onClick={load} loading={loading}>刷新</Button>
-          <Button type="primary" icon={<RobotOutlined />} onClick={() => navigate('/diagnosis')}>
+          <Button className="glass-btn-black" icon={<RobotOutlined />} onClick={() => navigate('/diagnosis')}>
             进入故障诊断
           </Button>
         </Space>
@@ -128,16 +140,21 @@ export default function TypeHome() {
           {types.map((item) => {
             const meta = FORM_META[item.data_form] || FORM_META.text;
             const ready = (item.ready_count || 0) > 0;
+            const justUploaded = recentlyUploadedType === item.doc_type;
             return (
               <Col key={item.doc_type} xs={24} sm={12} lg={8} xl={6}>
                 <Card
                   hoverable
-                  onClick={() => navigate(`/type/${item.doc_type}`)}
+                  onClick={() => navigate(`/type/${item.doc_type}/documents`)}
                   style={{
-                    background: 'rgba(255,255,255,0.6)',
+                    background: justUploaded ? 'rgba(230,247,255,.88)' : 'rgba(255,255,255,0.6)',
                     backdropFilter: 'blur(14px) saturate(160%)',
-                    border: `1px solid ${ready ? 'rgba(82,196,26,.35)' : 'rgba(255,255,255,.65)'}`,
+                    border: justUploaded
+                      ? '1px solid rgba(22,119,255,.72)'
+                      : `1px solid ${ready ? 'rgba(82,196,26,.35)' : 'rgba(255,255,255,.65)'}`,
+                    boxShadow: justUploaded ? '0 0 0 3px rgba(22,119,255,.10), 0 12px 30px rgba(22,119,255,.14)' : undefined,
                     height: '100%',
+                    transition: 'all .25s ease',
                   }}
                   styles={{ body: { display: 'flex', flexDirection: 'column', height: '100%' } }}
                 >
@@ -165,7 +182,7 @@ export default function TypeHome() {
                   <div style={{ flex: 1 }} />
                   <div style={{ borderTop: '1px solid rgba(0,0,0,0.06)', marginTop: 10, paddingTop: 10, textAlign: 'right' }}>
                     <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-                      上传、解析与查看 <ArrowRightOutlined />
+                      管理、解析与查看 <ArrowRightOutlined />
                     </Typography.Text>
                   </div>
                 </Card>
@@ -174,6 +191,13 @@ export default function TypeHome() {
           })}
         </Row>
       )}
+
+      <UnifiedUploadModal
+        open={uploadOpen}
+        types={types}
+        onClose={() => setUploadOpen(false)}
+        onUploaded={handleUploaded}
+      />
     </div>
   );
 }
