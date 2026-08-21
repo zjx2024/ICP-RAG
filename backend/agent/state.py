@@ -7,7 +7,6 @@ import operator
 
 
 class AgentState(TypedDict, total=False):
-    # ── 输入 ──
     messages: Annotated[List[Dict], operator.add]
     query: str
     kb_id: str
@@ -18,7 +17,6 @@ class AgentState(TypedDict, total=False):
     embedding_model_id: str
     rerank_model_id: str
 
-    # ── Agent 参数 ──
     temperature: float
     top_p: float
     max_tokens: int
@@ -30,10 +28,8 @@ class AgentState(TypedDict, total=False):
     keep_recent_turns: int
     memory_enabled: bool
 
-    # ── 记忆 ──
     memory_context: str
 
-    # ── Plan 阶段 ──
     intent: str
     rewritten_query: str
     entity_keywords: List[str]
@@ -41,31 +37,27 @@ class AgentState(TypedDict, total=False):
     tools_plan: List[Dict]
     plan_reasoning: str
 
-    # ── 旧通用执行结果（兼容）──
     vector_results: List[Dict]
     kg_summary: str
     sql_results: List[Dict]
 
-    # ── ICP 专用执行结果 ──
     domain_results: List[Dict]
     diagnostic_context: str
     candidate_faults: List[Dict]
     diagnostic_confidence: float
     clarification_question: str
+    calculation_results: List[Dict]
 
-    # ── Reflect 阶段 ──
     reflection: str
     need_more: bool
     next_action: str
 
-    # ── 元信息 ──
     tool_calls: Annotated[List[Dict], operator.add]
     citations: List[Dict]
     iteration: int
     final_answer: str
 
 
-# 默认状态工厂
 def create_initial_state(query: str, agent_id: str, kb_id: str, kb_ids: List[str] = None,
                          system_prompt: str = "", memory_context: str = "",
                          history: List[Dict] = None,
@@ -111,6 +103,7 @@ def create_initial_state(query: str, agent_id: str, kb_id: str, kb_ids: List[str
         "candidate_faults": [],
         "diagnostic_confidence": 0.0,
         "clarification_question": "",
+        "calculation_results": [],
         "reflection": "",
         "need_more": False,
         "next_action": "done",
