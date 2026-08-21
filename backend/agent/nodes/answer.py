@@ -180,6 +180,15 @@ async def answer_node(state, config=None) -> Dict:
     if config and isinstance(config, dict):
         stream_queue = config.get("configurable", {}).get("stream_queue")
 
+    # ICP 编排器是一个 LangGraph 节点，但内部完成多个领域工具调用。旧 chat_router
+    # 只识别三个通用节点，因此在回答前把细粒度调用记录显式推送给前端。
+    if stream_queue is not None and state.get("diagnostic_context"):
+        for tool_call in state.get("tool_calls", []) or []:
+            try:
+                await stream_queue.put({"type": "tool_call", **tool_call})
+            except Exception:
+                pass
+
     try:
         if stream_queue is not None:
             final_answer = ""
@@ -195,7 +204,6 @@ async def answer_node(state, config=None) -> Dict:
         logger.error("Answer node failed: %s", exc)
         final_answer = f"生成回答时出错：{exc}"
 
-    # LLM 不可用时给出可读的证据兜底，而不是返回空白。
     if not final_answer or final_answer.startswith("[LLM未配置]") or final_answer.startswith("[AI调用失败]"):
         candidate_text = _format_candidates(candidates)
         final_answer = (
