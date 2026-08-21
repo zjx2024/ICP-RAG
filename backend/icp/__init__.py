@@ -1,5 +1,6 @@
-"""ICP 故障诊断领域模块。"""
+"""ICP 故障诊断领域模块。
 
-from backend.icp.repository import icp_repository
+子模块按需导入，避免纯可靠性算法测试在没有 PostgreSQL/ES 运行环境时触发基础设施连接。
+"""
 
-__all__ = ["icp_repository"]
+__all__ = []
