@@ -1,3 +1,13 @@
+# ===== Frontend build =====
+FROM node:20-alpine AS frontend-builder
+
+WORKDIR /src
+COPY frontend/package.json frontend/package-lock.json ./frontend/
+RUN cd frontend && npm ci
+COPY frontend/ ./frontend/
+RUN cd frontend && npm run build
+
+# ===== Python runtime =====
 FROM python:3.10-slim
 
 WORKDIR /app
@@ -10,19 +20,15 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 只拷贝重构后的运行代码（不再 COPY . . 引入旧 app/ 代码、frontend 源码、docs 等）
-# - backend/: 全部后端分层代码（唯一运行依赖）
-# - static/: 前端构建产物 static/dist + 旧版单页回滚备份（SPA 由 backend.main 服务）
-# - entrypoint.sh: 启动脚本
 COPY backend/ backend/
 COPY static/ static/
+# 始终用当前源码构建出的 ICP 专用前端覆盖仓库内历史静态产物。
+COPY --from=frontend-builder /src/static/dist/ static/dist/
 COPY entrypoint.sh .
 
 RUN chmod +x entrypoint.sh
 
 EXPOSE 9999
-
 ENTRYPOINT ["/app/entrypoint.sh"]
