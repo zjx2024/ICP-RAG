@@ -1,6 +1,6 @@
 """LangGraph 状态图编译。
 
-- ICP 专用 Agent：plan → icp_diagnosis → answer
+- ICP 专用 Agent：plan → 多源诊断 → FTA/RBD确定性计算 → answer
 - 历史通用 Agent：保留 vector/kg/sql → reflect → answer 兼容路径
 """
 import logging
@@ -16,6 +16,7 @@ from backend.agent.tools.vector_search import vector_search_node
 from backend.agent.tools.kg_search import kg_search_node
 from backend.agent.tools.sql_query import sql_query_node
 from backend.agent.tools.icp_diagnosis import icp_diagnosis_node
+from backend.agent.tools.icp_calculation import icp_calculation_node
 from backend.agent.checkpoint import get_checkpointer, get_store
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,9 @@ ICP_TOOL_NAMES = {
     "hmc_query",
     "fmeca_query",
     "fta_query",
+    "fta_analyzer",
     "rbd_query",
+    "rbd_calculator",
     "mfl_query",
     "fault_history_query",
     "fault_reasoning",
@@ -93,10 +96,12 @@ async def _build_icp_graph():
     graph = StateGraph(AgentState)
     graph.add_node("plan", plan_node)
     graph.add_node("icp_diagnosis", icp_diagnosis_node)
+    graph.add_node("icp_calculation", icp_calculation_node)
     graph.add_node("answer", answer_node)
     graph.set_entry_point("plan")
     graph.add_edge("plan", "icp_diagnosis")
-    graph.add_edge("icp_diagnosis", "answer")
+    graph.add_edge("icp_diagnosis", "icp_calculation")
+    graph.add_edge("icp_calculation", "answer")
     graph.add_edge("answer", END)
     return await _compile(graph)
 
