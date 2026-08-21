@@ -8,7 +8,7 @@ import {
   ThunderboltOutlined, BranchesOutlined, ApartmentOutlined,
 } from '@ant-design/icons';
 import {
-  fetchOriginal, fetchVectors, fetchRows, fetchFaultTrees, fetchIcpGraphData,
+  fetchOriginal, fetchVectors, fetchDomainRows, fetchFaultTrees, fetchIcpGraphData,
 } from '@/api/icp';
 import { GlassButton } from '@/components/GlassUI';
 import GraphCanvas from '@/components/GraphCanvas';
@@ -16,9 +16,8 @@ import type {
   ICPOriginalBlock, ICPVectorResponse, ICPRowsResponse, ICPFaultTree,
   GraphVertex, GraphEdge,
 } from '@/types';
-import { formatDateTime } from '@/utils';
 
-const TABLE_TYPES = new Set(['hmc', 'fmeca', 'mfl']);
+const STRUCTURED_TYPES = new Set(['hmc', 'fmeca', 'mfl', 'function_locator', 'fault_history']);
 const IMAGE_TYPES = new Set(['fta', 'rbd']);
 
 interface Props {
@@ -27,8 +26,7 @@ interface Props {
   file_name?: string;
 }
 
-/** 文档内容四视图组件：原文 / 向量化 / PG 结构 / 三元组+图谱，按 doc_type 组合 Tab。
- *  供 TypeView（内容查看，多文档并列）与 DocDetail（单文档详情）共用。 */
+/** 七类文档内容视图：原文 / 向量 / 结构化数据 / 图结构。 */
 export default function DocContentView({ docType, docId, file_name }: Props) {
   const [origPage, setOrigPage] = useState(1);
   const [origData, setOrigData] = useState<{ file_name: string; total: number; blocks: ICPOriginalBlock[] } | null>(null);
@@ -36,7 +34,12 @@ export default function DocContentView({ docType, docId, file_name }: Props) {
   const [vecData, setVecData] = useState<ICPVectorResponse | null>(null);
   const [rowsPage, setRowsPage] = useState(1);
   const [rowsData, setRowsData] = useState<ICPRowsResponse | null>(null);
-  const [rowFilters, setRowFilters] = useState<{ keyword?: string; severity?: string; api_reportable?: string; platform_test?: string }>({});
+  const [rowFilters, setRowFilters] = useState<{
+    keyword?: string;
+    severity?: string;
+    api_reportable?: string;
+    platform_test?: string;
+  }>({});
   const [faultTrees, setFaultTrees] = useState<ICPFaultTree[] | null>(null);
   const [graphData, setGraphData] = useState<{ vertices: GraphVertex[]; edges: GraphEdge[]; error?: string } | null>(null);
 
@@ -68,7 +71,8 @@ export default function DocContentView({ docType, docId, file_name }: Props) {
   const loadRows = useCallback(async (page = 1, filters = rowFilters) => {
     setRowsLoading(true);
     try {
-      setRowsData(await fetchRows(docType, docId, { page, size: 20, ...filters }));
+      setRowsData(await fetchDomainRows(docType, docId, { page, size: 20, ...filters }));
+      setRowsPage(page);
     } catch {
       setRowsData(null);
     } finally {
@@ -93,12 +97,9 @@ export default function DocContentView({ docType, docId, file_name }: Props) {
     }
   }, [docType, docId]);
 
-  useEffect(() => {
-    loadOriginal(1);
-  }, [docType, docId, loadOriginal]);
+  useEffect(() => { loadOriginal(1); }, [docType, docId, loadOriginal]);
 
   useEffect(() => {
-    if (!activeTab) return;
     if (activeTab === 'vectors') loadVectors(1);
     if (activeTab === 'rows') loadRows(1);
     if (activeTab === 'triplets') loadFaultTrees();
@@ -107,30 +108,41 @@ export default function DocContentView({ docType, docId, file_name }: Props) {
   }, [activeTab]);
 
   const isImage = IMAGE_TYPES.has(docType);
-  const isTable = TABLE_TYPES.has(docType);
+  const isStructured = STRUCTURED_TYPES.has(docType);
 
-  // ===== Tab 内容 =====
   const renderOriginal = () => {
     if (!origData) return <Spin style={{ display: 'block', margin: '40px auto' }} />;
     if (origData.blocks.length === 0) return <Empty description="无原文内容" />;
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {origData.blocks.map((b, i) => (
-          <div key={i} className="glass-dense" style={{ padding: '10px 14px', borderRadius: 10, border: '1px solid rgba(0,0,0,0.1)' }}>
-            {b.title && (
-              <div style={{ fontWeight: 600, fontSize: b.level === 1 ? 16 : 14, color: '#262626', paddingLeft: b.level > 1 ? (b.level - 1) * 16 : 0, marginBottom: b.text ? 6 : 0 }}>
-                {b.title}
+        {origData.blocks.map((block, index) => (
+          <div key={index} className="glass-dense" style={{ padding: '10px 14px', borderRadius: 10, border: '1px solid rgba(0,0,0,0.1)' }}>
+            {block.title && (
+              <div style={{
+                fontWeight: 600,
+                fontSize: block.level === 1 ? 16 : 14,
+                color: '#262626',
+                paddingLeft: block.level > 1 ? (block.level - 1) * 16 : 0,
+                marginBottom: block.text ? 6 : 0,
+              }}>
+                {block.title}
               </div>
             )}
-            {b.text && <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, color: '#595959' }}>{b.text}</div>}
-            {b.table && b.table.length > 0 && (
+            {block.text && <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, color: '#595959' }}>{block.text}</div>}
+            {block.table && block.table.length > 0 && (
               <div style={{ overflowX: 'auto', marginTop: 8 }}>
                 <table style={{ borderCollapse: 'collapse', fontSize: 12, width: '100%' }}>
                   <tbody>
-                    {b.table.map((row, ri) => (
-                      <tr key={ri}>
-                        {row.map((cell, ci) => (
-                          <td key={ci} style={{ border: '1px solid #e0e0e0', padding: '4px 8px', background: ri === 0 ? 'rgba(0,0,0,0.04)' : 'transparent', whiteSpace: 'nowrap' }}>{cell}</td>
+                    {block.table.map((row, rowIndex) => (
+                      <tr key={rowIndex}>
+                        {row.map((cell, cellIndex) => (
+                          <td key={cellIndex} style={{
+                            border: '1px solid #e0e0e0', padding: '4px 8px',
+                            background: rowIndex === 0 ? 'rgba(0,0,0,0.04)' : 'transparent',
+                            whiteSpace: 'nowrap',
+                          }}>
+                            {cell}
+                          </td>
                         ))}
                       </tr>
                     ))}
@@ -156,24 +168,24 @@ export default function DocContentView({ docType, docId, file_name }: Props) {
     if (!vecData || vecData.vectors.length === 0) return <Empty description="暂无向量化内容" />;
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {vecData.vectors.map((v: any, i: number) => (
-          <div key={i} className="glass-dense" style={{ padding: '10px 14px', borderRadius: 10, border: '1px solid rgba(0,0,0,0.1)' }}>
+        {vecData.vectors.map((vector: any, index: number) => (
+          <div key={index} className="glass-dense" style={{ padding: '10px 14px', borderRadius: 10, border: '1px solid rgba(0,0,0,0.1)' }}>
             <Space size={6} wrap style={{ marginBottom: 6 }}>
-              <Tag color="blue">{v.content_type || 'text'}</Tag>
-              {v.title ? <Typography.Text strong style={{ fontSize: 13 }}>{v.title}</Typography.Text> : null}
-              {v.business_id_kwd && <Tag>{v.business_id_kwd}</Tag>}
-              {v.section && <Tag color="geekblue">{v.section}</Tag>}
+              <Tag color="blue">{vector.content_type || 'text'}</Tag>
+              {vector.title ? <Typography.Text strong style={{ fontSize: 13 }}>{vector.title}</Typography.Text> : null}
+              {vector.business_id_kwd && <Tag>{vector.business_id_kwd}</Tag>}
+              {vector.section && <Tag color="geekblue">{vector.section}</Tag>}
             </Space>
             <div style={{ fontSize: 13, color: '#595959', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-              {(v.content || '').slice(0, 600)}
-              {(v.content || '').length > 600 ? '…' : ''}
+              {(vector.content || '').slice(0, 600)}
+              {(vector.content || '').length > 600 ? '…' : ''}
             </div>
           </div>
         ))}
         <Space style={{ justifyContent: 'center' }}>
-          <Button size="small" disabled={vecPage <= 1} onClick={() => { const p = vecPage - 1; setVecPage(p); loadVectors(p); }}>上一页</Button>
+          <Button size="small" disabled={vecPage <= 1} onClick={() => { const page = vecPage - 1; setVecPage(page); loadVectors(page); }}>上一页</Button>
           <Typography.Text type="secondary">第 {vecPage} / {Math.max(1, Math.ceil((vecData.total || 0) / 20))} 页（共 {vecData.total} 条）</Typography.Text>
-          <Button size="small" disabled={vecPage * 20 >= (vecData.total || 0)} onClick={() => { const p = vecPage + 1; setVecPage(p); loadVectors(p); }}>下一页</Button>
+          <Button size="small" disabled={vecPage * 20 >= (vecData.total || 0)} onClick={() => { const page = vecPage + 1; setVecPage(page); loadVectors(page); }}>下一页</Button>
         </Space>
       </div>
     );
@@ -181,55 +193,81 @@ export default function DocContentView({ docType, docId, file_name }: Props) {
 
   const renderRows = () => {
     if (rowsLoading && !rowsData) return <Spin style={{ display: 'block', margin: '40px auto' }} />;
-    if (!rowsData || rowsData.rows.length === 0) return <Empty description="暂无 PG 行数据" />;
-    const cols = Object.keys(rowsData.rows[0]);
+    if (!rowsData || rowsData.rows.length === 0) return <Empty description="暂无结构化记录，请先完成解析" />;
+    const columns = Object.keys(rowsData.rows[0]);
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         <Space wrap>
           <Input.Search
             allowClear
-            placeholder="关键词检索全列"
-            style={{ width: 240 }}
-            onSearch={(kw) => { const f = { ...rowFilters, keyword: kw || undefined }; setRowFilters(f); loadRows(1, f); }}
+            placeholder="关键词检索全部字段"
+            style={{ width: 260 }}
+            onSearch={(keyword) => {
+              const filters = { ...rowFilters, keyword: keyword || undefined };
+              setRowFilters(filters);
+              loadRows(1, filters);
+            }}
           />
           {docType === 'fmeca' && (
+            <Select
+              allowClear
+              placeholder="严酷度"
+              style={{ width: 130 }}
+              options={['I', 'II', 'III', 'IV', 'A', 'B', 'C', 'D'].map((value) => ({ value, label: value }))}
+              onChange={(value) => {
+                const filters = { ...rowFilters, severity: value || undefined };
+                setRowFilters(filters);
+                loadRows(1, filters);
+              }}
+            />
+          )}
+          {docType === 'mfl' && (
             <>
               <Select
-                allowClear placeholder="严重度" style={{ width: 110 }}
-                options={[{ value: 'A', label: 'A' }, { value: 'B', label: 'B' }, { value: 'C', label: 'C' }, { value: 'D', label: 'D' }]}
-                onChange={(v) => { const f = { ...rowFilters, severity: v || undefined }; setRowFilters(f); loadRows(1, f); }}
+                allowClear placeholder="API可上报" style={{ width: 130 }}
+                options={[{ value: 'true', label: '是' }, { value: 'false', label: '否' }]}
+                onChange={(value) => {
+                  const filters = { ...rowFilters, api_reportable: value || undefined };
+                  setRowFilters(filters);
+                  loadRows(1, filters);
+                }}
               />
               <Select
-                allowClear placeholder="API上报" style={{ width: 120 }}
+                allowClear placeholder="平台实验" style={{ width: 130 }}
                 options={[{ value: 'true', label: '是' }, { value: 'false', label: '否' }]}
-                onChange={(v) => { const f = { ...rowFilters, api_reportable: v || undefined }; setRowFilters(f); loadRows(1, f); }}
-              />
-              <Select
-                allowClear placeholder="平台测试" style={{ width: 120 }}
-                options={[{ value: 'true', label: '是' }, { value: 'false', label: '否' }]}
-                onChange={(v) => { const f = { ...rowFilters, platform_test: v || undefined }; setRowFilters(f); loadRows(1, f); }}
+                onChange={(value) => {
+                  const filters = { ...rowFilters, platform_test: value || undefined };
+                  setRowFilters(filters);
+                  loadRows(1, filters);
+                }}
               />
             </>
           )}
         </Space>
         <Table<Record<string, unknown>>
           size="small"
-          rowKey="id"
+          rowKey={(record) => String(record.id || record.function_id || record.case_id)}
           loading={rowsLoading}
           dataSource={rowsData.rows}
-          columns={cols.map((c) => ({
-            title: c,
-            dataIndex: c,
+          columns={columns.map((column) => ({
+            title: column,
+            dataIndex: column,
             ellipsis: true,
-            render: (val: unknown) => (val === null || val === undefined || val === '' ? '-' : String(val)),
+            render: (value: unknown) => {
+              if (value === null || value === undefined || value === '') return '-';
+              if (typeof value === 'object') return JSON.stringify(value, null, 0);
+              return String(value);
+            },
           }))}
           pagination={false}
           scroll={{ x: 'max-content' }}
         />
         <Space style={{ justifyContent: 'center' }}>
-          <Button size="small" disabled={rowsPage <= 1} onClick={() => { const p = rowsPage - 1; setRowsPage(p); loadRows(p); }}>上一页</Button>
-          <Typography.Text type="secondary">第 {rowsPage} / {Math.max(1, Math.ceil((rowsData.total || 0) / 20))} 页（共 {rowsData.total} 条）</Typography.Text>
-          <Button size="small" disabled={rowsPage * 20 >= (rowsData.total || 0)} onClick={() => { const p = rowsPage + 1; setRowsPage(p); loadRows(p); }}>下一页</Button>
+          <Button size="small" disabled={rowsPage <= 1} onClick={() => loadRows(rowsPage - 1)}>上一页</Button>
+          <Typography.Text type="secondary">
+            第 {rowsPage} / {Math.max(1, Math.ceil((rowsData.total || 0) / 20))} 页（共 {rowsData.total} 条）
+          </Typography.Text>
+          <Button size="small" disabled={rowsPage * 20 >= (rowsData.total || 0)} onClick={() => loadRows(rowsPage + 1)}>下一页</Button>
         </Space>
       </div>
     );
@@ -237,17 +275,17 @@ export default function DocContentView({ docType, docId, file_name }: Props) {
 
   const renderTriplets = () => {
     if (!faultTrees) return <Spin style={{ display: 'block', margin: '40px auto' }} />;
-    if (faultTrees.length === 0) return <Empty description="暂无三元组数据，请先解析" />;
+    if (faultTrees.length === 0) return <Empty description="暂无结构化图数据，请先解析" />;
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        {faultTrees.map((t, ti) => {
-          const g = t.graph || {};
-          const vertices = g.vertices || [];
-          const edges = g.edges || [];
+        {faultTrees.map((tree, treeIndex) => {
+          const graph = tree.graph || {};
+          const vertices = graph.vertices || [];
+          const edges = graph.edges || [];
           return (
-            <Card key={t.fault_tree_id || ti} size="small" title={t.image_title || `图 ${ti + 1}`} className="glass">
+            <Card key={tree.fault_tree_id || treeIndex} size="small" title={tree.image_title || `图 ${treeIndex + 1}`} className="glass">
               <Space style={{ marginBottom: 8 }}>
-                <Tag>根节点: {g.root_fault_id || '-'}</Tag>
+                <Tag>根/起点: {graph.root_fault_id || '-'}</Tag>
                 <Tag color="purple">节点 {vertices.length}</Tag>
                 <Tag color="orange">边 {edges.length}</Tag>
               </Space>
@@ -262,9 +300,9 @@ export default function DocContentView({ docType, docId, file_name }: Props) {
                     pagination={false}
                     columns={[
                       { title: 'ID', dataIndex: 'id', width: 200, ellipsis: true },
-                      { title: '类型', dataIndex: 'label', width: 100 },
-                      { title: '名称', render: (_, r) => (r as any).properties?.name || '-' },
-                      { title: '描述', render: (_, r) => (r as any).properties?.description || '-' },
+                      { title: '类型', dataIndex: 'label', width: 130 },
+                      { title: '名称', render: (_, record) => (record as any).properties?.name || '-' },
+                      { title: '描述', render: (_, record) => (record as any).properties?.description || '-' },
                     ]}
                   />
                 </>
@@ -281,8 +319,14 @@ export default function DocContentView({ docType, docId, file_name }: Props) {
                     columns={[
                       { title: '源', dataIndex: 'source', width: 200, ellipsis: true },
                       { title: '目标', dataIndex: 'target', width: 200, ellipsis: true },
-                      { title: '关系', dataIndex: 'label', width: 100 },
-                      { title: '逻辑门', render: (_, r) => (r as any).properties?.gate_type || '-' },
+                      { title: '关系', dataIndex: 'label', width: 130 },
+                      {
+                        title: docType === 'fta' ? '逻辑门' : '连接属性',
+                        render: (_, record) => {
+                          const props = (record as any).properties || {};
+                          return props.gate_type || props.connection_type || props.branch_id || '-';
+                        },
+                      },
                     ]}
                   />
                 </>
@@ -297,7 +341,7 @@ export default function DocContentView({ docType, docId, file_name }: Props) {
   const renderGraph = () => {
     if (!graphData) return <Spin style={{ display: 'block', margin: '40px auto' }} />;
     if (graphData.error) return <Alert type="warning" showIcon message="图谱数据加载失败" description={graphData.error} />;
-    if (graphData.vertices.length === 0) return <Empty description="暂无知识图谱数据" />;
+    if (graphData.vertices.length === 0) return <Empty description="暂无 HugeGraph 投影；请确认三元组后生成图谱" />;
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         <Space>
@@ -311,17 +355,16 @@ export default function DocContentView({ docType, docId, file_name }: Props) {
     );
   };
 
-  // ===== Tab 组合（按 data_form 差异化） =====
   const tabs = [
-    { key: 'original', label: '原文', icon: <FileTextOutlined />, children: renderOriginal() },
-    { key: 'vectors', label: '向量化', icon: <ThunderboltOutlined />, children: renderVectors() },
+    { key: 'original', label: '原文证据', icon: <FileTextOutlined />, children: renderOriginal() },
+    { key: 'vectors', label: '语义索引', icon: <ThunderboltOutlined />, children: renderVectors() },
   ];
-  if (isTable) {
-    tabs.push({ key: 'rows', label: 'PG 结构', icon: <DatabaseOutlined />, children: renderRows() });
+  if (isStructured) {
+    tabs.push({ key: 'rows', label: '结构化记录', icon: <DatabaseOutlined />, children: renderRows() });
   }
   if (isImage) {
-    tabs.push({ key: 'triplets', label: '三元组', icon: <BranchesOutlined />, children: renderTriplets() });
-    tabs.push({ key: 'graph', label: '图谱', icon: <ApartmentOutlined />, children: renderGraph() });
+    tabs.push({ key: 'triplets', label: docType === 'fta' ? 'FTA 节点/边' : 'RBD 节点/边', icon: <BranchesOutlined />, children: renderTriplets() });
+    tabs.push({ key: 'graph', label: '图谱投影', icon: <ApartmentOutlined />, children: renderGraph() });
   }
 
   return (
