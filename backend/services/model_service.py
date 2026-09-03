@@ -8,10 +8,26 @@ from fastapi import HTTPException
 
 from backend.storage.postgres_client import postgres_client
 
+
+def _as_llm_model_config(model: Dict) -> Dict:
+    """Convert one validated llm_models row to the parser-facing config."""
+    return {
+        "provider": model["provider"],
+        "api_key": model["api_key"],
+        "api_url": model["api_url"],
+        "model_name": model["model_name"],
+        "base_url": model["base_url"],
+        "temperature": model["temperature"],
+        "max_tokens": model["max_tokens"],
+        "top_p": model["top_p"],
+        "timeout": model["timeout"],
+    }
+
+
 def resolve_llm_model_config(model_id: Optional[str]) -> Optional[Dict]:
     """解析/校验用户选择的 Chat(LLM) 模型，返回 model_config dict。
 
-    - model_id 为空：返回系统默认 LLM 模型配置；不存在则返回 None
+    - model_id 为空：返回系统默认 LLM 模型配置；不存在则抛 HTTPException(400)
     - model_id 非空：校验模型存在且 model_type='llm'，否则抛 HTTPException(400)
     所有 LLM 使用场景统一走 llm_models 表，杜绝硬编码默认回退。
     """
@@ -25,17 +41,7 @@ def resolve_llm_model_config(model_id: Optional[str]) -> Optional[Dict]:
                 detail=f"所选模型「{model.get('name')}」类型为 {model.get('model_type')}，"
                        f"解析/图谱生成需要 Chat(LLM) 类型模型，请到模型管理选择正确的模型类型。"
             )
-        return {
-            "provider": model["provider"],
-            "api_key": model["api_key"],
-            "api_url": model["api_url"],
-            "model_name": model["model_name"],
-            "base_url": model["base_url"],
-            "temperature": model["temperature"],
-            "max_tokens": model["max_tokens"],
-            "top_p": model["top_p"],
-            "timeout": model["timeout"],
-        }
+        return _as_llm_model_config(model)
     # 未指定模型 → 走 llm_models 表的默认 LLM
     default_llm = postgres_client.get_default_model_by_type("llm")
     if not default_llm:
@@ -43,17 +49,25 @@ def resolve_llm_model_config(model_id: Optional[str]) -> Optional[Dict]:
             status_code=400,
             detail="未配置默认 Chat(LLM) 模型，无法执行该操作。请到「模型管理」页面添加 model_type=llm 的模型并设为默认。"
         )
-    return {
-        "provider": default_llm["provider"],
-        "api_key": default_llm["api_key"],
-        "api_url": default_llm["api_url"],
-        "model_name": default_llm["model_name"],
-        "base_url": default_llm["base_url"],
-        "temperature": default_llm["temperature"],
-        "max_tokens": default_llm["max_tokens"],
-        "top_p": default_llm["top_p"],
-        "timeout": default_llm["timeout"],
-    }
+    return _as_llm_model_config(default_llm)
+
+
+def resolve_optional_llm_model_config(model_id: Optional[str]) -> Optional[Dict]:
+    """Resolve an optional LLM for the ICP type-driven parser.
+
+    An explicitly selected model keeps the same strict 404/type validation as
+    :func:`resolve_llm_model_config`.  When the caller did not select a model,
+    the configured default is used if present; otherwise ``None`` is returned
+    so deterministic parsing can continue and record vision/projection
+    degradation in its normal parser result.
+
+    This resolver is intentionally not used by the legacy documents or Dify
+    paths, whose existing strict preflight remains unchanged.
+    """
+    if model_id:
+        return resolve_llm_model_config(model_id)
+    default_llm = postgres_client.get_default_model_by_type("llm")
+    return _as_llm_model_config(default_llm) if default_llm else None
 
 
 def require_embedding_model_configured():

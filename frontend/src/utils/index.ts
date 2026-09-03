@@ -1,12 +1,37 @@
+import DOMPurify from 'dompurify';
+import { Marked } from 'marked';
+
 // ===== formatMarkdown 处理函数 =====
-// 正则顺序不能乱（契约）：提取 img → escapeHtml → 还原 img → 引用替换 → code block →
-// markdown 图片 → 表格（换行替换前） → inline code → bold → \n→<br>
 
 export interface Citation {
+  evidence_id?: string;
+  status?: string;
+  answer_citation_id?: number;
+  doc_id?: string;
   doc_name?: string;
   title?: string;
+  display_summary?: string;
   content?: string;
+  snippet?: string;
+  doc_type?: string;
+  source_ref?: string;
+  record_id?: string;
+  image_url?: string;
+  document_metadata?: Record<string, unknown>;
   [k: string]: unknown;
+}
+
+/** 按正文首次出现顺序返回本轮引用编号，兼容后端的 `[^n]` 标记。 */
+export function extractCitationNumbers(text?: string): number[] {
+  const numbers: number[] = [];
+  const seen = new Set<number>();
+  for (const match of String(text || '').matchAll(/\[\^(\d+)\]/g)) {
+    const number = Number.parseInt(match[1], 10);
+    if (number < 1 || seen.has(number)) continue;
+    seen.add(number);
+    numbers.push(number);
+  }
+  return numbers;
 }
 
 export function escapeHtml(s: string): string {
@@ -14,7 +39,8 @@ export function escapeHtml(s: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 // 图片地址归一化：绝对 URL 若指向本站 /images 静态资源，转成相对路径
@@ -31,96 +57,136 @@ function toRelImageSrc(u: string): string {
   return u;
 }
 
+function safeImageSrc(value: string): string {
+  const raw = String(value || '').trim();
+  if (!raw || /[\u0000-\u001f\u007f\s]/.test(raw)) return '';
+  const normalized = toRelImageSrc(raw);
+  if (normalized.startsWith('/images/')) return normalized;
+  try {
+    const parsed = new URL(normalized);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.toString() : '';
+  } catch {
+    return '';
+  }
+}
+
+function renderImage(src: string, alt = ''): string {
+  const safeSrc = safeImageSrc(src);
+  if (!safeSrc) return escapeHtml(alt || '[图片地址无效]');
+  return (
+    `<img class="diagnosis-markdown-image" src="${escapeHtml(safeSrc)}" `
+    + `alt="${escapeHtml(alt)}" loading="lazy">`
+  );
+}
+
+const markdown = new Marked({
+  gfm: true,
+  breaks: true,
+  renderer: {
+    // 工程资料内容不能通过回答文本注入任意 HTML；允许的图片单独走白名单。
+    html({ text }) {
+      return escapeHtml(text);
+    },
+    image({ href, text }) {
+      return renderImage(href, text);
+    },
+  },
+});
+
+/**
+ * 兼容旧会话中偶发的 JSON 风格结构转义，只修复行首 Markdown 标记。
+ * 代码块、Windows 路径和 HMC 中间的 ``**`` 等业务字符保持原样。
+ */
+export function normalizeLegacyMarkdown(text: string): string {
+  const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
+  const continuationLines = lines.filter((line) => /\\\s*$/.test(line)).length;
+  const stripLegacyContinuations = continuationLines >= 2;
+  let fenced = false;
+
+  return lines.map((line) => {
+    const isFence = /^\s*(?:```|~~~)/.test(line);
+    if (isFence) {
+      fenced = !fenced;
+      return line;
+    }
+    if (fenced) return line;
+
+    let normalized = line
+      .replace(/^(\s*)\\(#{1,6}(?:\s|$))/, '$1$2')
+      .replace(/^(\s*)\\([-+*]\s+)/, '$1$2')
+      .replace(/^(\s*\d+)\\([.)]\s+)/, '$1$2');
+    if (stripLegacyContinuations) normalized = normalized.replace(/\\\s*$/, '');
+    // Some local-model answers contain literal ``**标题**`` markers (or an
+    // escaped variant) instead of rendering them as emphasis.  They make the
+    // diagnosis card look like an internal template.  Remove only paired
+    // markers whose body contains no ``*``; an HMC wildcard such as
+    // ``91860001**0001`` has no closing pair and is therefore preserved.
+    normalized = normalized.replace(
+      /(?<![A-Za-z0-9])\\?\*\\?\*([^*\n]+?\S)\\?\*\\?\*(?![A-Za-z0-9])/g,
+      '$1',
+    );
+    return normalized;
+  }).join('\n');
+}
+
 // 渲染内联引用 HTML（React 中需要事件委托，这里保留 data 属性由组件绑定）
 export function formatMarkdown(
   text: string,
   citations?: Citation[],
-  msgKey = 0,
+  msgKey: string | number = 0,
 ): string {
-  let result = text || '';
+  let result = normalizeLegacyMarkdown(text);
 
-  // 1. 提取 <img> 标签，用占位符替换避免被转义
-  const imgPlaceholders: string[] = [];
-  result = result.replace(/<img\s+[^>]*src=["']([^"']+)["'][^>]*\/?>/gi, (match, src) => {
-    const idx = imgPlaceholders.length;
-    imgPlaceholders.push(src);
-    return `\x00IMG${idx}\x00`;
-  });
-
-  // 2. 转义剩余文本
-  result = escapeHtml(result);
-
-  // 3. 还原 <img>
-  result = result.replace(/\x00IMG(\d+)\x00/g, (_, idx) => {
-    let src = imgPlaceholders[parseInt(idx, 10)] || '';
-    src = toRelImageSrc(src).replace(/[`\s]/g, '');
-    return `<img src="${src}" style="max-width:100%;border-radius:8px;margin:8px 0;" loading="lazy" alt="图片">`;
-  });
-
-  // 4. 引用标记 [^n] → 内联引用
-  if (citations && citations.length > 0) {
-    let citeSeq = 0;
-    result = result.replace(/\[\^(\d+)\]/g, (_m, n) => {
-      const idx = parseInt(n, 10) - 1;
-      const c = citations[idx];
-      if (!c) return '';
-      citeSeq += 1;
-      const label = c.doc_name || c.title || `引用${n}`;
-      const body = escapeHtml(c.content || c.title || '');
-      const title = escapeHtml(c.title || '');
-      return (
-        `<span class="inline-cite" data-cite-key="inline-cite-${msgKey}-${citeSeq}">📄 ${label} <span class="cite-caret">▾</span></span>` +
-        `<span class="inline-cite-body" id="inline-cite-${msgKey}-${citeSeq}" style="display:none;">` +
-        `<strong>${title}</strong><br>${body}</span>`
-      );
+  // 新回答使用紧凑的 answer_citation_id，旧回答可能保留稀疏的 id。
+  // 不能只按数组下标查找，否则 [^9] 会被错误绑定到数组第 9 项或直接丢失。
+  const citationByNumber = new Map<number, Citation>();
+  (citations || []).forEach((citation, index) => {
+    const explicitNumbers = [citation.answer_citation_id, citation.id]
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value) && value > 0);
+    const numbers = explicitNumbers.length ? explicitNumbers : [index + 1];
+    numbers.forEach((number) => {
+      if (!citationByNumber.has(number)) citationByNumber.set(number, citation);
     });
-  } else {
-    result = result.replace(/\[\^(\d+)\]/g, '');
-  }
-
-  // 5. 代码块
-  result = result.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, lang, code) => {
-    return `<pre><code class="lang-${lang || ''}">${escapeHtml(code)}</code></pre>`;
   });
 
-  // 6. markdown 图片
-  result = result.replace(/!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g, (_m, alt, url) => {
-    return `<img src="${toRelImageSrc(url)}" alt="${escapeHtml(alt)}" style="max-width:100%;border-radius:8px;">`;
+  // 允许工程图证据使用历史 <img> 形式，其余原始 HTML 由 renderer 转义。
+  const rawImages: string[] = [];
+  result = result.replace(/<img\s+[^>]*src=["']([^"']+)["'][^>]*\/?>/gi, (_match, src) => {
+    const index = rawImages.push(String(src)) - 1;
+    return `\uE100RAWIMAGE${index}\uE101`;
   });
 
-  // 7. markdown 表格（必须在内联 code / 换行处理之前）
-  result = result.replace(/(^\|[^\n]+\|\s*$\n)(^\|[\s:|-]+\|\s*$\n)?((?:\|[^\n]+\|\s*$\n)*)/gm, (whole) => {
-    const lines = whole.trim().split('\n').filter((l: string) => l.trim().startsWith('|'));
-    if (lines.length < 2) return whole;
-    const parseRow = (row: string) =>
-      row
-        .trim()
-        .replace(/^\|/, '')
-        .replace(/\|$/, '')
-        .split('|')
-        .map((cell) => cell.trim());
-    const header = parseRow(lines[0]);
-    const bodyRows = lines.slice(2).map(parseRow);
-    let html = '<table style="width:100%;border-collapse:collapse;margin:8px 0;font-size:13px;">';
-    html += '<thead><tr>' + header.map((h) => `<th style="border:1px solid #ddd;padding:6px 10px;background:rgba(0,0,0,0.05);">${h}</th>`).join('') + '</tr></thead>';
-    html += '<tbody>';
-    for (const row of bodyRows) {
-      html += '<tr>' + row.map((cell) => `<td style="border:1px solid #ddd;padding:6px 10px;">${cell}</td>`).join('') + '</tr>';
-    }
-    html += '</tbody></table>';
-    return html;
+  // Marked 不负责项目特有的 [^n] 引用；先换为不可碰撞占位符，解析后再还原。
+  const citationHtml: string[] = [];
+  result = result.replace(/\[\^(\d+)\]/g, (_match, rawNumber) => {
+    const number = Number.parseInt(rawNumber, 10);
+    const citation = citationByNumber.get(number);
+    if (!citation) return '';
+    const sequence = citationHtml.length + 1;
+    const label = escapeHtml(String(citation.doc_name || citation.title || `引用${number}`));
+    citationHtml.push(
+      `<button class="inline-cite" type="button" data-cite-message-key="${escapeHtml(String(msgKey))}" `
+      + `data-cite-number="${number}" aria-expanded="false" aria-controls="diagnosis-evidence-rail" `
+      + `title="在证据栏定位：${label}" aria-label="在证据栏查看来源 ${number}：${label}">[${number}]</button>`,
+    );
+    return `\uE100CITATION${sequence - 1}\uE101`;
   });
 
-  // 8. 行内代码
-  result = result.replace(/`([^`\n]+)`/g, (_m, code) => `<code style="background:rgba(0,0,0,0.06);padding:1px 5px;border-radius:4px;font-size:0.92em;">${code}</code>`);
+  let html = markdown.parse(result, { async: false });
+  html = html.replace(/\uE100RAWIMAGE(\d+)\uE101/g, (_match, rawIndex) => (
+    renderImage(rawImages[Number.parseInt(rawIndex, 10)] || '', '图片')
+  ));
+  html = html.replace(/\uE100CITATION(\d+)\uE101/g, (_match, rawIndex) => (
+    citationHtml[Number.parseInt(rawIndex, 10)] || ''
+  ));
 
-  // 9. 加粗
-  result = result.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-
-  // 10. 换行
-  result = result.replace(/\n/g, '<br>');
-
-  return result;
+  return DOMPurify.sanitize(html, {
+    ALLOW_DATA_ATTR: true,
+    ADD_ATTR: ['loading', 'role', 'tabindex', 'type', 'aria-controls'],
+    FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'form'],
+    FORBID_ATTR: ['style'],
+  });
 }
 
 // ===== token 估算（中文 1.5 字/token、英文 4 字符/token） =====
@@ -138,20 +204,50 @@ export function tokenProgressColor(percent: number): string {
 }
 
 // ===== 时间格式化 =====
+function parseServerDateTime(value?: string): Date | null {
+  if (!value) return null;
+  const raw = String(value).trim();
+  // 后端部分 TIMESTAMP WITHOUT TIME ZONE 字段实际保存 UTC。无时区值必须先补
+  // UTC 标识，再统一转换为北京时间；已有偏移的时间继续遵循其绝对时间语义。
+  const hasTimezone = /(?:z|[+-]\d{2}:?\d{2})$/i.test(raw);
+  const looksLikeServerTimestamp = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(raw);
+  const normalized = looksLikeServerTimestamp && !hasTimezone
+    ? `${raw.replace(' ', 'T')}Z`
+    : raw;
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function shanghaiDateParts(date: Date, includeSeconds: boolean) {
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    ...(includeSeconds ? { second: '2-digit' } : {}),
+    hourCycle: 'h23',
+  }).formatToParts(date);
+  return (type: Intl.DateTimeFormatPartTypes) => (
+    parts.find((part) => part.type === type)?.value || ''
+  );
+}
+
 export function formatDateTime(iso?: string): string {
   if (!iso) return '';
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return String(iso);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  const date = parseServerDateTime(iso);
+  if (!date) return String(iso);
+  const get = shanghaiDateParts(date, true);
+  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}:${get('second')}`;
 }
 
 export function formatTimeShort(iso?: string): string {
   if (!iso) return '';
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return String(iso);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const date = parseServerDateTime(iso);
+  if (!date) return String(iso);
+  const get = shanghaiDateParts(date, false);
+  return `${get('month')}-${get('day')} ${get('hour')}:${get('minute')}`;
 }
 
 // ===== 文档状态映射（含 ICP 类型驱动文档状态） =====
@@ -159,9 +255,9 @@ export const DOC_STATUS_LABEL: Record<string, string> = {
   uploaded: '已上传',
   parsing: '解析中',
   indexed: '已索引',
-  kg_pending: '待生成图谱',
-  generating_kg: '图谱生成中',
-  kg_done: '图谱已生成',
+  kg_pending: '待自动图处理',
+  generating_kg: '自动图处理中',
+  kg_done: '图数据已就绪',
   completed: '已完成',
   failed: '失败',
   deleting: '删除中',

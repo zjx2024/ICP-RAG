@@ -6,6 +6,66 @@ import requests
 from typing import Dict, List, Optional, Any, Tuple
 from backend.config.config import config
 
+
+PROPERTY_KEY_DEFINITIONS = (
+    ("name", "TEXT", "SINGLE"),
+    ("entity_type", "TEXT", "SINGLE"),
+    ("description", "TEXT", "SINGLE"),
+    ("doc_id", "TEXT", "LIST"),
+    ("kb_id", "TEXT", "SINGLE"),
+    ("project_id", "TEXT", "SINGLE"),
+    ("tenant_id", "TEXT", "SINGLE"),
+    ("source", "TEXT", "SINGLE"),
+    ("source_id", "TEXT", "LIST"),
+    ("created_at", "TEXT", "SINGLE"),
+    ("relation_type", "TEXT", "SINGLE"),
+    ("keywords", "TEXT", "LIST"),
+    ("weight", "INT", "SINGLE"),
+    ("level", "INT", "SINGLE"),
+    ("probability", "DOUBLE", "SINGLE"),
+    ("role_in_fault_tree", "TEXT", "SINGLE"),
+    ("gate_type", "TEXT", "SINGLE"),
+    ("gate_group", "TEXT", "SINGLE"),
+    ("threshold", "INT", "SINGLE"),
+    ("action_type", "TEXT", "SINGLE"),
+    ("pagerank", "DOUBLE", "SINGLE"),
+    ("communities", "TEXT", "LIST"),
+    ("similarity_score", "DOUBLE", "SINGLE"),
+    ("confidence", "DOUBLE", "SINGLE"),
+    ("summary", "TEXT", "SINGLE"),
+    ("original_id", "TEXT", "SINGLE"),
+    ("description_parts", "TEXT", "SINGLE"),
+    ("keywords_parts", "TEXT", "SINGLE"),
+    ("weight_parts", "TEXT", "SINGLE"),
+    # structured-projector v5 physical identity fields.  Both are TEXT so the
+    # existing Entity schema can append them without rewriting stored vertices.
+    ("canonical_entity_id", "TEXT", "SINGLE"),
+    ("identity_scope", "TEXT", "SINGLE"),
+)
+
+ENTITY_VERTEX_PROPERTIES = (
+    "name", "entity_type", "description", "summary", "source_id", "pagerank",
+    "communities", "project_id", "doc_id", "kb_id", "tenant_id", "created_at",
+    "weight", "level", "probability", "keywords", "description_parts",
+    "keywords_parts", "canonical_entity_id", "identity_scope",
+)
+ENTITY_VERTEX_NULLABLE_KEYS = (
+    "summary", "pagerank", "communities", "project_id", "tenant_id", "weight",
+    "level", "probability", "keywords", "description_parts", "keywords_parts",
+    "canonical_entity_id", "identity_scope",
+)
+
+DYNAMIC_EDGE_PROPERTIES = (
+    "description", "weight", "keywords", "source_id", "project_id", "doc_id",
+    "kb_id", "tenant_id", "created_at", "probability", "gate_type",
+    "gate_group", "threshold", "description_parts", "keywords_parts",
+    "weight_parts",
+)
+DYNAMIC_EDGE_NULLABLE_KEYS = (
+    "keywords", "probability", "gate_type", "gate_group", "threshold",
+    "description_parts", "keywords_parts", "weight_parts",
+)
+
 class HugeGraphClient:
     def __init__(self):
         self.host = config.HUGEGRAPH_HOST
@@ -60,39 +120,7 @@ class HugeGraphClient:
         print("Schema initialization completed (existing items skipped)")
     
     def _create_property_keys(self):
-        props = [
-            ("name", "TEXT", "SINGLE"),
-            ("entity_type", "TEXT", "SINGLE"),
-            ("description", "TEXT", "SINGLE"),
-            ("doc_id", "TEXT", "LIST"),
-            ("kb_id", "TEXT", "SINGLE"),
-            ("project_id", "TEXT", "SINGLE"),
-            ("tenant_id", "TEXT", "SINGLE"),
-            ("source", "TEXT", "SINGLE"),
-            ("source_id", "TEXT", "LIST"),
-            ("created_at", "TEXT", "SINGLE"),
-            ("relation_type", "TEXT", "SINGLE"),
-            ("keywords", "TEXT", "LIST"),
-            ("weight", "INT", "SINGLE"),
-            ("level", "INT", "SINGLE"),
-            ("probability", "DOUBLE", "SINGLE"),
-            ("role_in_fault_tree", "TEXT", "SINGLE"),
-            ("gate_type", "TEXT", "SINGLE"),
-            ("gate_group", "TEXT", "SINGLE"),
-            ("threshold", "INT", "SINGLE"),
-            ("action_type", "TEXT", "SINGLE"),
-            ("pagerank", "DOUBLE", "SINGLE"),
-            ("communities", "TEXT", "LIST"),
-            ("similarity_score", "DOUBLE", "SINGLE"),
-            ("confidence", "DOUBLE", "SINGLE"),
-            ("summary", "TEXT", "SINGLE"),
-            ("original_id", "TEXT", "SINGLE"),
-            ("description_parts", "TEXT", "SINGLE"),
-            ("keywords_parts", "TEXT", "SINGLE"),
-            ("weight_parts", "TEXT", "SINGLE")
-        ]
-        
-        for name, data_type, cardinality in props:
+        for name, data_type, cardinality in PROPERTY_KEY_DEFINITIONS:
             try:
                 response = self.session.get(self._get_schema_url(f"/schema/propertykeys/{name}"))
                 if response.status_code == 404:
@@ -134,14 +162,8 @@ class HugeGraphClient:
                 "nullable_keys": ["pagerank", "communities", "project_id", "tenant_id"]
             },
             "Entity": {
-                "properties": ["name", "entity_type", "description", "summary",
-                              "source_id", "pagerank", "communities",
-                              "project_id", "doc_id", "kb_id", "tenant_id", "created_at",
-                              "weight", "level", "probability", "keywords",
-                              "description_parts", "keywords_parts"],
-                "nullable_keys": ["summary", "pagerank", "communities", "project_id", "tenant_id",
-                                  "weight", "level", "probability", "keywords",
-                                  "description_parts", "keywords_parts"]
+                "properties": list(ENTITY_VERTEX_PROPERTIES),
+                "nullable_keys": list(ENTITY_VERTEX_NULLABLE_KEYS),
             },
             "Organization": {
                 "properties": ["name", "entity_type", "description", "source_id", "pagerank",
@@ -278,31 +300,21 @@ class HugeGraphClient:
                 has_target_label = existing_label.get("target_label") is not None
                 
                 if not has_source_label or not has_target_label:
-                    print(f"Updating edge label '{label}' - recreating with correct configuration")
-                    
-                    delete_response = self.session.delete(self._get_schema_url(f"/schema/edgelabels/{label}"))
-                    if delete_response.status_code == 204:
-                        print(f"Deleted old edge label '{label}'")
-                        time.sleep(0.5)
-                        
-                        data = {
-                            "name": label,
-                            "frequency": "SINGLE",
-                            "source_label": source_label,
-                            "target_label": target_label,
-                            "properties": properties,
-                            "nullable_keys": nullable_keys or []
-                        }
-                        create_response = self.session.post(self._get_schema_url("/schema/edgelabels"), json=data)
-                        if create_response.status_code == 201:
-                            print(f"Successfully recreated edge label '{label}'")
-                        else:
-                            print(f"Failed to recreate edge label '{label}': {create_response.text}")
-                    else:
-                        print(f"Failed to delete old edge label '{label}': {delete_response.text}")
+                    # Deleting an edge label also deletes its edges in
+                    # HugeGraph.  Startup schema migration must never perform
+                    # that destructive repair.  Property additions are handled
+                    # independently by the append-only path below; endpoint
+                    # metadata requires an explicit offline migration.
+                    print(
+                        f"Warning: Edge label '{label}' lacks source/target "
+                        "metadata; refusing destructive automatic recreation"
+                    )
+                    return False
+                return True
         except Exception as e:
             print(f"Failed to update edge label {label}: {e}")
-            pass
+            return False
+        return True
     
     def _create_edge_labels(self):
         edge_labels_def = {
@@ -391,12 +403,8 @@ class HugeGraphClient:
                                                   definition["nullable_keys"])
     
     def create_edge_label_dynamic(self, label: str):
-        default_props = ["description", "weight", "keywords", "source_id",
-                         "project_id", "doc_id", "kb_id", "tenant_id", "created_at",
-                         "probability", "gate_type", "gate_group", "threshold",
-                         "description_parts", "keywords_parts", "weight_parts"]
-        default_nullable = ["keywords", "probability", "gate_type", "gate_group", "threshold",
-                            "description_parts", "keywords_parts", "weight_parts"]
+        default_props = list(DYNAMIC_EDGE_PROPERTIES)
+        default_nullable = list(DYNAMIC_EDGE_NULLABLE_KEYS)
         
         try:
             response = self.session.get(self._get_schema_url(f"/schema/edgelabels/{label}"))
@@ -645,7 +653,7 @@ class HugeGraphClient:
             print(f"Batch insert exception: {e}")
             return False
     
-    def get_vertices_by_kb(self, kb_id: str, label: str = None, limit: int = 1000) -> List[Dict]:
+    def get_vertices_by_kb(self, kb_id: str, label: str = None, limit: int = 10000) -> List[Dict]:
         if self._use_mock:
             return self._mock_client.get_vertices_by_kb(kb_id, label)
         
@@ -673,19 +681,49 @@ class HugeGraphClient:
         except Exception as e:
             print(f"Get vertices by kb failed: {e}")
             return []
+
+    def get_vertex_by_id(self, vertex_id: str) -> Optional[Dict]:
+        """Read one CUSTOMIZE_STRING vertex without relying on a secondary index.
+
+        HugeGraph's offset pagination can briefly miss an item while a LIST or
+        secondary-indexed property is being updated.  Projection verification
+        uses this direct lookup only for expected IDs absent from the bulk scan.
+        """
+
+        if self._use_mock:
+            vertex = self._mock_client.vertices.get(vertex_id)
+            return dict(vertex) if vertex else None
+        try:
+            import urllib.parse
+
+            encoded_vid = urllib.parse.quote(self._quote_vid(vertex_id), safe="")
+            response = self.session.get(
+                self._get_graph_url(f"/vertices/{encoded_vid}")
+            )
+            if response.status_code != 200:
+                return None
+            value = response.json()
+            return value if isinstance(value, dict) else None
+        except Exception as exc:
+            print(f"Get vertex by id failed: {exc}")
+            return None
     
-    def get_edges_by_kb(self, kb_id: str, label: str = None, limit: int = 1000) -> List[Dict]:
+    def get_edges_by_kb(self, kb_id: str, label: str = None, limit: int = 10000) -> List[Dict]:
         if self._use_mock:
             return self._mock_client.get_edges_by_kb(kb_id, label)
         
         try:
+            # HugeGraph 的 ``properties={kb_id: ...}`` 查询依赖每个 edge label
+            # 都存在对应索引。动态领域关系（例如 has_fault_mode、series_to）
+            # 没有逐标签索引时，服务会返回空列表，即使边已经成功写入。这里按
+            # label（若指定）分页读取，再在客户端严格过滤 kb_id，确保投影读回、
+            # 回滚和删除不会把“缺索引”误判成“没有边”。
             all_edges = []
             offset = 0
             while True:
                 params = {"limit": limit, "offset": offset}
                 if label:
                     params["label"] = label
-                params["properties"] = json.dumps({"kb_id": kb_id})
                 response = self.session.get(
                     self._get_graph_url("/edges"),
                     params=params
@@ -698,7 +736,11 @@ class HugeGraphClient:
                     offset += limit
                 else:
                     break
-            return all_edges
+            return [
+                edge
+                for edge in all_edges
+                if (edge.get("properties") or {}).get("kb_id") == kb_id
+            ]
         except Exception as e:
             print(f"Get edges by kb failed: {e}")
             return []
@@ -857,8 +899,17 @@ class HugeGraphClient:
         if isinstance(src, str):
             src = [s for s in src.split(",") if s]
         if src:
-            new_src = [s for s in src if not (str(s) == doc_id or str(s).startswith(f"{doc_id}_"))]
-            updated["source_id"] = ",".join(new_src)
+            new_src = [
+                s
+                for s in src
+                if not (
+                    str(s) == doc_id
+                    or str(s).startswith(f"{doc_id}_")
+                    or str(s) == f"structured-doc:{doc_id}"
+                    or str(s).startswith(f"projection:{doc_id}:")
+                )
+            ]
+            updated["source_id"] = new_src
 
         return updated
 
@@ -980,10 +1031,7 @@ class HugeGraphClient:
                 else:
                     new_doc_id_list = doc_id_list
 
-                    # 用逗号分隔字符串序列化 LIST 字段，与项目约定保持一致
-                    updated_props = {
-                        "doc_id": ",".join(new_doc_id_list)
-                    }
+                    updated_props = {"doc_id": new_doc_id_list}
                     # 同步裁剪 description_parts / keywords_parts / weight_parts
                     trimmed = self._trim_parts_by_doc(props, doc_id)
                     if trimmed:
@@ -991,13 +1039,11 @@ class HugeGraphClient:
                         print(f"[KG-DELETE] Edge {eid} PUT payload: keys={list(updated_props.keys())}, doc_id={updated_props.get('doc_id')}, source_id={updated_props.get('source_id','<not_set>')}")
                     else:
                         print(f"[KG-DELETE] Edge {eid} PUT (no parts): doc_id={updated_props.get('doc_id')}")
-                    encoded_eid = urllib.parse.quote(eid, safe='')
-                    update_response = self.session.put(
-                        self._get_graph_url(f"/edges/{encoded_eid}/properties"),
-                        json=updated_props
-                    )
-                    print(f"[KG-DELETE] Edge {eid} UPDATE response: status={update_response.status_code}, body={update_response.text[:200]}")
-                    if update_response.status_code == 200:
+                    replacement = dict(props)
+                    replacement.update(updated_props)
+                    update_ok = self.replace_edge_properties(eid, replacement)
+                    print(f"[KG-DELETE] Edge {eid} exact batch UPDATE: success={update_ok}")
+                    if update_ok:
                         updated_count += 1
                     else:
                         errors += 1
@@ -1151,30 +1197,8 @@ class HugeGraphClient:
                         if len(error_details) < 10:
                             error_details.append(err_msg)
                 else:
-                    # UPDATE 分支：先更新关键的 doc_id，再更新 *_parts 裁剪字段
-                    # 拆成两次 PUT，避免某个非关键字段类型不匹配导致整体失败
-                    encoded_vid = urllib.parse.quote(self._quote_vid(vid), safe='')
-                    vertex_updated = False
-
-                    # 1) 关键更新：doc_id（用逗号分隔字符串，与插入时的 doc_id_to_str 格式一致）
-                    doc_id_props = {"doc_id": ",".join(remaining_docs)}
-                    print(f"[KG-DELETE] Vertex {vid} PUT doc_id: value={doc_id_props['doc_id']}")
-                    resp1 = self.session.put(
-                        self._get_graph_url(f"/vertices/{encoded_vid}/properties"),
-                        json=doc_id_props
-                    )
-                    print(f"[KG-DELETE] Vertex {vid} doc_id PUT response: status={resp1.status_code}, body={resp1.text[:300]}")
-                    if resp1.status_code == 200:
-                        vertex_updated = True
-                        print(f"[KG-DELETE] UPDATED doc_id for vertex: {vid} (name={vname})")
-                    else:
-                        errors += 1
-                        err_msg = f"UPDATE doc_id for vertex {vid} (name={vname}) failed: HTTP {resp1.status_code}, body={resp1.text[:200]}"
-                        print(f"[KG-DELETE] {err_msg}")
-                        if len(error_details) < 10:
-                            error_details.append(err_msg)
-
-                    # 2) 非关键更新：裁剪 *_parts 字段（失败不影响 doc_id 更新结果）
+                    replacement = dict(props)
+                    replacement["doc_id"] = remaining_docs
                     trimmed = self._trim_parts_by_doc(props, doc_id)
                     if trimmed:
                         if "description" in trimmed and not trimmed["description"]:
@@ -1183,19 +1207,17 @@ class HugeGraphClient:
                             trimmed.pop("description", None)
                         if "keywords" in trimmed and not trimmed["keywords"]:
                             trimmed.pop("keywords", None)
-                        if trimmed:
-                            print(f"[KG-DELETE] Vertex {vid} PUT trimmed: keys={list(trimmed.keys())}")
-                            resp2 = self.session.put(
-                                self._get_graph_url(f"/vertices/{encoded_vid}/properties"),
-                                json=trimmed
-                            )
-                            print(f"[KG-DELETE] Vertex {vid} trimmed PUT response: status={resp2.status_code}, body={resp2.text[:300]}")
-                            if resp2.status_code != 200:
-                                print(f"[KG-DELETE] Non-critical trimmed update failed for vertex {vid}, "
-                                      f"doc_id was already updated: {resp2.text[:200]}")
-
+                        replacement.update(trimmed)
+                    vertex_updated = self.replace_vertex_properties(vid, replacement)
+                    print(f"[KG-DELETE] Vertex {vid} exact batch UPDATE: success={vertex_updated}")
                     if vertex_updated:
                         updated_count += 1
+                    else:
+                        errors += 1
+                        err_msg = f"UPDATE shared vertex {vid} (name={vname}) failed"
+                        print(f"[KG-DELETE] {err_msg}")
+                        if len(error_details) < 10:
+                            error_details.append(err_msg)
             except Exception as e:
                 errors += 1
                 import traceback
@@ -1238,70 +1260,106 @@ class HugeGraphClient:
     def get_vertices_by_kb_with_details(self, kb_id: str) -> List[Dict]:
         if self._use_mock:
             return self._mock_client.get_vertices_by_kb_with_details(kb_id)
-        
-        try:
-            all_vertices = []
-            offset = 0
-            limit = 1000
-            
-            while True:
-                params = {
-                    "limit": limit,
-                    "offset": offset,
-                    "properties": json.dumps({"kb_id": kb_id})
-                }
-                response = self.session.get(
-                    self._get_graph_url("/vertices"),
-                    params=params
-                )
-                if response.status_code == 200:
-                    result = response.json()
-                    vertices = result.get("vertices", [])
-                    if not vertices:
-                        break
-                    all_vertices.extend(vertices)
-                    offset += limit
-                else:
-                    break
-            
-            return all_vertices
-        except Exception as e:
-            print(f"Get vertices by kb with details failed: {e}")
-            return []
+
+        # Keep one pagination implementation.  HugeGraph 1.7 returns the last
+        # partial page again for offsets beyond the result set.  The former
+        # implementation only stopped on an empty page, so that partial page
+        # was repeated and projection cleanup tried to delete the same vertex
+        # more than once.  ``get_vertices_by_kb`` correctly stops when a page
+        # is shorter than ``limit``.
+        return self.get_vertices_by_kb(kb_id)
     
     def get_edges_by_kb_with_details(self, kb_id: str) -> List[Dict]:
         if self._use_mock:
             return self._mock_client.get_edges_by_kb_with_details(kb_id)
-        
+
+        return self.get_edges_by_kb(kb_id)
+
+    def replace_vertex_properties(self, vertex_id: str, properties: Dict) -> bool:
+        """Exactly override vertex properties through HugeGraph's batch API.
+
+        The single-vertex ``action=append`` endpoint appends LIST values and
+        therefore duplicates ``doc_id``/``source_id`` on an idempotent retry.
+        HugeGraph's batch update supports ``OVERRIDE`` for both scalar and
+        collection properties, which is the operation required by projection
+        contribution merge and rollback.
+        """
+
+        if self._use_mock:
+            vertex = self._mock_client.vertices.get(vertex_id)
+            if vertex is None:
+                return False
+            vertex["properties"] = dict(properties)
+            return True
+
+        import urllib.parse
         try:
-            all_edges = []
-            offset = 0
-            limit = 1000
-            
-            while True:
-                params = {
-                    "limit": limit,
-                    "offset": offset,
-                    "properties": json.dumps({"kb_id": kb_id})
-                }
-                response = self.session.get(
-                    self._get_graph_url("/edges"),
-                    params=params
-                )
-                if response.status_code == 200:
-                    result = response.json()
-                    edges = result.get("edges", [])
-                    if not edges:
-                        break
-                    all_edges.extend(edges)
-                    offset += limit
-                else:
-                    break
-            
-            return all_edges
-        except Exception as e:
-            print(f"Get edges by kb with details failed: {e}")
-            return []
+            encoded_vid = urllib.parse.quote(self._quote_vid(vertex_id), safe="")
+            response = self.session.get(self._get_graph_url(f"/vertices/{encoded_vid}"))
+            if response.status_code != 200:
+                return False
+            existing = response.json()
+            payload = {
+                "vertices": [
+                    {
+                        "id": vertex_id,
+                        "label": existing.get("label", "Entity"),
+                        "properties": dict(properties),
+                    }
+                ],
+                "update_strategies": {
+                    str(key): "OVERRIDE" for key in properties
+                },
+            }
+            updated = self.session.put(
+                self._get_graph_url("/vertices/batch"), json=payload
+            )
+            return updated.status_code == 200
+        except Exception as exc:
+            print(f"Replace vertex properties failed: {exc}")
+            return False
+
+    def replace_edge_properties(self, edge_id: str, properties: Dict) -> bool:
+        """Exactly override edge properties without assuming a client edge ID."""
+
+        if self._use_mock:
+            edge = self._mock_client.edges.get(edge_id)
+            if edge is None:
+                return False
+            edge["properties"] = dict(properties)
+            return True
+
+        import urllib.parse
+        try:
+            encoded_eid = urllib.parse.quote(str(edge_id), safe="")
+            response = self.session.get(self._get_graph_url(f"/edges/{encoded_eid}"))
+            if response.status_code != 200:
+                return False
+            existing = response.json()
+            payload = {
+                "edges": [
+                    {
+                        "id": existing.get("id", edge_id),
+                        "label": existing.get("label", "relation"),
+                        "outV": existing.get("outV"),
+                        "inV": existing.get("inV"),
+                        "outVLabel": existing.get("outVLabel", "Entity"),
+                        "inVLabel": existing.get("inVLabel", "Entity"),
+                        "properties": dict(properties),
+                    }
+                ],
+                "update_strategies": {
+                    str(key): "OVERRIDE" for key in properties
+                },
+                "check_vertex": True,
+            }
+            updated = self.session.put(
+                self._get_graph_url("/edges/batch"), json=payload
+            )
+            return updated.status_code == 200
+        except Exception as exc:
+            print(f"Replace edge properties failed: {exc}")
+            return False
     
     def update_vertex_properties(self, vertex_id: str, properties: Dict) -> bool:
         if self._use_mock:
@@ -1352,18 +1410,11 @@ class HugeGraphClient:
                     else:
                         incoming_docs = [str(value)] if value else []
                     new_docs = sorted(set(existing_docs + incoming_docs))
-                    existing_props["doc_id"] = ",".join(new_docs)
+                    existing_props["doc_id"] = new_docs
                 else:
                     existing_props[key] = value
 
-            update_data = {
-                "id": vertex_id,
-                "label": existing_vertex.get("label", "Entity"),
-                "properties": existing_props
-            }
-            
-            update_response = self.session.put(self._get_graph_url(f"/vertices/{encoded_vid}"), json=update_data)
-            return update_response.status_code == 200
+            return self.replace_vertex_properties(vertex_id, existing_props)
         except Exception as e:
             print(f"Update vertex properties failed: {e}")
             return False
@@ -1373,7 +1424,9 @@ class HugeGraphClient:
             return self._mock_client.update_edge_properties(edge_id, properties)
         
         try:
-            response = self.session.get(self._get_graph_url(f"/edges/{edge_id}"))
+            import urllib.parse
+            encoded_eid = urllib.parse.quote(str(edge_id), safe="")
+            response = self.session.get(self._get_graph_url(f"/edges/{encoded_eid}"))
             if response.status_code != 200:
                 return False
             
@@ -1431,20 +1484,11 @@ class HugeGraphClient:
                     else:
                         incoming_docs = [str(value)] if value else []
                     new_docs = sorted(set(existing_docs + incoming_docs))
-                    existing_props["doc_id"] = ",".join(new_docs)
+                    existing_props["doc_id"] = new_docs
                 else:
                     existing_props[key] = value
 
-            update_data = {
-                "id": edge_id,
-                "label": existing_edge.get("label", "relation"),
-                "outV": existing_edge.get("outV"),
-                "inV": existing_edge.get("inV"),
-                "properties": existing_props
-            }
-            
-            update_response = self.session.put(self._get_graph_url(f"/edges/{edge_id}"), json=update_data)
-            return update_response.status_code == 200
+            return self.replace_edge_properties(edge_id, existing_props)
         except Exception as e:
             print(f"Update edge properties failed: {e}")
             return False

@@ -62,6 +62,30 @@ class FtaCalculationTests(unittest.TestCase):
         result = calculate_fta(graph, mission_time=100)
         self.assertAlmostEqual(result["top_event_probability"], 1 - math.exp(-0.1), places=10)
 
+    def test_reconvergent_basic_event_blocks_recursive_probability(self):
+        graph = {
+            "root_fault_id": "top",
+            "vertices": [
+                {"id": "top", "label": "TopEvent", "properties": {"name": "TOP", "gate_type": "OR"}},
+                {"id": "gate", "label": "Gate", "properties": {"name": "G", "gate_type": "AND"}},
+                {"id": "a", "label": "BasicEvent", "properties": {"name": "A", "probability": 0.1}},
+                {"id": "b", "label": "BasicEvent", "properties": {"name": "B", "probability": 0.2}},
+            ],
+            "edges": [
+                {"source": "top", "target": "a"},
+                {"source": "top", "target": "gate"},
+                {"source": "gate", "target": "a"},
+                {"source": "gate", "target": "b"},
+            ],
+        }
+
+        result = calculate_fta(graph)
+
+        self.assertEqual([["A"]], result["minimal_cut_sets"])
+        self.assertIsNone(result["top_event_probability"])
+        self.assertTrue(result["shared_dependency_nodes"])
+        self.assertIn("禁止给出顶事件概率", result["probability_block_reason"])
+
 
 class RbdCalculationTests(unittest.TestCase):
     def test_parallel_paths(self):
@@ -122,6 +146,62 @@ class RbdCalculationTests(unittest.TestCase):
         result = calculate_rbd(graph)
         self.assertIsNone(result["system_reliability"])
         self.assertEqual(result["missing_reliability_blocks"], ["未知可靠度模块"])
+
+    def test_more_than_path_limit_fails_closed_instead_of_calculating_prefix(self):
+        vertices = [
+            {"id": "start", "label": "Start", "properties": {"name": "START"}},
+            {"id": "end", "label": "End", "properties": {"name": "END"}},
+        ]
+        edges = []
+        for index in range(13):
+            block_id = f"b{index}"
+            vertices.append(
+                {
+                    "id": block_id,
+                    "label": "ReliabilityBlock",
+                    "properties": {"name": f"B{index}", "reliability": 0.5},
+                }
+            )
+            edges.extend(
+                [
+                    {"source": "start", "target": block_id},
+                    {"source": block_id, "target": "end"},
+                ]
+            )
+
+        result = calculate_rbd({"vertices": vertices, "edges": edges})
+
+        self.assertEqual(12, result["success_path_count"])
+        self.assertTrue(result["path_limit_reached"])
+        self.assertIsNone(result["system_reliability"])
+        self.assertIn("禁止", result["calculation_limit_reason"])
+
+    def test_exactly_path_limit_is_not_misclassified_as_truncated(self):
+        vertices = [
+            {"id": "start", "label": "Start", "properties": {"name": "START"}},
+            {"id": "end", "label": "End", "properties": {"name": "END"}},
+        ]
+        edges = []
+        for index in range(12):
+            block_id = f"b{index}"
+            vertices.append(
+                {
+                    "id": block_id,
+                    "label": "ReliabilityBlock",
+                    "properties": {"name": f"B{index}", "reliability": 0.5},
+                }
+            )
+            edges.extend(
+                [
+                    {"source": "start", "target": block_id},
+                    {"source": block_id, "target": "end"},
+                ]
+            )
+
+        result = calculate_rbd({"vertices": vertices, "edges": edges})
+
+        self.assertFalse(result["path_limit_reached"])
+        self.assertAlmostEqual(1 - 0.5**12, result["system_reliability"], places=10)
 
 
 if __name__ == "__main__":

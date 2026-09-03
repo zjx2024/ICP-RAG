@@ -1,15 +1,73 @@
 """ICP 专用结构化数据与可靠性计算接口。"""
 from __future__ import annotations
 
+import asyncio
 import json
 
 from fastapi import APIRouter, Body, HTTPException, Query
 
+from backend.agent.tools.graph_traversal import run_graph_traversal
+from backend.icp.graph_authority import (
+    ENGINEERING_KB_IDS,
+    STRUCTURED_KB_ID,
+    reauthorize_graph_relations,
+)
 from backend.icp.repository import icp_repository
 from backend.icp.reliability import ReliabilityModelError, calculate_fta, calculate_rbd
 from backend.storage.postgres_client import postgres_client
 
 router = APIRouter(prefix="/icp-domain", tags=["ICP 故障诊断领域"])
+
+
+@router.post("/graph/traverse")
+async def traverse_authoritative_graph(request: dict = Body(...)):
+    """查询经 PostgreSQL 逐边再授权的 HugeGraph 多跳关系。
+
+    该接口只读且始终强制关系再授权。调用者不能关闭安全门，也不能查询
+    七类 ICP 投影之外的 HugeGraph 命名空间；深度、节点、边、路径和起点
+    数量继续由 traversal 核心的硬上限校验。
+    """
+
+    if not isinstance(request, dict):
+        raise HTTPException(status_code=422, detail="请求体必须为 JSON 对象")
+    payload = dict(request)
+    raw_kb_ids = payload.get("kb_ids", payload.get("kb_id", STRUCTURED_KB_ID))
+    if isinstance(raw_kb_ids, str):
+        kb_ids = [raw_kb_ids.strip()] if raw_kb_ids.strip() else []
+    elif isinstance(raw_kb_ids, (list, tuple)):
+        kb_ids = [str(item).strip() for item in raw_kb_ids if str(item).strip()]
+    else:
+        raise HTTPException(status_code=422, detail="kb_ids 必须为字符串或数组")
+    allowed_kb_ids = {STRUCTURED_KB_ID, *ENGINEERING_KB_IDS}
+    if not kb_ids or len(kb_ids) > len(allowed_kb_ids):
+        raise HTTPException(status_code=422, detail="kb_ids 数量或取值无效")
+    unknown = sorted(set(kb_ids) - allowed_kb_ids)
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail="不允许查询以下图投影：" + ", ".join(unknown),
+        )
+    payload["kb_ids"] = sorted(set(kb_ids))
+    payload["require_relation_reauthorization"] = True
+
+    result = await asyncio.to_thread(
+        run_graph_traversal,
+        payload,
+        reauthorize_relations=reauthorize_graph_relations,
+    )
+    if result.get("status") == "blocked":
+        errors = (result.get("diagnostics") or {}).get("errors") or []
+        raise HTTPException(
+            status_code=422,
+            detail=errors[0] if errors else "图查询参数不符合安全限制",
+        )
+    if result.get("status") == "failed":
+        errors = (result.get("diagnostics") or {}).get("errors") or []
+        raise HTTPException(
+            status_code=503,
+            detail=errors[0] if errors else "权威关系查询当前不可用",
+        )
+    return result
 
 
 @router.get("/functions/{doc_id}")

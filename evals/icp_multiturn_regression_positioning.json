@@ -1,0 +1,349 @@
+{
+  "name": "ICP 多轮回归集（一）代码查询、模糊现象与具体定位",
+  "version": "2026-09-03",
+  "description": "33 组多轮对话：精确 HMC 代码查询及跨文档补全、模糊现象定位与追问收窄、具体故障定位与现场验证。所有 expected_records 可在 test-docs/ 七类合成测试文档中回溯；合成数据不代表真实适航知识。",
+  "defaults": {
+    "assertions": {
+      "min_evidence": 1,
+      "min_citations": 1,
+      "required_event_types": ["answer", "done"],
+      "answer_not_contains": [
+        "待复核（未绑定已批准直接证据）",
+        "证据边界：部分说明未附可直接核验的来源"
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "MT-EXACT-01-icu-clamp",
+      "metadata": {"category": "精确代码查询与跨文档补全", "coverage": ["hmc_query", "fmeca_query"], "expected_records": ["91810001**0001", "FM-SYN-001", "MFL-SYN-001"]},
+      "turns": [
+        {"id": "code", "question": "查一下 LCN 91810001、HAMC **、HSC 0001 这条代码，它对应什么故障现象，维修上怎么处理？",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "required_tools": ["hmc_query"], "required_doc_types": ["hmc"], "answer_regex": ["91810001", "过压|钳位"]}},
+        {"id": "cross", "question": "这个故障模式在 FMECA 里记录的原因、局部影响和最终影响分别是什么？严酷度是多少？",
+         "metadata": {"checks": "必须把“这个故障模式”解析为上一轮的 ICU 输入过压钳位失效，不得泛化到整个电源子系统。"},
+         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "any_used_record_ids": ["FM-SYN-001"], "answer_regex": ["钳位|采样|驱动", "启动|掉电"]}}
+      ]
+    },
+    {
+      "id": "MT-EXACT-02-psua-intermittent",
+      "metadata": {"category": "精确代码查询与跨文档补全", "coverage": ["hmc_query", "mfl_query"], "expected_records": ["91810002**0003", "FM-SYN-006", "MFL-SYN-006"]},
+      "turns": [
+        {"id": "code", "question": "HMC 代码 91810002、HAMC 通配、HSC 0003 记录的故障是什么，应该怎样排查？",
+         "assertions": {"required_tools": ["hmc_query"], "required_doc_types": ["hmc"], "answer_regex": ["91810002", "间歇停机|散热|热循环"]}},
+        {"id": "api", "question": "这个故障能不能通过状态接口直接上报？如果不能，现场该用什么方式确认？",
+         "assertions": {"required_tools": ["mfl_query"], "required_used_doc_types": ["mfl"], "any_used_record_ids": ["MFL-SYN-006"], "answer_regex": ["否|不能直接上报|不可直接上报|热循环|复现"]}}
+      ]
+    },
+    {
+      "id": "MT-EXACT-03-pdu-false-trip",
+      "metadata": {"category": "精确代码查询与跨文档补全", "coverage": ["hmc_query", "fault_history_query"], "expected_records": ["91810004**0002", "FM-SYN-011", "HIS-SYN-004"]},
+      "turns": [
+        {"id": "code", "question": "LCN 91810004、HAMC **、HSC 0002 的含义是什么？现场按什么步骤处理？",
+         "assertions": {"required_tools": ["hmc_query"], "required_doc_types": ["hmc"], "answer_regex": ["91810004", "过流|保护|门限|采样"]}},
+        {"id": "history", "question": "以前有没有处理过同类误跳闸的案例？当时最后是怎么确认根因的？",
+         "assertions": {"required_tools": ["fault_history_query"], "required_used_doc_types": ["fault_history"], "required_answer_facets": ["history_time", "history_action", "history_result"]}}
+      ]
+    },
+    {
+      "id": "MT-EXACT-04-bcm-startup-timeout",
+      "metadata": {"category": "精确代码查询与跨文档补全", "coverage": ["hmc_query", "fta_query"], "expected_records": ["91820001**0001", "FM-SYN-016", "FTA-SYN-001"]},
+      "turns": [
+        {"id": "code", "question": "请给出 LCN 91820001、HAMC **、HSC 0001 对应的故障描述和维修方法。",
+         "assertions": {"required_tools": ["hmc_query"], "required_doc_types": ["hmc"], "answer_regex": ["91820001", "启动|时序|超时"]}},
+        {"id": "tree", "question": "这类故障在“系统无法完成启动”那棵故障树里处在什么位置？还涉及哪些基本事件？",
+         "assertions": {"required_tools": ["fta_query"], "required_used_doc_types": ["fta"], "any_used_record_ids": ["FTA-SYN-001"], "answer_regex": ["启动|基本事件|顶事件"]}}
+      ]
+    },
+    {
+      "id": "MT-EXACT-05-gppb-ecc",
+      "metadata": {"category": "精确代码查询与跨文档补全", "coverage": ["hmc_query", "fault_history_query"], "expected_records": ["91820003**0003", "FM-SYN-024", "HIS-SYN-008"]},
+      "turns": [
+        {"id": "code", "question": "91820003 这个 LCN 下 HAMC 通配、HSC 0003 是哪类故障？",
+         "assertions": {"required_tools": ["hmc_query"], "required_doc_types": ["hmc"], "answer_regex": ["91820003", "存储|校验"]}},
+        {"id": "history", "question": "有历史案例提到过类似现象吗？当时是温度相关还是器件本身问题？",
+         "assertions": {"required_tools": ["fault_history_query"], "required_used_doc_types": ["fault_history"], "any_used_record_ids": ["HIS-SYN-008"], "required_answer_facets": ["history_action", "history_result"]}}
+      ]
+    },
+    {
+      "id": "MT-EXACT-06-ngw-burst-loss",
+      "metadata": {"category": "精确代码查询与跨文档补全", "coverage": ["hmc_query", "fault_history_query"], "expected_records": ["91830003**0002", "FM-SYN-038", "HIS-SYN-013"]},
+      "turns": [
+        {"id": "code", "question": "帮我查 HMC 91830003 ** 0002 的完整记录，包括故障现象和维修方法。",
+         "assertions": {"required_tools": ["hmc_query"], "required_doc_types": ["hmc"], "answer_regex": ["91830003", "丢包|端口|队列"]}},
+        {"id": "history", "question": "历史上这类突发丢包是怎么定位的？验证结果是什么？",
+         "assertions": {"required_tools": ["fault_history_query"], "required_used_doc_types": ["fault_history"], "any_used_record_ids": ["HIS-SYN-013"], "required_answer_facets": ["history_time", "history_action", "history_result"]}}
+      ]
+    },
+    {
+      "id": "MT-EXACT-07-pcu-mapping",
+      "metadata": {"category": "精确代码查询与跨文档补全", "coverage": ["hmc_query", "fault_history_query"], "expected_records": ["91830004**0001", "FM-SYN-040", "HIS-SYN-014"]},
+      "turns": [
+        {"id": "code", "question": "LCN 91830004、HAMC **、HSC 0001 记录的是什么问题？怎么修？",
+         "assertions": {"required_tools": ["hmc_query"], "required_doc_types": ["hmc"], "answer_regex": ["91830004", "协议|映射"]}},
+        {"id": "history", "question": "以前出现过吗？当时是怎么确认是映射表问题而不是硬件故障的？",
+         "assertions": {"required_tools": ["fault_history_query"], "required_used_doc_types": ["fault_history"], "any_used_record_ids": ["HIS-SYN-014"], "required_answer_facets": ["history_action", "history_result"]}}
+      ]
+    },
+    {
+      "id": "MT-EXACT-08-oim-no-signal",
+      "metadata": {"category": "精确代码查询与跨文档补全", "coverage": ["hmc_query", "mfl_query"], "expected_records": ["91840003**0001", "FM-SYN-049", "MFL-SYN-049"]},
+      "turns": [
+        {"id": "code", "question": "查 LCN 91840003、HAMC **、HSC 0001，这条代码的故障现象和处置建议是什么？",
+         "assertions": {"required_tools": ["hmc_query"], "required_doc_types": ["hmc"], "answer_regex": ["91840003", "输出通道|无信号|OIM"]}},
+        {"id": "api", "question": "现场可以用哪个状态接口确认输出接口模块本身是否正常？",
+         "assertions": {"required_tools": ["mfl_query"], "required_used_doc_types": ["mfl"], "any_used_record_ids": ["MFL-SYN-049"], "answer_regex": ["GetOIMFaultStatus", "OIM"]}}
+      ]
+    },
+    {
+      "id": "MT-EXACT-09-cgm-clock-loss",
+      "metadata": {"category": "精确代码查询与跨文档补全", "coverage": ["hmc_query", "fault_history_query"], "expected_records": ["91860001**0001", "FM-SYN-064", "HIS-SYN-022"]},
+      "turns": [
+        {"id": "code", "question": "HMC 91860001 ** 0001 对应什么故障？维修上先做什么？",
+         "assertions": {"required_tools": ["hmc_query"], "required_doc_types": ["hmc"], "answer_regex": ["91860001", "时钟"]}},
+        {"id": "history", "question": "有没有系统时钟丢失的排故记录？当时换了什么、怎么验证的？",
+         "assertions": {"required_tools": ["fault_history_query"], "required_used_doc_types": ["fault_history"], "any_used_record_ids": ["HIS-SYN-022"], "required_answer_facets": ["history_time", "history_action", "history_result"]}}
+      ]
+    },
+    {
+      "id": "MT-EXACT-10-fan-stall",
+      "metadata": {"category": "精确代码查询与跨文档补全", "coverage": ["hmc_query", "fault_history_query"], "expected_records": ["91860003**0001", "FM-SYN-070", "HIS-SYN-024"]},
+      "turns": [
+        {"id": "code", "question": "请查出 LCN 91860003、HAMC **、HSC 0001 的故障描述与维修方法。",
+         "assertions": {"required_tools": ["hmc_query"], "required_doc_types": ["hmc"], "answer_regex": ["91860003", "风扇|堵转|转速"]}},
+        {"id": "distinguish", "question": "风扇堵转和风量衰减在现象上怎么区分？资料里各自的判据是什么？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "any_used_record_ids": ["FM-SYN-070", "FM-SYN-072"], "answer_regex": ["转速|电流", "风量|散热"]}}
+      ]
+    },
+    {
+      "id": "MT-EXACT-11-partial-lcn",
+      "metadata": {"category": "部分代码查询与候选收窄", "coverage": ["hmc_query"], "expected_records": ["91810001", "91810004", "91810005"], "note": "HMC 手册第 3 节：部分代码应返回候选列表并标注缺失段，不得用向量距离猜唯一代码"},
+      "turns": [
+        {"id": "partial", "question": "只知道故障代码开头是 9181，能帮我找出可能是哪些故障吗？",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "required_tools": ["hmc_query"], "required_doc_types": ["hmc"], "answer_not_contains": ["唯一可能就是", "只可能是这一条"]}},
+        {"id": "narrow", "question": "其中跟配电和保护有关的是哪几条？把完整代码和故障描述列出来。",
+         "assertions": {"required_tools": ["hmc_query"], "required_used_doc_types": ["hmc"], "answer_regex": ["91810004", "支路|过流|电流|配电"]}}
+      ]
+    },
+    {
+      "id": "MT-VAGUE-01-dead-after-power-on",
+      "metadata": {"category": "模糊现象定位与追问收窄", "coverage": ["fta_query", "fmeca_query", "function_locator"], "expected_records": ["FTA-SYN-001", "FM-SYN-001", "FM-SYN-010", "FM-SYN-016"]},
+      "turns": [
+        {"id": "symptom", "question": "加电以后整套设备完全没反应，指示灯也不亮，最可能卡在哪一段？",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "required_tools": ["fta_query"], "any_doc_types": ["fta", "fmeca", "function_locator"], "required_answer_facets": ["cause"], "answer_not_contains": ["一定是 BCM 损坏"]}},
+        {"id": "narrow", "question": "补充一下：供电输入侧测得电压是正常的，风扇会转，但系统进不了启动流程。这样能排除掉哪些候选？",
+         "assertions": {"required_tools": ["fmeca_query"], "any_used_doc_types": ["fmeca", "fta"], "answer_regex": ["启动|时序|ICU|PSU|PDU|BCM"], "answer_not_contains": ["仍然无法判断"]}}
+      ]
+    },
+    {
+      "id": "MT-VAGUE-02-random-restart",
+      "metadata": {"category": "模糊现象定位与追问收窄", "coverage": ["fta_query", "fmeca_query"], "expected_records": ["FTA-SYN-005", "FM-SYN-013", "FM-SYN-018", "FM-SYN-011"]},
+      "turns": [
+        {"id": "symptom", "question": "设备用着用着自己就重启，也没什么规律，可能是什么原因？",
+         "assertions": {"required_tools": ["fta_query"], "any_doc_types": ["fta", "fmeca"], "required_answer_facets": ["cause", "impact"], "answer_not_contains": ["已经确认是电源模块损坏"]}},
+        {"id": "verify", "question": "这几个候选里，哪几个可以先通过看记录或状态量快速排除？给出对应的验证手段。",
+         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "answer_regex": ["复位|看门狗|保持|HUM|过流|门限"]}}
+      ]
+    },
+    {
+      "id": "MT-VAGUE-03-black-screen-alive",
+      "metadata": {"category": "模糊现象定位与追问收窄", "coverage": ["fta_query", "mfl_query"], "expected_records": ["FTA-SYN-004", "FM-SYN-043", "FM-SYN-049", "FM-SYN-052"]},
+      "turns": [
+        {"id": "symptom", "question": "屏幕全黑，但从别的状态看机器好像还在正常工作，问题大概出在哪？",
+         "assertions": {"required_tools": ["fta_query"], "any_doc_types": ["fta", "fmeca", "mfl"], "required_answer_facets": ["cause"], "answer_not_contains": ["必然是显示屏本身故障"]}},
+        {"id": "narrow", "question": "换过外接终端和线缆还是一样，内置画面源看着是对的。现在优先查哪一段？",
+         "assertions": {"any_tools": ["mfl_query", "fmeca_query"], "any_used_doc_types": ["mfl", "fmeca"], "answer_regex": ["OIM|输出接口|编码|时钟|DCS|切换"]}}
+      ]
+    },
+    {
+      "id": "MT-VAGUE-04-external-data-loss",
+      "metadata": {"category": "模糊现象定位与追问收窄", "coverage": ["fta_query", "fmeca_query"], "expected_records": ["FTA-SYN-003", "FM-SYN-034", "FM-SYN-038", "FM-SYN-042"]},
+      "turns": [
+        {"id": "symptom", "question": "从外部送进来的数据时不时就少一段，业务量小的时候又正常，优先怀疑哪里？",
+         "assertions": {"required_tools": ["fta_query"], "any_doc_types": ["fta", "fmeca"], "required_answer_facets": ["cause"], "answer_not_contains": ["确认是外部设备坏了"]}},
+        {"id": "narrow", "question": "进一步看，A 通道完全没数据，B 通道是好的。这样范围能收到哪里？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "answer_regex": ["BCA|A 通道|接收|仲裁|超时"]}}
+      ]
+    },
+    {
+      "id": "MT-VAGUE-05-getting-hot",
+      "metadata": {"category": "模糊现象定位与追问收窄", "coverage": ["fmeca_query", "mfl_query"], "expected_records": ["FM-SYN-067", "FM-SYN-068", "FM-SYN-070", "FM-SYN-072"]},
+      "turns": [
+        {"id": "symptom", "question": "设备越跑越热，但没看到任何过热告警，这种情况该查哪些部件？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["TCM|温控|FAN|风扇|门限|CGM"]}},
+        {"id": "narrow", "question": "风机用手试是有风的，但温度还在涨。下一步往哪个方向查？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "answer_regex": ["TCM|闭环|控制|命令|门限|风量"], "answer_not_contains": ["风扇机械卡死已经确认"]}}
+      ]
+    },
+    {
+      "id": "MT-VAGUE-06-slow-response",
+      "metadata": {"category": "模糊现象定位与追问收窄", "coverage": ["fmeca_query"], "expected_records": ["FM-SYN-020", "FM-SYN-023", "FM-SYN-045"]},
+      "turns": [
+        {"id": "symptom", "question": "最近操作反应越来越慢，高负载时特别明显，可能是什么在退化？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["调度|任务|GPP|刷新|负载"]}},
+        {"id": "impact", "question": "如果一直不处理，最坏会发展到什么程度？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "required_answer_facets": ["impact"], "answer_regex": ["超时|切换|冗余|延迟|降级"]}}
+      ]
+    },
+    {
+      "id": "MT-VAGUE-07-scattered-glitches",
+      "metadata": {"category": "模糊现象定位与追问收窄", "coverage": ["fmeca_query", "graph_traversal"], "expected_records": ["FM-SYN-002", "91810001**0002"]},
+      "turns": [
+        {"id": "symptom", "question": "系统时不时在不同地方出点小毛病，互相之间看不出关系，会不会有一个共同源头？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["纹波|干扰|滤波|接地|相关"]}},
+        {"id": "mechanism", "question": "为什么一个输入侧的问题会让好几个子系统同时出零星异常？机理是什么？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "required_answer_facets": ["cause"], "answer_regex": ["纹波|干扰|共|相关|母线"]}}
+      ]
+    },
+    {
+      "id": "MT-VAGUE-08-fault-not-recorded",
+      "metadata": {"category": "模糊现象定位与追问收窄", "coverage": ["fmeca_query", "fta_query"], "expected_records": ["FM-SYN-061", "FM-SYN-062", "FM-SYN-063", "FTA-SYN-006"]},
+      "turns": [
+        {"id": "symptom", "question": "故障明明发生了，但事后在记录里怎么都查不到，这种情况该从哪里入手？",
+         "assertions": {"required_tools": ["fmeca_query"], "any_doc_types": ["fmeca", "fta"], "answer_regex": ["FLS|日志|存储|索引|回收"]}},
+        {"id": "impact", "question": "记录缺失这件事本身，对后续排故和追溯有什么影响？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "required_answer_facets": ["impact"], "answer_regex": ["追溯|维修|隔离|快照|历史"]}}
+      ]
+    },
+    {
+      "id": "MT-VAGUE-09-time-inconsistent",
+      "metadata": {"category": "模糊现象定位与追问收窄", "coverage": ["fmeca_query", "fta_query"], "expected_records": ["FM-SYN-064", "FM-SYN-065", "FM-SYN-066", "FTA-SYN-008"]},
+      "turns": [
+        {"id": "symptom", "question": "系统内部时间和外部对时源对不上，而且越走越偏，可能涉及哪些模块？",
+         "assertions": {"required_tools": ["fmeca_query"], "any_doc_types": ["fmeca", "fta"], "answer_regex": ["CGM|时钟|同步|漂移"]}},
+        {"id": "distinguish", "question": "完全丢失和逐渐漂移，这两种情况在处理上有什么区别？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "answer_regex": ["CGM|主时钟|分配|锁定|频率|同步输入"]}}
+      ]
+    },
+    {
+      "id": "MT-VAGUE-10-one-channel-down",
+      "metadata": {"category": "模糊现象定位与追问收窄", "coverage": ["fmeca_query", "graph_traversal"], "expected_records": ["FM-SYN-004", "FM-SYN-007", "FM-SYN-019", "FM-SYN-022"]},
+      "turns": [
+        {"id": "symptom", "question": "感觉其中一路已经不工作了，另一路还撑着，该怎么判断是哪一路、影响多大？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["冗余|备用|切换|通道"]}},
+        {"id": "narrow", "question": "是供电那两路中的一路，不是处理通道。现在风险有多大？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "required_answer_facets": ["impact"], "answer_regex": ["PSU-A|PSU-B|冗余|单点|降级"]}}
+      ]
+    },
+    {
+      "id": "MT-VAGUE-11-power-flicker-restart",
+      "metadata": {"category": "模糊现象定位与追问收窄", "coverage": ["fmeca_query", "fault_history_query"], "expected_records": ["FM-SYN-013", "FM-SYN-014", "FM-SYN-015", "HIS-SYN-005"]},
+      "turns": [
+        {"id": "symptom", "question": "输入电源只是闪了一下，整机就重启了，保持供电这块是不是有问题？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["HUM|保持|储能|放电"]}},
+        {"id": "history", "question": "有类似的排故记录吗？当时是怎么确认保持能力不足的？",
+         "assertions": {"required_tools": ["fault_history_query"], "required_used_doc_types": ["fault_history"], "any_used_record_ids": ["HIS-SYN-005"], "required_answer_facets": ["history_time", "history_action", "history_result"]}}
+      ]
+    },
+    {
+      "id": "MT-VAGUE-12-display-flicker",
+      "metadata": {"category": "模糊现象定位与追问收窄", "coverage": ["fmeca_query"], "expected_records": ["FM-SYN-045", "FM-SYN-046", "FM-SYN-053"]},
+      "turns": [
+        {"id": "symptom", "question": "画面偶尔闪一下或者卡一帧，不是完全黑屏，可能和哪些环节有关？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["刷新|帧缓存|FBM|切换|振荡|DPM"]}},
+        {"id": "narrow", "question": "补充：切换指示也在跟着跳。这样最可能是哪一个？怎么确认？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "answer_regex": ["DCS|切换|振荡|回读|状态"]}}
+      ]
+    },
+    {
+      "id": "MT-SPEC-01-psub-undervoltage",
+      "metadata": {"category": "具体故障定位与现场验证", "coverage": ["fmeca_query", "mfl_query"], "expected_records": ["FM-SYN-007", "91810003**0001", "MFL-SYN-007"]},
+      "turns": [
+        {"id": "locate", "question": "B 路母线电压持续低于规定范围，冗余切换能力下降，这是哪条故障模式？",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["PSU-B|B 路|欠压"]}},
+        {"id": "verify", "question": "现场怎么区分是模块本身问题还是负载侧拖垮的？用哪个状态接口？",
+         "assertions": {"required_tools": ["mfl_query"], "required_used_doc_types": ["mfl"], "any_used_record_ids": ["MFL-SYN-007"], "answer_regex": ["GetPSUBFaultStatus", "隔离|负载|环|状态"]}}
+      ]
+    },
+    {
+      "id": "MT-SPEC-02-hum-no-handover",
+      "metadata": {"category": "具体故障定位与现场验证", "coverage": ["fmeca_query", "mfl_query"], "expected_records": ["FM-SYN-014", "91810005**0002", "MFL-SYN-014"]},
+      "turns": [
+        {"id": "locate", "question": "保持供电模块显示已经充满，但输入瞬断时关键模块立即掉电，对应什么故障模式？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["HUM|放电|控制"]}},
+        {"id": "distinguish", "question": "这和“保持能量不足”在判据上怎么区分？两者维修动作一样吗？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "answer_regex": ["放电|驱动|开关", "充电|储能|容量"], "answer_not_contains": ["两者完全相同"]}}
+      ]
+    },
+    {
+      "id": "MT-SPEC-03-bcm-image-checksum",
+      "metadata": {"category": "具体故障定位与现场验证", "coverage": ["fmeca_query", "mfl_query"], "expected_records": ["FM-SYN-017", "91820001**0002", "MFL-SYN-017"]},
+      "turns": [
+        {"id": "locate", "question": "启动过程中反复报告镜像校验错误并进入安全模式，这是哪种故障？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["镜像|校验|BCM|备份"]}},
+        {"id": "action", "question": "现场第一步应该做什么？什么情况下才需要换件？",
+         "assertions": {"any_tools": ["mfl_query", "hmc_query"], "any_used_doc_types": ["mfl", "hmc"], "required_answer_facets": ["resolution"], "answer_regex": ["备份|镜像|存储|更换"]}}
+      ]
+    },
+    {
+      "id": "MT-SPEC-04-gppa-heartbeat-lost",
+      "metadata": {"category": "具体故障定位与现场验证", "coverage": ["fmeca_query", "fault_history_query"], "expected_records": ["FM-SYN-019", "91820002**0001", "HIS-SYN-007"]},
+      "turns": [
+        {"id": "locate", "question": "A 通道任务停止更新、心跳超时，系统已经切到 B 通道，这是什么故障模式？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["GPP-A|A 通道|挂起|心跳"]}},
+        {"id": "history", "question": "以前遇到过吗？当时是复位就恢复了，还是最终换了板子？",
+         "assertions": {"required_tools": ["fault_history_query"], "required_used_doc_types": ["fault_history"], "any_used_record_ids": ["HIS-SYN-007"], "required_answer_facets": ["history_action", "history_result"]}}
+      ]
+    },
+    {
+      "id": "MT-SPEC-05-msm-checksum-mismatch",
+      "metadata": {"category": "具体故障定位与现场验证", "coverage": ["fmeca_query", "fault_history_query"], "expected_records": ["FM-SYN-026", "91820004", "HIS-SYN-009"]},
+      "turns": [
+        {"id": "locate", "question": "模板能读出来，但校验值不一致导致系统拒绝使用，属于哪条故障模式？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["模板|校验|MSM|副本"]}},
+        {"id": "history", "question": "历史上有模板相关的排故记录吗？最终怎么解决的？",
+         "assertions": {"required_tools": ["fault_history_query"], "required_used_doc_types": ["fault_history"], "any_used_record_ids": ["HIS-SYN-009"], "required_answer_facets": ["history_time", "history_action", "history_result"]}}
+      ]
+    },
+    {
+      "id": "MT-SPEC-06-fpga-config-fail",
+      "metadata": {"category": "具体故障定位与现场验证", "coverage": ["fmeca_query", "fault_history_query"], "expected_records": ["FM-SYN-028", "FM-SYN-029", "91820005", "HIS-SYN-010"]},
+      "turns": [
+        {"id": "locate", "question": "可编程逻辑器件的配置一直加载不上去，对应什么故障模式？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["FPA|逻辑|配置|时序"]}},
+        {"id": "history", "question": "以前这类问题最后是配置问题还是硬件问题？",
+         "assertions": {"required_tools": ["fault_history_query"], "required_used_doc_types": ["fault_history"], "any_used_record_ids": ["HIS-SYN-010"], "required_answer_facets": ["history_action", "history_result"]}}
+      ]
+    },
+    {
+      "id": "MT-SPEC-07-bca-arbitration",
+      "metadata": {"category": "具体故障定位与现场验证", "coverage": ["fmeca_query", "fault_history_query"], "expected_records": ["FM-SYN-033", "91830001", "HIS-SYN-011"]},
+      "turns": [
+        {"id": "locate", "question": "A 通道总线上出现仲裁错误，高通信负载时数据延迟或丢失，是哪条故障模式？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["BCA|仲裁|地址|时序"]}},
+        {"id": "distinguish", "question": "这跟“A 通道接收超时”在现象上有什么不同？排查顺序应该怎么排？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "answer_regex": ["仲裁|冲突|地址", "接收|超时|物理层|幅值"]}}
+      ]
+    },
+    {
+      "id": "MT-SPEC-08-fbm-frame-corrupt",
+      "metadata": {"category": "具体故障定位与现场验证", "coverage": ["fmeca_query", "fault_history_query"], "expected_records": ["FM-SYN-047", "91840002", "HIS-SYN-016"]},
+      "turns": [
+        {"id": "locate", "question": "帧缓存里读出的数据内容损坏，画面出现异常色块，对应哪条故障模式？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["FBM|帧|缓存|损坏"]}},
+        {"id": "history", "question": "之前有帧数据损坏的排故记录吗？当时根因指向哪里？",
+         "assertions": {"required_tools": ["fault_history_query"], "required_used_doc_types": ["fault_history"], "any_used_record_ids": ["HIS-SYN-016"], "required_answer_facets": ["history_action", "history_result"]}}
+      ]
+    },
+    {
+      "id": "MT-SPEC-09-dcs-oscillation",
+      "metadata": {"category": "具体故障定位与现场验证", "coverage": ["fmeca_query", "fault_history_query"], "expected_records": ["FM-SYN-053", "91840004", "HIS-SYN-018"]},
+      "turns": [
+        {"id": "locate", "question": "显示通道在主备之间来回切换、状态振荡，这是哪条故障模式？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["DCS|切换|振荡|通道"]}},
+        {"id": "history", "question": "有通道切换卡滞相关的历史案例吗？两者的判据差异是什么？",
+         "assertions": {"required_tools": ["fault_history_query"], "required_used_doc_types": ["fault_history"], "any_used_record_ids": ["HIS-SYN-018"], "required_answer_facets": ["history_action", "history_result"]}}
+      ]
+    },
+    {
+      "id": "MT-SPEC-10-sam-ad-saturation",
+      "metadata": {"category": "具体故障定位与现场验证", "coverage": ["fmeca_query", "mfl_query", "fault_history_query"], "expected_records": ["FM-SYN-059", "FM-SYN-058", "91850002", "HIS-SYN-020"]},
+      "turns": [
+        {"id": "locate", "question": "某个温度或电压采集值固定成满量程码，其余测点都正常，这是什么故障？",
+         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["SAM|采样|饱和|满量程|开路"]}},
+        {"id": "distinguish", "question": "怎么区分是采集前端饱和，还是传感器线路断了？历史案例里当时是怎么确认的？",
+         "assertions": {"any_tools": ["fault_history_query", "mfl_query"], "any_used_doc_types": ["fault_history", "mfl"], "any_used_record_ids": ["HIS-SYN-020", "FM-SYN-058"], "answer_regex": ["开路|饱和|阻值|压接|测量"]}}
+      ]
+    }
+  ]
+}

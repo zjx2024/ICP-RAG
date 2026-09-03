@@ -312,11 +312,14 @@ def test_model_connection(model_id: str):
             if api_url:
                 candidates.append(api_url)
             if base_url:
+                candidates.append(f"{base_url}/api/embed")
                 candidates.append(f"{base_url}/api/embeddings")
                 candidates.append(f"{base_url}/v1/embeddings")
                 candidates.append(f"{base_url}/embeddings")
-            body = {"model": model_name, "input": "ping"}
-            ok, err = _try(candidates, [body])
+            batch_body = {"model": model_name, "input": ["ping"]}
+            legacy_body = {"model": model_name, "prompt": "ping"}
+            openai_body = {"model": model_name, "input": "ping"}
+            ok, err = _try(candidates, [batch_body, legacy_body, openai_body])
             if ok:
                 return _ok()
             return _fail(kind, err)
@@ -368,8 +371,10 @@ def get_model(model_id: str):
         model = postgres_client.get_model(model_id)
         if not model:
             raise HTTPException(status_code=404, detail="模型不存在")
-        # 详情接口返回真实 api_key，供编辑弹窗"点击眼睛查看"；
-        # 列表(list_models)/current-config 等接口仍掩码显示
+        # API never returns the stored secret.  Sending the mask back on PUT is
+        # already treated as "keep the existing key" below.
+        if model.get("api_key"):
+            model["api_key"] = "******"
         return model
     except HTTPException:
         raise

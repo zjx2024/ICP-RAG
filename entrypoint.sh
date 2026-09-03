@@ -22,7 +22,7 @@ wait_for_service() {
 }
 
 wait_for_service "$POSTGRES_HOST" "$POSTGRES_PORT" "PostgreSQL"
-wait_for_service "$ES_HOST" "$ES_PORT" "Elasticsearch"
+wait_for_service "$OPENSEARCH_HOST" "$OPENSEARCH_PORT" "OpenSearch"
 wait_for_service "$HUGEGRAPH_HOST" "$HUGEGRAPH_PORT" "HugeGraph"
 
 echo "All services are ready. Starting application..."

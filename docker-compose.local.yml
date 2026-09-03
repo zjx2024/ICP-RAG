@@ -3,6 +3,10 @@ services:
     # 5433 已由 knowledge-forge-postgres 占用；应用在 compose 网络内仍使用 postgres:5432。
     ports: !override
       - "5434:5432"
+  opensearch:
+    # 只在本机暴露管理端口；应用容器始终通过 opensearch:9200 访问。
+    ports: !override
+      - "127.0.0.1:9201:9200"
   app:
     # 复用的本机基础镜像未包含 nc；依赖健康检查已由 compose 完成，直接启动应用。
     entrypoint:

@@ -1,14 +1,28 @@
 import os
 import re
-import json
-import uuid
-import socket
-from datetime import datetime
+import hashlib
 from typing import Dict, List, Optional, Tuple
 from docx import Document
 from docx.oxml.ns import qn
-from backend.storage.minio_client import minio_client
+from backend.core.parsers.records import source_file_name
+from backend.storage.artifact_store import artifact_store
 from backend.config.config import config
+
+
+_IMAGE_SUFFIX_BY_CONTENT_TYPE = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/bmp": ".bmp",
+    "image/webp": ".webp",
+    "image/tiff": ".tiff",
+    "image/svg+xml": ".svg",
+    "image/x-emf": ".emf",
+    "image/emf": ".emf",
+    "image/x-wmf": ".wmf",
+    "image/wmf": ".wmf",
+}
+_SAFE_IMAGE_SUFFIXES = frozenset(_IMAGE_SUFFIX_BY_CONTENT_TYPE.values())
 
 class DocxParser:
     def __init__(self, file_path: str):
@@ -22,41 +36,49 @@ class DocxParser:
         except Exception:
             return False
     
-    def save_image_to_minio(self, image_blob: bytes, image_index: int, section: str = "", doc_id: str = "") -> str:
+    def save_image_artifact(
+        self,
+        image_blob: bytes,
+        image_index: int,
+        section: str = "",
+        doc_id: str = "",
+        *,
+        content_type: str = "",
+        source_name: str = "",
+    ) -> Tuple[str, str]:
+        """Persist one evidence image and return its key and public URL.
+
+        ``images`` is the only public ArtifactStore namespace.  The local path
+        points to that same physical artifact, so the old MinIO + LocalFS
+        double-write is eliminated.
+        """
         safe_section = re.sub(r'[^\w\u4e00-\u9fff]+', '_', section) if section else "unknown"
         if len(safe_section) > 100:
             safe_section = safe_section[:100]
-        filename = f"images/{doc_id}/img_{safe_section}_{image_index}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}.png"
-        
-        minio_client.upload_file(filename, image_blob)
-        return filename
-    
-    def save_image_to_local(self, image_blob: bytes, image_index: int, section: str = "", doc_id: str = "") -> Tuple[str, str]:
-        safe_section = re.sub(r'[^\w\u4e00-\u9fff]+', '_', section) if section else "unknown"
-        if len(safe_section) > 100:
-            safe_section = safe_section[:100]
-        filename = f"img_{safe_section}_{image_index}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}.png"
-        
-        local_dir = os.path.join(config.IMAGE_STORAGE_DIR, doc_id)
-        os.makedirs(local_dir, exist_ok=True)
-        
-        local_path = os.path.join(local_dir, filename)
-        with open(local_path, 'wb') as f:
-            f.write(image_blob)
-        
+        declared_type = str(content_type or "").split(";", 1)[0].strip().lower()
+        source_suffix = os.path.splitext(str(source_name or ""))[1].lower()
+        suffix = _IMAGE_SUFFIX_BY_CONTENT_TYPE.get(declared_type)
+        if not suffix and source_suffix in _SAFE_IMAGE_SUFFIXES:
+            suffix = source_suffix
+        if not suffix:
+            # Preserve unknown Word drawing bytes without falsely labelling
+            # them as PNG. Vision parsing can then fail visibly while the
+            # original engineering evidence remains downloadable.
+            suffix = ".bin"
+        artifact_content_type = declared_type or "application/octet-stream"
+        content_id = hashlib.sha256(image_blob).hexdigest()[:16]
+        filename = f"img_{safe_section}_{image_index}_{content_id}{suffix}"
+        storage_key = f"images/{doc_id}/{filename}"
+        artifact_store.upload_file(
+            storage_key,
+            image_blob,
+            content_type=artifact_content_type,
+            original_name=filename,
+        )
+
         relative_url = f"{config.IMAGE_URL_PREFIX}/{doc_id}/{filename}"
-
-        # 优先使用 SERVER_IP（局域网可达），否则兜底
-        host = config.SERVER_IP or config.SERVER_HOST
-        if not host or host == "0.0.0.0":
-            try:
-                host = socket.gethostbyname(socket.gethostname())
-            except Exception:
-                host = "127.0.0.1"
-
-        http_url = f"http://{host}:{config.SERVER_PORT}{relative_url}"
-
-        return local_path, http_url
+        # Consumers obtain a scoped local path through materialize(storage_key).
+        return storage_key, relative_url
     
     def parse_table_to_markdown(self, table) -> str:
         rows = []
@@ -104,17 +126,23 @@ class DocxParser:
     def extract_title_from_text(self, text: str, img_or_table: str = "image") -> str:
         if not text:
             return ""
-        patterns = [
-            r'图\s*(\d+(?:[.-]\d+)?)\s*(.+)$',
-            r'Figure\s+(\d+(?:[.-]\d+)?)\s*(.+)$',
-            r'表\s*(\d+(?:[.-]\d+)?)\s*(.+)$',
-            r'Table\s+(\d+(?:[.-]\d+)?)\s*(.+)$'
-        ]
+        patterns = (
+            [
+                r'图\s*(\d+(?:[.-]\d+)?)\s*(.+)$',
+                r'(?:Figure|Fig\.)\s+(\d+(?:[.-]\d+)?)\s*(.+)$',
+            ]
+            if img_or_table == "image"
+            else [
+                r'表\s*(\d+(?:[.-]\d+)?)\s*(.+)$',
+                r'Table\s+(\d+(?:[.-]\d+)?)\s*(.+)$',
+            ]
+        )
         for pattern in patterns:
             match = re.match(pattern, text, re.IGNORECASE)
             if match:
                 return match.group(2) if len(match.groups()) > 1 else text
-        return text if len(text) < 100 else ""
+        marker_pattern = r"^(?:图|Figure|Fig\.)\s*" if img_or_table == "image" else r"^(?:表|Table)\s*"
+        return text if len(text) < 100 and re.match(marker_pattern, text, re.IGNORECASE) else ""
 
 class TextParser:
     def __init__(self, file_path: str):
@@ -187,9 +215,12 @@ class TextParser:
         return blocks
 
 class DocumentParser:
-    def __init__(self, doc_path: str, doc_id: str):
+    def __init__(
+        self, doc_path: str, doc_id: str, *, source_name: Optional[str] = None
+    ):
         self.doc_path = doc_path
         self.doc_id = doc_id
+        self.source_name = source_file_name(doc_path, source_name)
         self.file_ext = os.path.splitext(doc_path)[1].lower()
         self.parser = None
         
@@ -366,13 +397,40 @@ class DocumentParser:
             }
         return blocks
     
+    @staticmethod
+    def _image_relationship_ids(element) -> List[str]:
+        """Return DrawingML and legacy VML image relationships in source order."""
+
+        result: List[str] = []
+        try:
+            for blip in element.xpath('.//a:blip'):
+                rel_id = blip.get(qn('r:embed')) or blip.get(qn('r:link'))
+                if rel_id:
+                    result.append(rel_id)
+        except Exception:
+            pass
+        try:
+            # lxml's bare ``xpath`` namespace map is not guaranteed to expose
+            # the legacy VML prefix.  Expanded tags work for both normal VML
+            # drawings and VML nested inside text boxes.
+            for image in element.iter('{urn:schemas-microsoft-com:vml}imagedata'):
+                rel_id = image.get(qn('r:id'))
+                if rel_id:
+                    result.append(rel_id)
+        except Exception:
+            pass
+        return result
+
     def _extract_images_and_tables(self, blocks: Dict) -> Dict:
         doc = self.parser.doc
         all_paragraphs = list(doc.paragraphs)
         
         block_ranges = {}
         for block_key, block_info in blocks.items():
-            block_ranges[block_key] = (block_info['start_para'], block_info['end_para'])
+            block_ranges[block_key] = (
+                int(block_info.get('start_para', 0)),
+                int(block_info.get('end_para', len(all_paragraphs))),
+            )
         
         image_parts = {}
         for rel_id, rel in doc.part.related_parts.items():
@@ -382,51 +440,6 @@ class DocumentParser:
         for block_key in blocks:
             blocks[block_key]['images'] = []
             blocks[block_key]['tables'] = []
-        
-        image_idx = 0
-        for para_idx, para in enumerate(all_paragraphs):
-            current_block = None
-            for block_key, (start, end) in block_ranges.items():
-                if start <= para_idx < end:
-                    current_block = block_key
-                    break
-            if not current_block:
-                continue
-            
-            for run in para.runs:
-                blips = run.element.xpath('.//a:blip')
-                for blip in blips:
-                    rel_id = blip.get(qn('r:embed'))
-                    if rel_id and rel_id in image_parts:
-                        image_idx += 1
-                        img_title = self._find_image_caption_below(para_idx, all_paragraphs, block_ranges, current_block)
-                        image_blob = image_parts[rel_id].blob
-                        
-                        minio_path = ""
-                        local_path = ""
-                        http_url = ""
-                        
-                        try:
-                            minio_path = self.parser.save_image_to_minio(
-                                image_blob, image_idx, current_block, self.doc_id
-                            )
-                        except Exception as e:
-                            print(f"[WARNING] 保存图片到MinIO失败: {e}")
-                        
-                        try:
-                            local_path, http_url = self.parser.save_image_to_local(
-                                image_blob, image_idx, current_block, self.doc_id
-                            )
-                        except Exception as e:
-                            print(f"[WARNING] 保存图片到本地失败: {e}")
-                        
-                        blocks[current_block]['images'].append({
-                            'index': image_idx,
-                            'title': img_title,
-                            'minio_path': minio_path,
-                            'local_path': local_path,
-                            'image_url': http_url
-                        })
         
         body = doc.element.body
         
@@ -440,6 +453,84 @@ class DocumentParser:
                         break
         
         heading_elem_indices.sort(key=lambda x: x[0])
+
+        def block_for_body_index(body_index: int) -> Optional[str]:
+            target = None
+            for element_index, block_key, _title in heading_elem_indices:
+                if element_index <= body_index:
+                    target = block_key
+                else:
+                    break
+            if target:
+                return target
+            return next(iter(blocks), None)
+
+        # Walk body descendants rather than only ``doc.paragraphs``/runs.  This
+        # includes images inside table cells, nested tables, text boxes and
+        # legacy VML containers while retaining a stable body/relationship
+        # locator. Header/footer parts remain outside the document body and are
+        # deliberately not promoted without a separate scope model.
+        paragraph_index_by_element = {
+            paragraph._element: index for index, paragraph in enumerate(all_paragraphs)
+        }
+        image_idx = 0
+        for body_index, element in enumerate(body):
+            current_block = block_for_body_index(body_index)
+            if not current_block:
+                continue
+            rel_ids = self._image_relationship_ids(element)
+            for occurrence, rel_id in enumerate(rel_ids, start=1):
+                image_part = image_parts.get(rel_id)
+                if image_part is None:
+                    continue
+                image_blob = getattr(image_part, 'blob', b'') or b''
+                if not image_blob:
+                    continue
+                image_idx += 1
+                paragraph_index = paragraph_index_by_element.get(element)
+                img_title = (
+                    self._find_image_caption_below(
+                        paragraph_index, all_paragraphs, block_ranges, current_block
+                    )
+                    if paragraph_index is not None
+                    else ""
+                )
+                declared_type = str(getattr(image_part, "content_type", "") or "")
+                source_name = str(getattr(image_part, "partname", "") or "")
+                try:
+                    storage_key, image_url = self.parser.save_image_artifact(
+                        image_blob,
+                        image_idx,
+                        current_block,
+                        self.doc_id,
+                        content_type=declared_type,
+                        source_name=source_name,
+                    )
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"保存文档证据图失败（image={image_idx}）: {exc}"
+                    ) from exc
+                tag = str(getattr(element, 'tag', '') or '')
+                container = 'table' if tag.endswith('tbl') else (
+                    'paragraph' if tag.endswith('p') else 'body_object'
+                )
+                source_ref = (
+                    f"{self.source_name}#body={body_index + 1};"
+                    f"container={container};rel={rel_id};occurrence={occurrence}"
+                )
+                blocks[current_block]['images'].append({
+                    'index': image_idx,
+                    'title': img_title,
+                    'storage_key': storage_key,
+                    # Deprecated compatibility alias for the physical DB column.
+                    'minio_path': storage_key,
+                    'local_path': "",
+                    'image_url': image_url,
+                    'content_type': declared_type or 'application/octet-stream',
+                    'source_name': source_name,
+                    'source_ref': source_ref,
+                    'container': container,
+                })
         
         table_idx = 0
         for table in doc.tables:

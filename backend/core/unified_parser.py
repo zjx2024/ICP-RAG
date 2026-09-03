@@ -2,6 +2,7 @@ import os
 import re
 import json
 import uuid
+import hashlib
 import chardet
 from io import BytesIO
 from typing import Dict, List, Any
@@ -754,8 +755,8 @@ class JsonParser:
 
 
 class PdfParser:
-    def __init__(self):
-        pass
+    def __init__(self, doc_id: str):
+        self.doc_id = doc_id
 
     def __call__(self, fnm):
         return self.parse_pdf(fnm)
@@ -766,7 +767,8 @@ class PdfParser:
         import uuid
         import traceback
         from datetime import datetime
-        from backend.storage.minio_client import minio_client
+        from backend.config.config import config
+        from backend.storage.artifact_store import ArtifactStoreError, artifact_store
         
         results = []
         try:
@@ -838,21 +840,31 @@ class PdfParser:
                                     png_data = img_data
                                 
                                 safe_title = f"pdf_page{page_idx+1}_img{img_idx}"
-                                filename = f"images/pdf_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}.png"
-                                minio_client.upload_file(filename, png_data)
-                                
-                                temp_local_path = f"/tmp/pdf_img_{uuid.uuid4().hex}.png"
-                                with open(temp_local_path, 'wb') as f:
-                                    f.write(png_data)
+                                content_id = hashlib.sha256(png_data).hexdigest()[:16]
+                                image_name = f"pdf_page{page_idx + 1}_{img_idx}_{content_id}.png"
+                                storage_key = f"images/{self.doc_id}/{image_name}"
+                                artifact_store.upload_file(
+                                    storage_key,
+                                    png_data,
+                                    content_type="image/png",
+                                    original_name=image_name,
+                                )
                                 
                                 page_data["images"].append({
                                     "index": img_idx,
                                     "title": f"图片 {img_idx + 1}",
                                     "type": "normal",
                                     "description": "",
-                                    "minio_path": filename,
-                                    "local_path": temp_local_path
+                                    "storage_key": storage_key,
+                                    "minio_path": storage_key,
+                                    "local_path": "",
+                                    "image_url": f"{config.IMAGE_URL_PREFIX}/{self.doc_id}/{image_name}",
                                 })
+                            except ArtifactStoreError:
+                                # Evidence persistence is part of a successful
+                                # parse; do not silently report completion when
+                                # the extracted image was lost.
+                                raise
                             except Exception as e:
                                 print(f"PDF图片提取错误: {e}")
                                 print(traceback.format_exc())
@@ -889,7 +901,7 @@ class UnifiedParser:
         elif self.file_ext in ['.json', '.jsonl']:
             self.parser = JsonParser()
         elif self.file_ext == '.pdf':
-            self.parser = PdfParser()
+            self.parser = PdfParser(self.doc_id)
         else:
             self.parser = TxtParser()
 

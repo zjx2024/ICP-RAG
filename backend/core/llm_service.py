@@ -11,6 +11,10 @@ from backend.core.model_config import model_config_service
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+class LLMStreamError(RuntimeError):
+    """流式模型在完整响应形成前失败；调用方必须丢弃已收集的半截文本。"""
+
 try:
     from langchain_ollama import ChatOllama
     from langchain_core.messages import HumanMessage, SystemMessage
@@ -18,6 +22,54 @@ try:
 except ImportError:
     HAS_LANGCHAIN = False
     logger.warning("langchain_ollama not installed")
+
+
+def _build_ollama_chat(
+    *,
+    base_url: str,
+    model_name: str,
+    temperature: Any = None,
+    max_tokens: Any = None,
+    timeout: Any = None,
+    top_p: Any = None,
+    num_predict: Any = None,
+    reasoning: Any = None,
+    response_format: Any = None,
+):
+    """Construct ChatOllama with the option names supported by this SDK.
+
+    ``max_tokens``, ``timeout`` and ``model_kwargs`` are silently ignored by
+    current ``langchain-ollama`` releases.  Translate the persisted model
+    fields to ``num_predict``, direct sampling fields and Ollama client kwargs
+    so parser-specific limits are effective rather than merely documented.
+    """
+
+    if not HAS_LANGCHAIN:
+        raise RuntimeError("langchain_ollama不可用")
+    kwargs: Dict[str, Any] = {
+        "base_url": base_url,
+        "model": model_name,
+    }
+    if temperature is not None:
+        kwargs["temperature"] = float(temperature)
+    if top_p is not None:
+        kwargs["top_p"] = float(top_p)
+    prediction_limit = num_predict if num_predict is not None else max_tokens
+    if prediction_limit is not None:
+        prediction_limit = int(prediction_limit)
+        if prediction_limit <= 0:
+            raise ValueError("Ollama num_predict/max_tokens 必须为正数")
+        kwargs["num_predict"] = prediction_limit
+    if timeout is not None:
+        request_timeout = float(timeout)
+        if request_timeout <= 0:
+            raise ValueError("Ollama timeout 必须为正数")
+        kwargs["client_kwargs"] = {"timeout": request_timeout}
+    if reasoning is not None:
+        kwargs["reasoning"] = reasoning
+    if response_format is not None:
+        kwargs["format"] = response_format
+    return ChatOllama(**kwargs)
 
 
 class LLMClient:
@@ -60,13 +112,13 @@ class LLMClient:
             return
         
         try:
-            self.chat_model = ChatOllama(
+            self.chat_model = _build_ollama_chat(
                 base_url=base_url,
-                model=model_name,
+                model_name=model_name,
                 temperature=temperature if temperature is not None else config.MODEL_TEMPERATURE,
                 max_tokens=max_tokens if max_tokens is not None else config.MODEL_MAX_TOKENS,
                 timeout=timeout if timeout is not None else config.MODEL_TIMEOUT,
-                model_kwargs={"top_p": top_p if top_p is not None else config.MODEL_TOP_P}
+                top_p=top_p if top_p is not None else config.MODEL_TOP_P,
             )
             logger.info(f"Ollama模型初始化成功: {model_name}, URL: {base_url}")
         except Exception as e:
@@ -121,20 +173,19 @@ class LLMClient:
                 async for chunk in self._stream_qwen_with_config(messages, model_config):
                     yield chunk
             else:
-                yield "[LLM不可用] 未知 provider"
+                raise LLMStreamError("未知模型 provider")
         else:
             if self.provider == "ollama" and self.chat_model:
                 async for chunk in self._stream_ollama(messages):
                     yield chunk
             else:
-                yield "[LLM未配置] 请在模型管理页面添加对话模型后重试"
+                raise LLMStreamError("未配置可用的流式对话模型")
 
     async def _stream_ollama(self, messages: List[Dict]) -> AsyncGenerator[str, None]:
         """异步流式调用：必须用 astream + async for，避免同步 for 阻塞事件循环
         （实测同步 for 会等全部生成完才一次性返回，导致首包延迟=总耗时）"""
         if not HAS_LANGCHAIN or not self.chat_model:
-            yield "[LLM未配置] 请在模型管理页面添加对话模型后重试"
-            return
+            raise LLMStreamError("未配置可用的 Ollama 流式模型")
         langchain_messages = []
         for msg in messages:
             if msg["role"] == "system":
@@ -147,27 +198,28 @@ class LLMClient:
                     yield chunk.content
         except Exception as e:
             logger.error(f"Ollama流式调用失败: {e}")
-            yield f"[AI调用失败] {str(e)}"
+            raise LLMStreamError(f"Ollama 流式调用失败: {e}") from e
 
     async def _stream_ollama_with_config(self, messages: List[Dict], model_config: Dict) -> AsyncGenerator[str, None]:
         """异步流式调用：使用 astream 而非 stream，避免同步阻塞事件循环。"""
         if not HAS_LANGCHAIN:
-            yield "[langchain_ollama不可用]"
-            return
+            raise LLMStreamError("langchain_ollama 不可用")
         base_url = model_config.get("base_url")
         model_name = model_config.get("model_name")
         if not base_url or not model_name:
-            yield "[LLM未配置] 缺少 base_url 或 model_name"
-            return
+            raise LLMStreamError("Ollama 模型缺少 base_url 或 model_name")
         temperature = model_config.get("temperature", config.MODEL_TEMPERATURE)
         max_tokens = model_config.get("max_tokens", config.MODEL_MAX_TOKENS)
         timeout = model_config.get("timeout", config.MODEL_TIMEOUT)
         top_p = model_config.get("top_p", config.MODEL_TOP_P)
         try:
-            chat_model = ChatOllama(
-                base_url=base_url, model=model_name,
+            chat_model = _build_ollama_chat(
+                base_url=base_url, model_name=model_name,
                 temperature=temperature, max_tokens=max_tokens,
-                timeout=timeout, model_kwargs={"top_p": top_p}
+                timeout=timeout, top_p=top_p,
+                num_predict=model_config.get("num_predict"),
+                reasoning=model_config.get("reasoning"),
+                response_format=model_config.get("format"),
             )
             langchain_messages = []
             for msg in messages:
@@ -180,7 +232,7 @@ class LLMClient:
                     yield chunk.content
         except Exception as e:
             logger.error(f"Ollama流式调用失败: {e}")
-            yield f"[AI调用失败] {str(e)}"
+            raise LLMStreamError(f"Ollama 流式调用失败: {e}") from e
 
     async def _stream_qwen_with_config(self, messages: List[Dict], model_config: Dict) -> AsyncGenerator[str, None]:
         """Qwen 异步流式调用：用 httpx.AsyncClient 替代同步 requests，
@@ -188,13 +240,11 @@ class LLMClient:
         import httpx
         api_key = model_config.get("api_key")
         if not api_key:
-            yield "[LLM未配置] 缺少 api_key"
-            return
+            raise LLMStreamError("Qwen 模型缺少 api_key")
         api_url = model_config.get("api_url")
         model_name = model_config.get("model_name")
         if not api_url or not model_name:
-            yield "[LLM未配置] 缺少 api_url 或 model_name"
-            return
+            raise LLMStreamError("Qwen 模型缺少 api_url 或 model_name")
         temperature = model_config.get("temperature", config.MODEL_TEMPERATURE)
         max_tokens = model_config.get("max_tokens", config.MODEL_MAX_TOKENS)
         top_p = model_config.get("top_p", config.MODEL_TOP_P)
@@ -224,7 +274,7 @@ class LLMClient:
                             continue
         except Exception as e:
             logger.error(f"Qwen流式调用失败: {e}")
-            yield f"[AI调用失败] {str(e)}"
+            raise LLMStreamError(f"Qwen 流式调用失败: {e}") from e
 
     def _call_ollama(self, messages: List[Dict]) -> str:
         if not self.chat_model:
@@ -269,13 +319,16 @@ class LLMClient:
         top_p = model_config.get("top_p", config.MODEL_TOP_P)
         
         try:
-            chat_model = ChatOllama(
+            chat_model = _build_ollama_chat(
                 base_url=base_url,
-                model=model_name,
+                model_name=model_name,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=timeout,
-                model_kwargs={"top_p": top_p}
+                top_p=top_p,
+                num_predict=model_config.get("num_predict"),
+                reasoning=model_config.get("reasoning"),
+                response_format=model_config.get("format"),
             )
             
             langchain_messages = []
@@ -285,7 +338,10 @@ class LLMClient:
                 elif msg["role"] == "user":
                     langchain_messages.append(HumanMessage(content=msg["content"]))
             
-            response = chat_model.invoke(langchain_messages)
+            invoke_options: Dict[str, Any] = {}
+            if "stream" in model_config:
+                invoke_options["stream"] = bool(model_config["stream"])
+            response = chat_model.invoke(langchain_messages, **invoke_options)
             return response.content
         except Exception as e:
             logger.error(f"Ollama调用失败: {e}")
@@ -348,7 +404,7 @@ class LLMClient:
     def get_image_mime_type(self, image_path: str) -> str:
         try:
             with open(image_path, 'rb') as f:
-                header = f.read(12)
+                header = f.read(512)
             
             if header.startswith(b'\x89PNG\r\n\x1a\n'):
                 return 'image/png'
@@ -360,11 +416,21 @@ class LLMClient:
                 return 'image/webp'
             elif header.startswith(b'\x42\x4D'):
                 return 'image/bmp'
+            elif header.startswith((b'II*\x00', b'MM\x00*')):
+                return 'image/tiff'
+            elif header.startswith(b'\xd7\xcd\xc6\x9a') or header.startswith(b'\x01\x00\x09\x00'):
+                return 'image/wmf'
+            elif len(header) >= 44 and header[40:44] == b' EMF':
+                return 'image/emf'
+            elif b'<svg' in header.lstrip().lower():
+                return 'image/svg+xml'
             else:
-                return 'image/png'
+                # Never label unknown engineering drawing bytes as PNG.  The
+                # caller can retain the artifact and explicitly skip vision.
+                return 'application/octet-stream'
         except Exception as e:
             logger.error(f"检测图片格式失败: {e}")
-            return 'image/png'
+            return 'application/octet-stream'
 
     def encode_image_to_base64(self, image_path: str) -> str:
         try:

@@ -13,6 +13,10 @@ from backend.core.llm_service import llm_service
 
 logger = logging.getLogger(__name__)
 
+_VISION_SUPPORTED_MIME_TYPES = frozenset(
+    {"image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"}
+)
+
 
 def _schema_instruction(doc_type: str) -> str:
     if doc_type == "fta":
@@ -85,8 +89,21 @@ def analyze_icp_diagram(
             "edges": [],
         }
 
-    image_base64 = llm_service.encode_image_to_base64(image_path)
     mime_type = llm_service.get_image_mime_type(image_path)
+    if mime_type not in _VISION_SUPPORTED_MIME_TYPES:
+        return {
+            "diagram_type": doc_type,
+            "description": f"[跳过视觉解析] 当前视觉链不支持 MIME: {mime_type}",
+            "confidence": 0.0,
+            "metadata": {
+                "mime_type": mime_type,
+                "vision_skipped": True,
+                "skip_reason": "unsupported_image_mime",
+            },
+            "vertices": [],
+            "edges": [],
+        }
+    image_base64 = llm_service.encode_image_to_base64(image_path)
     if not image_base64:
         return {
             "diagram_type": doc_type,
@@ -133,12 +150,27 @@ def analyze_icp_diagram(
         {"type": "text", "text": user_prompt},
         {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_base64}"}},
     ]
+    # Diagram extraction is a bounded structured task, not an open-ended
+    # reasoning conversation.  In particular Qwen thinking can otherwise run
+    # for minutes before emitting JSON on CPU-only Ollama deployments.
+    vision_model_config = dict(model_config or {})
+    vision_model_config.update(
+        {
+            "temperature": 0.0,
+            "top_p": 0.1,
+            "num_predict": 2048,
+            "reasoning": False,
+            "format": "json",
+            "stream": False,
+            "timeout": min(float(vision_model_config.get("timeout") or 120), 120.0),
+        }
+    )
     response = llm_service._call_model(
         [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": content},
         ],
-        model_config,
+        vision_model_config,
     )
     result = _parse_json(response)
     result.setdefault("diagram_type", doc_type)

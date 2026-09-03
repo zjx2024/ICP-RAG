@@ -1,0 +1,388 @@
+{
+  "name": "ICP 七类文档同义改写回归集",
+  "version": "2026-08-28",
+  "description": "问题均为针对合成测试资料重新措辞的评测输入，不把原文句子直接当作查询。",
+  "defaults": {
+    "assertions": {
+      "min_evidence": 1,
+      "min_citations": 1,
+      "required_event_types": ["plan", "tool_call", "answer", "done"],
+      "answer_not_contains": [
+        "待复核（未绑定已批准直接证据）",
+        "证据边界：部分说明未附可直接核验的来源"
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "external-data-not-delivered",
+      "questions": [
+        {
+          "id": "short",
+          "question": "信息没能送到外接设备，原因可能在哪？"
+        },
+        {
+          "id": "detailed",
+          "question": "内部已经产生业务报文，但接在外面的设备始终收不到有效内容，可能经过哪些环节出错？"
+        }
+      ],
+      "metadata": {
+        "category": "原因分析",
+        "expected_records": ["FTA-SYN-003", "FM-SYN-040", "FM-SYN-041", "FM-SYN-042", "FUNC-300"],
+        "graph_expected": true
+      },
+      "assertions": {
+        "required_tools": ["fta_query", "fmeca_query", "graph_traversal"],
+        "required_doc_types": ["fta", "fmeca"],
+        "answer_not_contains": ["BCM", "启动时序超时", "91820001"]
+      }
+    },
+    {
+      "id": "startup-stuck",
+      "question": "接通设备后一直停在准备阶段，两路处理单元都没接手业务，可能是哪部分出了问题？",
+      "metadata": {
+        "category": "现象定位",
+        "expected_records": ["FUNC-210", "FM-SYN-016", "FM-SYN-017", "FM-SYN-018", "FTA-SYN-001"],
+        "graph_expected": true
+      },
+      "assertions": {
+        "required_tools": ["fta_query", "graph_traversal"],
+        "any_doc_types": ["fta", "fmeca", "function_locator"],
+        "answer_not_contains": ["唯一可以确定是 BCM"]
+      }
+    },
+    {
+      "id": "psua-hot-dropout",
+      "question": "设备在高负荷下热起来以后，主供电分支突然离线，备用分支接管；冷却后主路又可工作。更像哪类故障？",
+      "metadata": {
+        "category": "现象定位",
+        "expected_records": ["FM-SYN-006", "91810002**0003", "MFL-SYN-006", "HIS-SYN-002", "FTA-SYN-005"],
+        "graph_expected": true
+      },
+      "assertions": {
+        "required_tools": ["fmeca_query", "graph_traversal"],
+        "any_doc_types": ["fmeca", "hmc", "fault_history"],
+        "answer_regex": ["热|焊|连接"]
+      }
+    },
+    {
+      "id": "network-burst-loss",
+      "question": "网络一忙就有成批报文到不了，业务量降下来又恢复，优先怀疑哪里？",
+      "metadata": {
+        "category": "现象定位",
+        "expected_records": ["FM-SYN-038", "91830003**0002", "MFL-SYN-038", "HIS-SYN-013", "FTA-SYN-003"],
+        "graph_expected": true
+      },
+      "assertions": {
+        "required_tools": ["fta_query", "graph_traversal"],
+        "any_doc_types": ["fmeca", "fta", "fault_history"],
+        "answer_not_contains": ["已经确认网关硬件损坏"]
+      }
+    },
+    {
+      "id": "external-display-blank",
+      "question": "内部图像数据仍在更新，外接屏却提示没有输入；换过终端和连接线仍一样，故障可能在哪一段？",
+      "metadata": {
+        "category": "现象定位",
+        "expected_records": ["FM-SYN-049", "91840003**0001", "MFL-SYN-049", "HIS-SYN-017", "FTA-SYN-004"],
+        "graph_expected": true
+      },
+      "assertions": {
+        "required_tools": ["fta_query", "graph_traversal"],
+        "any_doc_types": ["fta", "fmeca", "mfl"],
+        "answer_regex": ["OIM|输出接口|显示输出"]
+      }
+    },
+    {
+      "id": "missing-new-fault-record",
+      "question": "刚出的问题，事后记录里完全查不到。",
+      "metadata": {
+        "category": "短现象定位",
+        "expected_records": ["FUNC-530", "FM-SYN-061", "FM-SYN-062", "FM-SYN-063", "FTA-SYN-006"],
+        "graph_expected": true
+      },
+      "assertions": {
+        "required_tools": ["graph_traversal"],
+        "any_tools": ["fmeca_query", "fta_query", "fault_history_query"],
+        "any_doc_types": ["fmeca", "fta", "function_locator"]
+      }
+    },
+    {
+      "id": "heating-with-fan-running",
+      "question": "设备越运行越热，但散热风机看起来仍在转。",
+      "metadata": {
+        "category": "短现象定位",
+        "expected_records": ["FUNC-620", "FUNC-630", "FM-SYN-067", "FM-SYN-069", "FM-SYN-072", "FTA-SYN-005"],
+        "graph_expected": true
+      },
+      "assertions": {
+        "required_tools": ["fmeca_query", "graph_traversal"],
+        "any_doc_types": ["fmeca", "fta"],
+        "answer_not_contains": ["可以确定是风扇堵转"]
+      }
+    },
+    {
+      "id": "false-overcurrent-trip",
+      "question": "支路实测负载没有超标，却被保护逻辑频繁断开，常见根因有哪些？",
+      "metadata": {
+        "category": "原因分析",
+        "expected_records": ["FM-SYN-011", "91810004**0002", "MFL-SYN-011", "HIS-SYN-004", "FTA-SYN-005"],
+        "graph_expected": true
+      },
+      "assertions": {
+        "required_tools": ["fmeca_query", "fta_query", "graph_traversal"],
+        "required_doc_types": ["fmeca", "fta"],
+        "answer_regex": ["采样|门限|保护|滤波"]
+      }
+    },
+    {
+      "id": "protocol-fields-shifted",
+      "question": "收到的数据帧本身校验正常，适配后各字段的含义却错位，为什么会这样？",
+      "metadata": {
+        "category": "原因分析",
+        "expected_records": ["FM-SYN-040", "FUNC-330", "91830004**0001", "HIS-SYN-014", "FTA-SYN-003"],
+        "graph_expected": true
+      },
+      "assertions": {
+        "required_tools": ["fmeca_query", "fta_query", "graph_traversal"],
+        "required_doc_types": ["fmeca", "fta"],
+        "answer_regex": ["协议|映射|版本"]
+      }
+    },
+    {
+      "id": "shared-clock-loss",
+      "question": "多块业务板在同一瞬间丢掉节拍，通信和画面也一起停了，问题最可能集中在哪个公共环节？",
+      "metadata": {
+        "category": "原因分析",
+        "expected_records": ["FM-SYN-064", "FUNC-610", "91860001**0001", "HIS-SYN-022", "FTA-SYN-008"],
+        "graph_expected": true
+      },
+      "assertions": {
+        "required_tools": ["fta_query", "graph_traversal"],
+        "any_doc_types": ["fta", "fmeca", "fault_history"],
+        "answer_regex": ["时钟|时基|CGM"]
+      }
+    },
+    {
+      "id": "thermal-control-low-command",
+      "question": "实测温度持续上扬，风机单独通电运转正常，但控制端长期只给低档指令，最后系统降级，可能是什么原因？",
+      "metadata": {
+        "category": "详细原因分析",
+        "expected_records": ["FM-SYN-067", "FUNC-620", "91860002**0001", "MFL-SYN-067", "HIS-SYN-023"],
+        "graph_expected": true
+      },
+      "assertions": {
+        "required_tools": ["fmeca_query", "graph_traversal"],
+        "any_doc_types": ["fmeca", "fault_history", "mfl"],
+        "answer_regex": ["TCM|温控|控制输出"],
+        "answer_not_contains": ["风扇机械卡死已经确认"]
+      }
+    },
+    {
+      "id": "psub-undervoltage-impact",
+      "question": "B路稳压输出偏低而A路暂时还能带载，如果先不处理，系统会承担什么风险？",
+      "metadata": {
+        "category": "后果影响",
+        "expected_records": ["FM-SYN-007", "FUNC-121", "RBD-SYN-001"],
+        "graph_expected": true
+      },
+      "assertions": {
+        "required_tools": ["fmeca_query", "rbd_query", "graph_traversal"],
+        "required_doc_types": ["fmeca", "rbd"],
+        "answer_regex": ["冗余|备用|容错"],
+        "answer_not_contains": ["系统必然立即停机"]
+      }
+    },
+    {
+      "id": "clock-drift-impact",
+      "question": "公共时基逐渐跑偏，会牵连哪些业务能力？",
+      "metadata": {
+        "category": "后果影响",
+        "expected_records": ["FM-SYN-065", "FUNC-610", "FTA-SYN-008"],
+        "graph_expected": true
+      },
+      "assertions": {
+        "required_tools": ["fmeca_query", "fta_query", "graph_traversal"],
+        "required_doc_types": ["fmeca", "fta"]
+      }
+    },
+    {
+      "id": "snapshot-write-impact",
+      "question": "新的故障快照无法写入，继续运行会带来什么后果？",
+      "metadata": {
+        "category": "后果影响",
+        "expected_records": ["FM-SYN-061", "FUNC-530"],
+        "graph_expected": false
+      },
+      "assertions": {
+        "required_tools": ["fmeca_query"],
+        "forbidden_tools": ["graph_traversal"],
+        "required_doc_types": ["fmeca"],
+        "answer_regex": ["记录|快照|追溯|维修"]
+      }
+    },
+    {
+      "id": "display-selector-stuck-impact",
+      "question": "主备显示选择器锁在当前信号源上，此刻画面仍正常，这会留下什么隐患？",
+      "metadata": {
+        "category": "后果影响",
+        "expected_records": ["FM-SYN-052", "FUNC-440"],
+        "graph_expected": false
+      },
+      "assertions": {
+        "required_tools": ["fmeca_query"],
+        "forbidden_tools": ["graph_traversal"],
+        "required_doc_types": ["fmeca"],
+        "answer_regex": ["冗余|切换|备用"],
+        "answer_not_contains": ["当前一定黑屏"]
+      }
+    },
+    {
+      "id": "filter-degradation-correlated-impact",
+      "question": "输入端的滤波元件性能下降后，为什么可能不是某一块单独报错，而是多处零星异常？",
+      "metadata": {
+        "category": "后果影响",
+        "expected_records": ["FM-SYN-002", "91810001**0002"],
+        "graph_expected": false
+      },
+      "assertions": {
+        "required_tools": ["fmeca_query"],
+        "forbidden_tools": ["graph_traversal"],
+        "required_doc_types": ["fmeca"],
+        "answer_regex": ["纹波|干扰|相关"]
+      }
+    },
+    {
+      "id": "gateway-code-maintenance",
+      "question": "LCN 91830003、HSC 0002 这一类网关告警应该怎样排查和处置？",
+      "metadata": {
+        "category": "维修与结构化代码",
+        "expected_records": ["91830003**0002", "FM-SYN-038", "MFL-SYN-038", "HIS-SYN-013"],
+        "graph_expected": true
+      },
+      "assertions": {
+        "required_tools": ["hmc_query", "mfl_query", "graph_traversal"],
+        "required_doc_types": ["hmc", "mfl"],
+        "answer_regex": ["91830003|网关|丢包"],
+        "answer_not_contains": ["用户提供的 HAMC"]
+      }
+    },
+    {
+      "id": "display-output-maintenance",
+      "question": "外接终端始终空白，系统内置画面源工作正常。现场先检查哪些位置，可以用哪个状态接口确认？",
+      "metadata": {
+        "category": "维修指导",
+        "expected_records": ["MFL-SYN-049", "GetOIMFaultStatus", "91840003**0001", "HIS-SYN-017"],
+        "graph_expected": true
+      },
+      "assertions": {
+        "required_tools": ["mfl_query", "graph_traversal"],
+        "required_doc_types": ["mfl"],
+        "answer_regex": ["GetOIMFaultStatus|OIM|输出接口"]
+      }
+    },
+    {
+      "id": "temperature-fullscale-maintenance",
+      "question": "某个温度采集值固定成满量程码，其余测点合理，现场怎样区分采集输入异常和传感器线路问题？",
+      "metadata": {
+        "category": "维修与原因",
+        "expected_records": ["FM-SYN-058", "FM-SYN-059", "MFL-SYN-058", "MFL-SYN-059", "HIS-SYN-020"],
+        "graph_expected": true
+      },
+      "assertions": {
+        "required_tools": ["fmeca_query", "mfl_query", "fault_history_query", "graph_traversal"],
+        "any_doc_types": ["fmeca", "mfl", "fault_history"],
+        "answer_regex": ["开路|满量程|4095|0xFFF"]
+      }
+    },
+    {
+      "id": "history-a-bus-no-receive",
+      "question": "以前有没有碰到A总线完全收不到、B总线照常的案例？最后是更换板卡还是处理线束？",
+      "metadata": {
+        "category": "历史经验",
+        "expected_records": ["HIS-SYN-011", "FM-SYN-031", "MFL-SYN-031"],
+        "graph_expected": false
+      },
+      "assertions": {
+        "required_tools": ["fault_history_query"],
+        "forbidden_tools": ["graph_traversal"],
+        "required_doc_types": ["fault_history"],
+        "answer_regex": ["连接|线束|接地"],
+        "answer_not_contains": ["更换 BCA 板卡"]
+      }
+    },
+    {
+      "id": "history-gppb-hot-ecc",
+      "question": "有没有处理过设备变热后，备用计算通道的存储校验计数不断增加？当时怎样确认根因？",
+      "metadata": {
+        "category": "历史与原因",
+        "expected_records": ["HIS-SYN-008", "FM-SYN-024", "91820003**0003", "MFL-SYN-024", "FTA-SYN-002"],
+        "graph_expected": true
+      },
+      "assertions": {
+        "required_tools": ["fault_history_query", "fmeca_query", "fta_query", "graph_traversal"],
+        "required_doc_types": ["fault_history", "fmeca", "fta"],
+        "answer_regex": ["GPP-B|备用.*通道|热退化"]
+      }
+    },
+    {
+      "id": "architecture-external-data-flow",
+      "question": "外部总线送入的信息由哪些单元接收，谁负责格式适配，之后交给哪个处理子系统？",
+      "metadata": {
+        "category": "架构功能",
+        "expected_records": ["SUB-IFC", "BCA", "BCB", "PCU", "FUNC-330", "GPP"],
+        "graph_expected": true
+      },
+      "assertions": {
+        "required_tools": ["function_locator", "graph_traversal"],
+        "required_doc_types": ["function_locator"],
+        "answer_regex": ["BCA|BCB|PCU|IFC"]
+      }
+    },
+    {
+      "id": "architecture-display-composition",
+      "question": "哪个单元负责把运算结果、图形标记和提示信息组合成最终画面？它所在的子系统还包含哪些输出相关部件？",
+      "metadata": {
+        "category": "架构功能",
+        "expected_records": ["DPM", "FUNC-410", "SUB-DSP", "FBM", "OIM", "DCS"],
+        "graph_expected": true
+      },
+      "assertions": {
+        "required_tools": ["function_locator", "graph_traversal"],
+        "required_doc_types": ["function_locator"],
+        "answer_regex": ["DPM|显示处理模块", "FBM|OIM|DCS"]
+      }
+    },
+    {
+      "id": "fta-restart-cutsets",
+      "question": "把“工作期间机器自己反复重新开机”作为最终失效，最少哪些底层故障单独或组合出现就足以触发？",
+      "metadata": {
+        "category": "FTA确定性分析",
+        "expected_records": ["FTA-SYN-005"],
+        "graph_expected": false
+      },
+      "assertions": {
+        "required_tools": ["fta_query", "fta_analyzer"],
+        "forbidden_tools": ["graph_traversal"],
+        "required_doc_types": ["fta"],
+        "answer_regex": ["最小割集|单事件|组合"]
+      }
+    },
+    {
+      "id": "rbd-ten-hour-comparison",
+      "question": "按文档中的失效率重新计算十小时任务：能源保障、计算业务、对外数据交换、屏显链路中，哪条成功概率最低？",
+      "metadata": {
+        "category": "RBD确定性分析",
+        "expected_records": ["RBD-SYN-001", "RBD-SYN-002", "RBD-SYN-003", "RBD-SYN-004"],
+        "expected_value": "0.99888052",
+        "graph_expected": false
+      },
+      "assertions": {
+        "required_tools": ["rbd_query", "rbd_calculator"],
+        "forbidden_tools": ["graph_traversal"],
+        "required_doc_types": ["rbd"],
+        "answer_regex": ["0\\.99888052", "显示|屏显"]
+      }
+    }
+  ]
+}

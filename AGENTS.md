@@ -11,8 +11,8 @@ ICP-RAG 是面向 **ICP 航空电子系统故障诊断**的专用知识库与智
 系统接收七类原始工程文档，按文档类型执行不同的预处理，将结果保存为：
 
 - PostgreSQL 中的权威结构化事实；
-- Elasticsearch 中的关键词和向量检索索引；
-- MinIO 中的原始文档与图片证据；
+- OpenSearch 中的关键词和向量检索索引；
+- ArtifactStore + LocalFS 中的原始文档与图片证据；
 - HugeGraph 中按需生成的图关系投影；
 - LangGraph 智能体可调用的领域工具。
 
@@ -52,7 +52,7 @@ https://github.com/zjx2024/ICP-RAG/pull/1
 2. 修改前先确认本地位于上述分支，或从该分支再创建更小的任务分支。
 3. 每次改动应尽量聚焦一个问题，避免顺手重写无关模块。
 4. 修改后必须运行后端测试和前端生产构建。
-5. 不要声称完成真实环境联调，除非 PostgreSQL、ES、MinIO、HugeGraph 和模型服务均实际可用且测试通过。
+5. 不要声称完成真实环境联调，除非 PostgreSQL、OpenSearch、持久化 ArtifactStore、HugeGraph 和模型服务均实际可用且测试通过。
 
 ---
 
@@ -82,9 +82,9 @@ https://github.com/zjx2024/ICP-RAG/pull/1
 backend/icp/document_types.py
 ```
 
-### 3.2 上传只能有一个统一入口
+### 3.2 上传只能有一个统一实现
 
-首页是唯一用户上传入口：
+首页和类型文档页复用同一个上传组件：
 
 ```text
 七类文档知识库首页
@@ -93,23 +93,29 @@ backend/icp/document_types.py
 → 选择或拖拽文件
 → 按 doc_type 上传
 → 自动刷新并显示在对应类型卡片和文档列表
+
+某类文档页
+→ 点击“上传文档”
+→ 复用同一上传窗口并锁定当前 doc_type
+→ 上传后刷新当前文档列表
 ```
 
 关键前端文件：
 
 ```text
 frontend/src/pages/TypeHome.tsx
+frontend/src/pages/TypeDocs.tsx
 frontend/src/components/UnifiedUploadModal.tsx
 frontend/src/api/icp.ts
 ```
 
-各类型页面不应重新出现独立上传控件。类型页面只负责：
+不得为类型页面另写上传表单、接口或独立上传页面。类型页面可打开统一上传窗口，除此之外负责：
 
 - 文档管理；
 - 解析；
 - 内容查看；
 - 日志；
-- FTA/RBD 图结构确认和可视化。
+- 七类自动入图状态、工程图校验结果和可视化。
 
 旧 `/type/:docType/upload` 路径仅作为兼容跳转，不应恢复上传页面。
 
@@ -129,7 +135,7 @@ Gallery 页面
 
 - Word 内嵌图片抽取；
 - FTA、RBD、系统架构图视觉解析；
-- MinIO 图片保存；
+- ArtifactStore 图片保存；
 - `/images` 证据静态访问；
 - 文档详情中的原图证据；
 - 智能体引用相关工程图。
@@ -161,13 +167,28 @@ backend/api/__init__.py
 数据库职责：
 
 - PostgreSQL：正式结构化知识和业务状态；
-- Elasticsearch：BM25、向量召回和检索副本；
-- MinIO：原始 Word、Excel、图片证据；
+- OpenSearch：BM25、向量召回和检索副本；
+- ArtifactStore + LocalFS：原始 Word、Excel、图片证据；
 - HugeGraph：图关系投影，不是唯一事实来源。
 
 向量、图谱和标准化文本均应可由 PostgreSQL 和原始文件重建。
 
-### 3.6 不允许无证据的唯一诊断
+### 3.6 七类文档自动生成显式关系图
+
+七类文档解析成功后都必须启动 HugeGraph 自动投影，不能再等待人工确认：
+
+- 每个文档至少生成一个可追溯的 `Document` 来源节点；
+- Function Locator、HMC、FMECA、MFL、故障历史只投影 PostgreSQL 字段中明确存在的实体、字段关系、显式代码引用和步骤顺序；
+- FTA、RBD 和架构图先进入版本化自动校验；确定性表格/表达式且通过类型约束的结果为 `auto_validated`，高置信视觉结果仅为 `provisional`，冲突、残缺或低置信结果为 `quarantined`；
+- `provisional` 可投影供浏览，但不得支持正式拓扑结论、唯一诊断或 FTA/RBD 数值计算；`quarantined` 不进入推理图；
+- 跨文档合并仅使用完全一致的业务 ID/代码。普通文本节点必须包含 `doc_id + 字段类型 + 原文`，禁止用 LLM、向量相似度或名称相似度自动合并；
+- 结构化边的规范身份固定为 `(doc_id, relation, source, target)`；同一文档内相同关系和端点的多次字段/行来源合并为一条边，并在 `occurrence_qualifiers` 中完整保留来源限定；
+- 故障历史的每个有序步骤生成独立 `FaultHistoryStep` 实例，以 `has_diagnosis_step` 连接案例、`has_step_content` 连接步骤原文，并用 `next_step` 表达先后顺序；
+- PostgreSQL 始终是权威真源，HugeGraph 是可删除重建的投影。
+
+没有明确关系时，不得为了“让图更丰富”而补造边；Document 节点和隔离记录即为安全的完成结果。
+
+### 3.7 不允许无证据的唯一诊断
 
 用户通常只会描述模糊现象。系统在证据不足时必须：
 
@@ -328,7 +349,7 @@ backend/agent/tools/icp_calculation.py
 
 FTA 数值和最小割集必须由确定性 Python 算法完成，不得由 LLM 猜测。
 
-自动视觉抽取的图结构应视为“待确认数据”；真实工程使用前需要人工复核节点、边和逻辑门。
+自动视觉抽取的图结构只能标记为 `provisional`；它可以作为待核验上下文，但不得用于正式节点/边断言、可靠性数值或唯一诊断。只有通过确定性来源与类型约束的 `auto_validated` 图，或兼容保留的 `manual_confirmed` 图，才可进入正式计算。
 
 ### 4.6 RBD
 
@@ -398,14 +419,16 @@ backend/icp/repository.py
 首页统一上传
 → 选择 doc_type
 → POST /api/v1/document-types/{docType}/documents/upload
-→ MinIO 保存原文件
+→ ArtifactStore 保存原文件
 → icp_documents 登记
 → 对应卡片文档数刷新
 → 用户进入文档管理并启动解析
 → ParserRegistry 根据 doc_type 路由专用解析器
 → PostgreSQL 写结构化真源
-→ Elasticsearch 写文本/向量索引
-→ FTA/RBD 可进入图结构确认和 HugeGraph 投影
+→ OpenSearch 写文本/向量索引
+→ 七类文档自动投影 PostgreSQL 显式关系和 Document 来源节点
+→ 架构/FTA/RBD 自动做类型校验与证据分级
+→ 合格图发布到 HugeGraph，异常图隔离并记录原因
 ```
 
 解析器注册入口：
@@ -419,19 +442,36 @@ backend/core/parsers/registry.py
 默认 LangGraph：
 
 ```text
-plan
+scope_router
+→ （能力说明/范围外/缺少对象时 direct_response）
+→ plan（对话对象、本轮信息目标和有界证据锚点）
 → icp_diagnosis
+→ adaptive_tools
+→ （按需 adaptive_retrieval）
+→ （拿到业务实体且多跳有价值时 graph_traversal）
 → icp_calculation
+→ evidence_gate
 → answer
 ```
+
+`scope_router` 先区分知识库问题、智能体能力说明、范围外问题与必要澄清。
+`plan` 的模型只提出最小工具计划，确定性策略负责授权上限；它同时把多轮追问整理为“当前对象 + 本轮所问维度”。上轮回答只有实际使用的引用身份可作为会话锚点，选中后仍须在本轮回 PostgreSQL 重读，不直接复用旧结论。首轮结果返回后，
+`adaptive_tools` 最多再决定一批受限补查。精确 HMC 先查 PostgreSQL，未命中才补
+OpenSearch；是否查询 HugeGraph 由问题实际需要的信息结构决定，不要求用户说出
+“关系、路径、图谱”等术语。原因分析、故障定位、架构定位或多目标问题需要跨文档
+补全时应自动查图，但仍必须先绑定可追溯业务实体并对返回关系逐边用 PostgreSQL 再授权。
+FTA/RBD 计算还必须由用户原始问题明确授权，模型不能自行放宽。
 
 主要文件：
 
 ```text
 backend/agent/graph.py
 backend/agent/nodes/plan.py
+backend/agent/nodes/adaptive_tools.py
 backend/agent/tools/icp_diagnosis.py
+backend/agent/tools/graph_traversal.py
 backend/agent/tools/icp_calculation.py
+backend/agent/nodes/evidence_gate.py
 backend/agent/nodes/answer.py
 backend/agent/state.py
 ```
@@ -526,8 +566,9 @@ backend/
     reliability.py                 FTA/RBD确定性计算
   storage/
     postgres_client.py             现有大型 PG 客户端与兼容逻辑
-    es_client.py                   ES 索引与检索
-    minio_client.py                原始文件和证据图片
+    opensearch_client.py           OpenSearch 索引与检索
+    artifact_store.py              原始文件和证据图片的存储抽象与 LocalFS 实现
+    minio_client.py                旧 import 兼容层，不再连接 MinIO 服务
     hugegraph_client.py            图谱投影
 
 frontend/src/
@@ -536,10 +577,9 @@ frontend/src/
   layouts/TypeLayout.tsx           类型页侧栏
   pages/TypeHome.tsx               七类卡片、统计、统一上传入口
   components/UnifiedUploadModal.tsx统一上传窗口
-  pages/TypeDocs.tsx               类型内文档管理与解析，不负责上传
+  pages/TypeDocs.tsx               类型内文档管理、锁定类型上传与解析
   pages/DocDetail.tsx              单文档详情
   pages/TypeView.tsx               类型内容查看
-  pages/TypeGraph.tsx              FTA/RBD 图结构确认和图谱生成
   pages/TypeVisualize.tsx          图谱可视化
   pages/Diagnosis.tsx              ICP 故障诊断工作台
   pages/Models.tsx                 模型设置
@@ -561,9 +601,9 @@ tests/
 /models                            系统设置
 /type/:docType/documents           某类型文档管理与解析
 /type/:docType/view                内容查看
-/type/:docType/logs                日志管理
-/type/:docType/graph               FTA/RBD 图结构与图谱生成
-/type/:docType/visualize           FTA/RBD 图谱可视化
+/type/:docType/logs                兼容跳转到 documents?records=1
+/type/:docType/graph               兼容跳转到 visualize
+/type/:docType/visualize           七类 HugeGraph 投影可视化
 /type/:docType/doc/:docId          单文档详情
 ```
 
@@ -593,9 +633,7 @@ tests/
 | 服务 | 端口 |
 |---|---:|
 | PostgreSQL | 5433 |
-| Elasticsearch | 9201 |
-| MinIO API | 9002 |
-| MinIO Console | 9003 |
+| OpenSearch | 9201 |
 | HugeGraph | 8082 |
 | Hubble | 18089 |
 | FastAPI 热启动 | 19999 |
@@ -668,7 +706,7 @@ git diff --check
 4. Dify 路由仍挂载；
 5. 首页统一上传可选七类类型；
 6. 上传后对应卡片文档数刷新；
-7. 类型页没有独立上传入口；
+7. 类型页上传复用 `UnifiedUploadModal` 并锁定当前类型，没有独立上传页面或第二套实现；
 8. `/gallery` 没有恢复；
 9. `/images` 工程图证据仍可访问；
 10. 没有把无证据候选写成唯一诊断。
@@ -694,7 +732,7 @@ git diff --check
 - 新 ICP 领域 SQL 优先放在 `backend/icp/repository.py`；
 - 不要继续无边界扩张 `postgres_client.py`，除非是兼容现有通用接口所必需；
 - 查询必须使用参数绑定，不拼接用户输入；
-- ES 中只保存检索副本和 metadata，最终权威详情优先回 PostgreSQL；
+- OpenSearch 中只保存检索副本和 metadata，最终权威详情优先回 PostgreSQL；
 - FTA/RBD 算法保持纯函数或可测试函数，避免把计算隐藏在 prompt 中；
 - 后台任务必须有失败、取消和恢复状态；
 - API 返回结构应明确区分空结果、缺少参数和服务器错误。
@@ -718,6 +756,7 @@ git diff --check
 
 ```text
 frontend/src/pages/TypeHome.tsx
+frontend/src/pages/TypeDocs.tsx
 frontend/src/components/UnifiedUploadModal.tsx
 frontend/src/api/icp.ts
 ```
@@ -791,13 +830,13 @@ backend/api/__init__.py
 以下能力仍属于持续完善范围，不要在没有证据时宣称已经彻底解决：
 
 1. 真实 Word 文档格式差异很大，解析器仍需用脱敏真实样例迭代；
-2. FTA/RBD/架构图视觉抽取需要人工确认闭环；
+2. FTA/RBD/架构图视觉抽取只能自动进入 provisional 或 quarantine；真实样例仍需继续提升确定性结构抽取覆盖率，不能把视觉候选升级为正式事实；
 3. 跨 HMC、FMECA、FTA、MFL、历史文档的统一实体 ID 尚需继续增强；
 4. 不同机型、构型、软件版本和文档版本的隔离需要更完整的数据模型；
-5. PostgreSQL 与 ES 的一致性、失败重试和重建流程仍需完善；
+5. PostgreSQL 与 OpenSearch 的一致性、失败重试和重建流程仍需完善；
 6. Dify 当前继续走旧知识库兼容链路，尚未完全切换到七类 ICP 专用检索；
 7. 检索效果必须通过真实问题集评估，不能只凭对话观感判断；
-8. 工程图自动解析结果不能未经确认就用于正式可靠性结论。
+8. 工程图自动解析结果只有在确定性来源和类型约束共同通过、状态为 `auto_validated` 时才能用于正式可靠性计算；`provisional` 永远不能用于正式数值结论。
 
 ---
 
@@ -811,7 +850,7 @@ backend/api/__init__.py
 4. 修改代码；
 5. 增加或更新测试；
 6. 运行 Python 和前端构建；
-7. 检查是否误恢复画廊、通用知识库页面或类型内上传；
+7. 检查是否误恢复画廊、通用知识库页面或第二套上传实现；
 8. 总结修改文件、行为变化、测试结果和仍未验证的环境项；
 9. 不自动合并到 `main`。
 
@@ -836,7 +875,7 @@ docs: ...
 - 它是否有助于用户从模糊现象逐步定位，而不是制造一个看似确定的答案？
 - 它是否保留了 PostgreSQL 权威事实、原始文档和工程图证据？
 - 它是否没有破坏 Dify？
-- 它是否没有恢复图片画廊、通用知识库搭建器或每类独立上传入口？
+- 它是否没有恢复图片画廊、通用知识库搭建器或每类独立上传页面/实现？
 - 它是否经过可重复的构建和测试验证？
 
 若任何答案是否定的，应在提交前重新评估设计。

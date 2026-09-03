@@ -1,23 +1,47 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Card, Button, Tag, Table, Space, Modal, Empty,
-  Progress, Typography, message, Popconfirm, Alert,
+  Alert,
+  Button,
+  Card,
+  Drawer,
+  Dropdown,
+  Empty,
+  Input,
+  Modal,
+  Progress,
+  Select,
+  Space,
+  Table,
+  Tag,
+  Typography,
+  message,
 } from 'antd';
+import type { ColumnsType } from 'antd/es/table';
 import {
-  CloudUploadOutlined, DeleteOutlined, PlayCircleOutlined, EyeOutlined,
-  SyncOutlined, DownOutlined, CheckOutlined,
+  CheckCircleOutlined,
+  ClockCircleOutlined,
+  CloudUploadOutlined,
+  DeleteOutlined,
+  ExclamationCircleOutlined,
+  EyeOutlined,
+  FileTextOutlined,
+  HistoryOutlined,
+  LoadingOutlined,
+  MoreOutlined,
+  PlayCircleOutlined,
+  ReloadOutlined,
+  SearchOutlined,
+  StopOutlined,
 } from '@ant-design/icons';
-import { useNavigate, useParams } from 'react-router-dom';
-import {
-  fetchDocumentType, fetchIcpDocuments,
-  parseIcpDocument, deleteIcpDocument,
-} from '@/api/icp';
-import { openTaskStream, cancelTask } from '@/api/kb';
-import { fetchModels, fetchCurrentModelConfig } from '@/api/models';
-import { useGlobalStore } from '@/store';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { deleteIcpDocument, fetchDocumentType, fetchIcpDocuments, parseIcpDocument } from '@/api/icp';
+import { cancelTask, openTaskStream } from '@/api/kb';
+import { fetchCurrentModelConfig, fetchModels } from '@/api/models';
 import { GlassButton } from '@/components/GlassUI';
-import type { ICPDocument, DocTypeInfo } from '@/types';
-import { DOC_STATUS_LABEL, DOC_STATUS_COLOR, formatDateTime } from '@/utils';
+import ParseRecordsPanel from '@/components/ParseRecordsPanel';
+import UnifiedUploadModal from '@/components/UnifiedUploadModal';
+import type { DocTypeInfo, ICPDocument } from '@/types';
+import { DOC_STATUS_COLOR, DOC_STATUS_LABEL, formatDateTime } from '@/utils';
 
 interface RunningTask {
   source: EventSource;
@@ -26,347 +50,574 @@ interface RunningTask {
   progress: number;
 }
 
-const RUNNING_STATUS = new Set(['parsing', 'generating_kg']);
+const READY_STATUS = new Set(['indexed', 'kg_pending', 'kg_done', 'completed']);
+const RUNNING_STATUS = new Set(['parsing', 'generating_kg', 'deleting']);
+const ATTENTION_STATUS = new Set(['uploaded', 'failed', 'delete_failed', 'cancelled']);
+const PARSEABLE_STATUS = new Set(['uploaded', 'failed', 'indexed', 'kg_pending', 'kg_done', 'completed', 'cancelled']);
+const VISION_MODEL_TYPES = new Set(['function_locator', 'fta', 'rbd']);
+
+function metadataText(document: ICPDocument) {
+  const metadata = document.metadata || {};
+  const values = [
+    metadata.document_number,
+    metadata.document_version,
+    metadata.applicable_configuration,
+  ].filter((value) => typeof value === 'string' && value.trim());
+  return values.join(' · ');
+}
 
 export default function TypeDocs() {
   const { docType = '' } = useParams<{ docType: string }>();
   const navigate = useNavigate();
-  const [typeInfo, setTypeInfo] = useState<DocTypeInfo | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
   const [docs, setDocs] = useState<ICPDocument[]>([]);
+  const [typeInfo, setTypeInfo] = useState<DocTypeInfo | null>(null);
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
   const [models, setModels] = useState<any[]>([]);
   const [modelConfigStatus, setModelConfigStatus] = useState<any>(null);
-  const [parseModel, setParseModel] = useState<string | undefined>();
-  const [modelPickerOpen, setModelPickerOpen] = useState(false);
-  const [logModal, setLogModal] = useState<{ open: boolean; docId: string; title: string } | null>(null);
+  const [parseModel, setParseModel] = useState<string>();
+  const [parseTarget, setParseTarget] = useState<ICPDocument | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ICPDocument | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [logModal, setLogModal] = useState<{ docId: string; title: string } | null>(null);
   const [logContent, setLogContent] = useState<{ logs: string[]; progress: number }>({ logs: [], progress: 0 });
   const runningTasks = useRef<Map<string, RunningTask>>(new Map());
   const [, forceUpdate] = useState(0);
 
-  const setModelsStore = useGlobalStore((s) => s.setModels);
-  const setModelConfigStatusStore = useGlobalStore((s) => s.setModelConfigStatus);
+  const supportsVisionModel = VISION_MODEL_TYPES.has(docType);
+  const uploadTypes = useMemo(() => (typeInfo ? [typeInfo] : []), [typeInfo]);
+  const recordsOpen = searchParams.get('records') === '1';
+  const recordsDocumentId = searchParams.get('recordDoc') || undefined;
 
-  const loadType = useCallback(async (dt: string) => {
-    try {
-      setTypeInfo(await fetchDocumentType(dt));
-    } catch {
-      setTypeInfo(null);
-    }
-  }, []);
+  const openParseRecords = useCallback((documentId?: string) => {
+    const next = new URLSearchParams(searchParams);
+    next.set('records', '1');
+    if (documentId) next.set('recordDoc', documentId);
+    else next.delete('recordDoc');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
 
-  const loadDocs = useCallback(async (dt: string) => {
+  const closeParseRecords = useCallback(() => {
+    const next = new URLSearchParams(searchParams);
+    next.delete('records');
+    next.delete('recordDoc');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
+
+  const loadDocs = useCallback(async () => {
+    if (!docType) return;
+    setLoading(true);
+    setLoadError('');
     try {
-      setDocs(await fetchIcpDocuments(dt));
-    } catch {
-      setDocs([]);
+      setDocs(await fetchIcpDocuments(docType));
+    } catch (error) {
+      setLoadError((error as Error).message || '文档列表加载失败');
+    } finally {
+      setLoading(false);
     }
-  }, []);
+  }, [docType]);
 
   const loadModelsData = useCallback(async () => {
-    try {
-      const res = await fetchModels();
-      const list = (res.models || []).filter((m) => m.model_type === 'llm' || !m.model_type);
-      setModels(list);
-      setModelsStore(list);
-      const conf = await fetchCurrentModelConfig();
-      setModelConfigStatus(conf.config_status);
-      setModelConfigStatusStore(conf.config_status);
-    } catch {
-      /* ignore */
+    if (!supportsVisionModel) {
+      setModels([]);
+      setModelConfigStatus(null);
+      return;
     }
-  }, [setModelsStore, setModelConfigStatusStore]);
+    try {
+      const [modelResult, configResult] = await Promise.all([
+        fetchModels(),
+        fetchCurrentModelConfig(),
+      ]);
+      setModels((modelResult.models || []).filter((model) => model.model_type === 'llm' || !model.model_type));
+      setModelConfigStatus(configResult.config_status);
+    } catch {
+      setModels([]);
+      setModelConfigStatus(null);
+    }
+  }, [supportsVisionModel]);
+
+  useEffect(() => {
+    loadDocs();
+    loadModelsData();
+  }, [loadDocs, loadModelsData]);
 
   useEffect(() => {
     if (!docType) return;
-    loadType(docType);
-    loadDocs(docType);
-    loadModelsData();
-  }, [docType, loadType, loadDocs, loadModelsData]);
+    let active = true;
+    setTypeInfo(null);
+    fetchDocumentType(docType)
+      .then((value) => { if (active) setTypeInfo(value); })
+      .catch(() => { if (active) setTypeInfo(null); });
+    return () => { active = false; };
+  }, [docType]);
 
   useEffect(() => () => {
     runningTasks.current.forEach((task) => task.source.close());
     runningTasks.current.clear();
   }, []);
 
-  const checkModels = () => {
-    if (!modelConfigStatus?.chat_configured) return '未配置 Chat LLM 模型，无法解析';
-    if (!modelConfigStatus?.embedding_configured) return '未配置 Embedding 模型，无法向量化';
-    return '';
-  };
-
-  const handleParse = async (doc: ICPDocument) => {
-    const tip = checkModels();
-    if (tip) { message.error(tip); return; }
-    setDocs((prev) => prev.map((item) => (item.doc_id === doc.doc_id ? { ...item, status: 'parsing' } : item)));
-    try {
-      const result = await parseIcpDocument(docType, doc.doc_id, parseModel);
-      startEventSource(doc.doc_id, result.task_id);
-    } catch (error) {
-      setDocs((prev) => prev.map((item) => (item.doc_id === doc.doc_id ? { ...item, status: 'failed' } : item)));
-      message.error(`解析启动失败: ${(error as Error).message}`);
-    }
-  };
+  const taskKey = (docId: string) => `${docType}|${docId}`;
+  const getRunningTask = (docId: string) => runningTasks.current.get(taskKey(docId));
 
   const startEventSource = (docId: string, taskId: string) => {
-    const key = `${docType}|${docId}`;
-    const old = runningTasks.current.get(key);
-    if (old) old.source.close();
+    const key = taskKey(docId);
+    runningTasks.current.get(key)?.source.close();
 
-    const logs: string[] = [];
     const source = openTaskStream(taskId);
-    const entry: RunningTask = { source, taskId, logs, progress: 0 };
+    const entry: RunningTask = { source, taskId, logs: [], progress: 0 };
     runningTasks.current.set(key, entry);
 
     const cleanup = () => {
       source.close();
       runningTasks.current.delete(key);
-      loadDocs(docType);
+      loadDocs();
       forceUpdate((value) => value + 1);
     };
 
     source.onmessage = (event) => {
       let data: any;
       try { data = JSON.parse(event.data); } catch { return; }
+      const now = formatDateTime(new Date().toISOString());
       if (data.type === 'progress') {
-        entry.progress = data.progress;
-        entry.logs.push(`[${formatDateTime()}] ${data.log || ''}`);
-      } else if (data.type === 'log') {
-        entry.logs.push(`[${formatDateTime()}] ${data.log}`);
+        entry.progress = Number(data.progress || 0);
+        if (data.log) entry.logs.push(`[${now}] ${data.log}`);
+      } else if (data.type === 'log' && data.log) {
+        entry.logs.push(`[${now}] ${data.log}`);
       } else if (data.type === 'status' && data.status === 'cancelled') {
-        entry.logs.push(`[${formatDateTime()}] 任务已取消`);
+        entry.logs.push(`[${now}] 任务已取消`);
         cleanup();
       } else if (data.type === 'final') {
         cleanup();
       }
+      if (logModal?.docId === docId) {
+        setLogContent({ logs: [...entry.logs], progress: entry.progress });
+      }
       forceUpdate((value) => value + 1);
     };
-    source.onerror = () => cleanup();
+    source.onerror = cleanup;
+  };
+
+  const handleParse = async () => {
+    const document = parseTarget;
+    if (!document) return;
+    setParseTarget(null);
+    setDocs((previous) => previous.map((item) => (
+      item.doc_id === document.doc_id ? { ...item, status: 'parsing' } : item
+    )));
+    try {
+      const result = await parseIcpDocument(docType, document.doc_id, supportsVisionModel ? parseModel : undefined);
+      startEventSource(document.doc_id, result.task_id);
+      message.success('已开始解析');
+    } catch (error) {
+      setDocs((previous) => previous.map((item) => (
+        item.doc_id === document.doc_id ? { ...item, status: 'failed' } : item
+      )));
+      message.error(`解析启动失败：${(error as Error).message}`);
+    }
   };
 
   const handleCancelTask = async (docId: string) => {
-    const task = runningTasks.current.get(`${docType}|${docId}`);
-    if (task) await cancelTask(task.taskId);
-  };
-
-  const showLogModal = (docId: string) => {
-    const task = runningTasks.current.get(`${docType}|${docId}`);
-    const doc = docs.find((item) => item.doc_id === docId);
-    setLogContent({ logs: task?.logs || [], progress: task?.progress || 0 });
-    setLogModal({ open: true, docId, title: doc?.file_name || docId });
-  };
-
-  const handleDeleteDoc = async (docId: string) => {
-    const key = `${docType}|${docId}`;
-    const task = runningTasks.current.get(key);
-    if (task) {
-      task.source.close();
-      runningTasks.current.delete(key);
+    const task = getRunningTask(docId);
+    if (!task) {
+      openParseRecords(docId);
+      return;
     }
     try {
-      await deleteIcpDocument(docType, docId);
-      message.success('文档已删除');
-      loadDocs(docType);
+      await cancelTask(task.taskId);
+      message.info('已请求停止任务');
     } catch (error) {
-      message.error(`删除失败: ${(error as Error).message}`);
+      message.error(`停止失败：${(error as Error).message}`);
     }
   };
 
-  const getDocProgress = (docId: string) =>
-    runningTasks.current.get(`${docType}|${docId}`)?.progress ?? 0;
+  const showProgress = (document: ICPDocument) => {
+    const task = getRunningTask(document.doc_id);
+    if (!task) {
+      openParseRecords(document.doc_id);
+      return;
+    }
+    setLogContent({ logs: [...task.logs], progress: task.progress });
+    setLogModal({ docId: document.doc_id, title: document.file_name });
+  };
 
-  const columns = [
-    { title: '文件名', dataIndex: 'file_name', ellipsis: true },
+  const handleDeleteDoc = async () => {
+    if (!deleteTarget) return;
+    const document = deleteTarget;
+    setDeleteLoading(true);
+    try {
+      const task = getRunningTask(document.doc_id);
+      task?.source.close();
+      runningTasks.current.delete(taskKey(document.doc_id));
+      await deleteIcpDocument(docType, document.doc_id);
+      setDeleteTarget(null);
+      message.success('文档已删除');
+      loadDocs();
+    } catch (error) {
+      message.error(`删除失败：${(error as Error).message}`);
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
+
+  const sortedDocs = useMemo(
+    () => [...docs].sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || '')),
+    [docs],
+  );
+  const filteredDocs = useMemo(() => sortedDocs.filter((document) => {
+    const keyword = search.trim().toLowerCase();
+    const matchesSearch = !keyword || document.file_name.toLowerCase().includes(keyword)
+      || metadataText(document).toLowerCase().includes(keyword);
+    return matchesSearch && (!statusFilter || document.status === statusFilter);
+  }), [sortedDocs, search, statusFilter]);
+
+  const summary = useMemo(() => ({
+    total: docs.length,
+    ready: docs.filter((item) => READY_STATUS.has(item.status)).length,
+    running: docs.filter((item) => RUNNING_STATUS.has(item.status)).length,
+    attention: docs.filter((item) => ATTENTION_STATUS.has(item.status) || (!READY_STATUS.has(item.status) && !RUNNING_STATUS.has(item.status))).length,
+  }), [docs]);
+
+  const statusOptions = useMemo(() => Array.from(new Set(docs.map((item) => item.status))).map((status) => ({
+    value: status,
+    label: DOC_STATUS_LABEL[status] || status,
+  })), [docs]);
+
+  const renderActions = (document: ICPDocument) => {
+    const localTask = getRunningTask(document.doc_id);
+    const running = RUNNING_STATUS.has(document.status);
+    const menuItems = [
+      {
+        key: 'logs',
+        icon: <HistoryOutlined />,
+        label: '查看解析记录',
+      },
+      ...(localTask ? [{ key: 'cancel', icon: <StopOutlined />, label: '停止当前任务', danger: true }] : []),
+      {
+        key: 'delete',
+        icon: <DeleteOutlined />,
+        label: '删除文档',
+        danger: true,
+        disabled: running,
+      },
+    ];
+    return (
+      <Space size={6} className="type-document-actions">
+        <GlassButton
+          size="small"
+          icon={<EyeOutlined />}
+          onClick={() => navigate(`/type/${docType}/doc/${document.doc_id}`)}
+        >
+          查看
+        </GlassButton>
+        {running ? (
+          <GlassButton size="small" variant="primary" icon={<LoadingOutlined />} onClick={() => showProgress(document)}>
+            进度
+          </GlassButton>
+        ) : PARSEABLE_STATUS.has(document.status) ? (
+          <GlassButton size="small" variant="primary" icon={<PlayCircleOutlined />} onClick={() => setParseTarget(document)}>
+            {(document.parse_count || 0) > 0 ? '重新解析' : '解析'}
+          </GlassButton>
+        ) : null}
+        <Dropdown
+          trigger={['click']}
+          menu={{
+            items: menuItems,
+            onClick: ({ key, domEvent }) => {
+              domEvent.stopPropagation();
+              if (key === 'logs') openParseRecords(document.doc_id);
+              if (key === 'cancel') handleCancelTask(document.doc_id);
+              if (key === 'delete') setDeleteTarget(document);
+            },
+          }}
+        >
+          <Button type="text" size="small" icon={<MoreOutlined />} aria-label={`更多操作：${document.file_name}`} />
+        </Dropdown>
+      </Space>
+    );
+  };
+
+  const columns: ColumnsType<ICPDocument> = [
     {
-      title: '状态',
-      dataIndex: 'status',
-      width: 160,
-      render: (value: string, record: ICPDocument) => (
-        <Space direction="vertical" size={0}>
-          <Tag color={DOC_STATUS_COLOR[value]}>{DOC_STATUS_LABEL[value] || value}</Tag>
-          {RUNNING_STATUS.has(value) && (
-            <Progress percent={getDocProgress(record.doc_id)} size="small" style={{ width: 110 }} />
-          )}
-        </Space>
+      title: '文档',
+      dataIndex: 'file_name',
+      render: (_value, document) => (
+        <div className="type-file-cell">
+          <span className="type-file-icon"><FileTextOutlined /></span>
+          <div className="type-file-copy">
+            <button
+              type="button"
+              className="type-file-link"
+              onClick={() => navigate(`/type/${docType}/doc/${document.doc_id}`)}
+            >
+              {document.file_name}
+            </button>
+            <span className="type-file-meta">
+              {metadataText(document) || `添加于 ${formatDateTime(document.created_at) || '-'}`}
+            </span>
+          </div>
+        </div>
       ),
     },
     {
-      title: '解析次数',
-      dataIndex: 'parse_count',
-      width: 90,
-      render: (value?: number) => value ?? 0,
+      title: '处理状态',
+      dataIndex: 'status',
+      width: 190,
+      render: (status: string, document) => {
+        const task = getRunningTask(document.doc_id);
+        return (
+          <div className="type-document-status">
+            <Space size={5} wrap>
+              <Tag color={DOC_STATUS_COLOR[status]}>{DOC_STATUS_LABEL[status] || status}</Tag>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                解析 {document.parse_count || 0} 次
+              </Typography.Text>
+            </Space>
+            {RUNNING_STATUS.has(status) && task ? (
+              <Progress percent={task.progress} size="small" showInfo={false} />
+            ) : null}
+          </div>
+        );
+      },
     },
-    { title: '更新时间', dataIndex: 'updated_at', width: 160, render: (value: string) => (value ? formatDateTime(value) : '-') },
+    {
+      title: '最近更新',
+      dataIndex: 'updated_at',
+      width: 170,
+      render: (value?: string) => <span className="type-document-time">{formatDateTime(value) || '-'}</span>,
+    },
     {
       title: '操作',
-      width: 280,
-      render: (_: unknown, record: ICPDocument) => (
-        <Space size={4} className="kb-row-actions">
-          {(record.status === 'uploaded' || record.status === 'failed' || record.status === 'indexed' ||
-            record.status === 'kg_pending' || record.status === 'kg_done') && (
-            <GlassButton variant="primary" size="small" icon={<PlayCircleOutlined />} onClick={() => handleParse(record)}>
-              解析
-            </GlassButton>
-          )}
-          {(record.status === 'parsing' || record.status === 'generating_kg') && (
-            <>
-              <GlassButton variant="text" size="small" onClick={() => showLogModal(record.doc_id)}>日志</GlassButton>
-              <GlassButton variant="text" size="small" onClick={() => handleCancelTask(record.doc_id)}>取消</GlassButton>
-            </>
-          )}
-          <GlassButton size="small" icon={<EyeOutlined />} onClick={() => navigate(`/type/${docType}/doc/${record.doc_id}`)}>
-            查看
-          </GlassButton>
-          <Popconfirm title="确定删除该文档？" onConfirm={() => handleDeleteDoc(record.doc_id)}>
-            <GlassButton className="glass-btn-black" size="small" icon={<DeleteOutlined />}>删除</GlassButton>
-          </Popconfirm>
-        </Space>
-      ),
+      key: 'actions',
+      width: 230,
+      align: 'right',
+      render: (_value, document) => renderActions(document),
     },
   ];
 
-  const sortedDocs = [...docs].sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
-
   return (
-    <div className="glass-fade-in" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap', flexShrink: 0 }}>
-        <div>
-          <Typography.Title level={5} style={{ margin: 0, color: '#262626' }}>
-            文档管理与解析
-          </Typography.Title>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {typeInfo?.name || docType}
-            {typeInfo?.input_formats ? ` · 支持格式: ${typeInfo.input_formats}` : ''}
-          </Typography.Text>
+    <div className="type-page type-documents-page glass-fade-in">
+      <div className="type-page-header">
+        <div className="type-page-heading">
+          <Typography.Title level={4}>文档</Typography.Title>
+          <Typography.Text type="secondary">管理文件并查看处理结果</Typography.Text>
         </div>
-        <div style={{ flex: 1 }} />
-
-        <GlassButton
-          variant="text"
-          icon={<CloudUploadOutlined />}
-          onClick={() => navigate('/')}
-          title="返回七类文档首页的统一上传入口"
-        >
-          统一上传入口
-        </GlassButton>
-
-        <div
-          className="agent-picker agent-picker-sm"
-          onClick={() => setModelPickerOpen(true)}
-          style={{ width: 'auto', maxWidth: 260 }}
-          title="选择解析用 Chat 模型"
-        >
-          <span className="agent-picker-label">解析模型</span>
-          <span className="agent-picker-value">
-            {parseModel ? models.find((model) => model.model_id === parseModel)?.name || '已选择' : '使用默认'}
-            <DownOutlined />
-          </span>
-        </div>
-
-        {(!modelConfigStatus?.chat_configured || !modelConfigStatus?.embedding_configured) && (
-          <Alert
-            type="warning"
-            showIcon
-            style={{ padding: '2px 10px', fontSize: 12, flexShrink: 0 }}
-            message={
-              !modelConfigStatus?.chat_configured
-                ? !modelConfigStatus?.embedding_configured
-                  ? '未配置 Chat LLM 与 Embedding 模型'
-                  : '未配置 Chat LLM 模型，解析不可用'
-                : '未配置 Embedding 模型，向量化不可用'
-            }
-          />
-        )}
+        <Space size={8} wrap>
+          <GlassButton icon={<HistoryOutlined />} onClick={() => openParseRecords()}>
+            解析记录
+          </GlassButton>
+          <GlassButton icon={<CloudUploadOutlined />} onClick={() => setUploadOpen(true)}>
+            上传文档
+          </GlassButton>
+        </Space>
       </div>
 
-      <Alert
-        type="info"
-        showIcon
-        style={{ marginBottom: 12, flexShrink: 0 }}
-        message="文档上传已统一到七类文档知识库首页"
-        description="当前页面只管理已归入该类型的文档，并负责解析、查看和删除。"
-      />
+      <div className="type-summary-grid" aria-label="文档状态概览">
+        <div className="type-summary-card">
+          <FileTextOutlined />
+          <span><strong>{summary.total}</strong><small>全部文档</small></span>
+        </div>
+        <div className="type-summary-card ready">
+          <CheckCircleOutlined />
+          <span><strong>{summary.ready}</strong><small>可用于查询</small></span>
+        </div>
+        <div className="type-summary-card running">
+          <ClockCircleOutlined />
+          <span><strong>{summary.running}</strong><small>正在处理</small></span>
+        </div>
+        <div className="type-summary-card attention">
+          <ExclamationCircleOutlined />
+          <span><strong>{summary.attention}</strong><small>需要处理</small></span>
+        </div>
+      </div>
 
       <Card
-        className="glass"
-        style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
-        styles={{ body: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, paddingTop: 12 } }}
-        title={
-          <Space>
-            <span>{typeInfo?.name || docType} · 文档列表</span>
-            <GlassButton variant="text" size="small" icon={<SyncOutlined />} onClick={() => loadDocs(docType)}>刷新</GlassButton>
-          </Space>
-        }
+        className="glass type-section-card"
+        title={<span>文档列表 <Typography.Text type="secondary">{filteredDocs.length}</Typography.Text></span>}
+        styles={{ body: { padding: 0 } }}
       >
-        <Table<ICPDocument>
-          rowKey="doc_id"
-          className="kb-doc-table"
-          dataSource={sortedDocs}
-          columns={columns}
-          pagination={{ pageSize: 10, showSizeChanger: false, showTotal: (total) => `共 ${total} 份` }}
-          size="small"
-          locale={{ emptyText: '该类型暂无文档，请通过首页统一上传入口添加' }}
-          scroll={{ y: 'calc(100vh - 360px)' }}
-        />
-      </Card>
+        <div className="type-table-toolbar">
+          <Input
+            allowClear
+            prefix={<SearchOutlined />}
+            placeholder="搜索文件名、编号或版本"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+          <Select
+            allowClear
+            placeholder="全部状态"
+            value={statusFilter || undefined}
+            onChange={(value) => setStatusFilter(value || '')}
+            options={statusOptions}
+          />
+          <GlassButton variant="text" icon={<ReloadOutlined />} loading={loading} onClick={loadDocs}>
+            刷新
+          </GlassButton>
+        </div>
 
-      <Modal
-        title="选择解析模型"
-        open={modelPickerOpen}
-        onCancel={() => setModelPickerOpen(false)}
-        onOk={() => setModelPickerOpen(false)}
-        okText="确定"
-        cancelText="取消"
-        width={460}
-        okButtonProps={{ disabled: models.length === 0 }}
-      >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 400, overflow: 'auto' }}>
-          {models.length === 0 ? (
-            <Empty description="暂无 Chat 模型，请先到模型管理配置" style={{ marginTop: 40 }} />
-          ) : (
-            <>
-              {models.map((model) => {
-                const selected = parseModel === model.model_id;
+        {loadError ? (
+          <div className="type-empty-state">
+            <Empty description="文档列表加载失败">
+              <GlassButton onClick={loadDocs}>重新加载</GlassButton>
+            </Empty>
+          </div>
+        ) : (
+          <>
+            <div className="type-documents-desktop">
+              <Table<ICPDocument>
+                rowKey="doc_id"
+                className="kb-doc-table type-documents-table"
+                loading={loading}
+                dataSource={filteredDocs}
+                columns={columns}
+                pagination={{
+                  pageSize: 10,
+                  showSizeChanger: false,
+                  showTotal: (total) => `共 ${total} 份`,
+                }}
+                locale={{
+                  emptyText: search || statusFilter
+                    ? '没有符合条件的文档'
+                    : '暂无文档，请上传文档',
+                }}
+                scroll={{ x: 920 }}
+              />
+            </div>
+
+            <div className="type-documents-mobile">
+              {loading ? (
+                <div className="type-mobile-loading"><LoadingOutlined spin /> 正在加载</div>
+              ) : filteredDocs.length === 0 ? (
+                <Empty description={search || statusFilter ? '没有符合条件的文档' : '暂无文档，请上传文档'} />
+              ) : filteredDocs.map((document) => {
+                const task = getRunningTask(document.doc_id);
                 return (
-                  <div
-                    key={model.model_id}
-                    className={`agent-picker-option${selected ? ' selected' : ''}`}
-                    onClick={() => setParseModel(model.model_id)}
-                  >
-                    <div style={{ minWidth: 0 }}>
-                      <div className="agent-picker-option-name">
-                        {model.name}
-                        <Tag style={{ marginLeft: 6 }}>Chat LLM</Tag>
-                        {model.is_default && <Tag color="gold" style={{ marginLeft: 4 }}>★ 默认</Tag>}
+                  <article key={document.doc_id} className="type-document-card">
+                    <div className="type-document-card-header">
+                      <span className="type-file-icon"><FileTextOutlined /></span>
+                      <div className="type-file-copy">
+                        <button
+                          type="button"
+                          className="type-file-link"
+                          onClick={() => navigate(`/type/${docType}/doc/${document.doc_id}`)}
+                        >
+                          {document.file_name}
+                        </button>
+                        <span className="type-file-meta">{metadataText(document) || formatDateTime(document.updated_at)}</span>
                       </div>
-                      <div className="agent-picker-option-sub">解析文档、表格和工程图</div>
+                      <Tag color={DOC_STATUS_COLOR[document.status]}>
+                        {DOC_STATUS_LABEL[document.status] || document.status}
+                      </Tag>
                     </div>
-                    {selected && <CheckOutlined style={{ color: '#1a1a1a', flexShrink: 0 }} />}
-                  </div>
+                    {RUNNING_STATUS.has(document.status) && task ? (
+                      <Progress percent={task.progress} size="small" />
+                    ) : null}
+                    <div className="type-document-card-footer">
+                      <span>解析 {document.parse_count || 0} 次 · {formatDateTime(document.updated_at) || '-'}</span>
+                      {renderActions(document)}
+                    </div>
+                  </article>
                 );
               })}
-              <div className={`agent-picker-option${!parseModel ? ' selected' : ''}`} onClick={() => setParseModel(undefined)}>
-                <div className="agent-picker-option-name" style={{ color: '#8c8c8c' }}>使用默认模型</div>
-                {!parseModel && <CheckOutlined style={{ color: '#8c8c8c', flexShrink: 0 }} />}
-              </div>
-            </>
-          )}
-        </div>
+            </div>
+          </>
+        )}
+      </Card>
+
+      <UnifiedUploadModal
+        open={uploadOpen}
+        types={uploadTypes}
+        initialDocType={docType}
+        lockedDocType={docType}
+        onClose={() => setUploadOpen(false)}
+        onUploaded={async () => {
+          await loadDocs();
+        }}
+      />
+
+      <Drawer
+        title="解析记录"
+        open={recordsOpen}
+        onClose={closeParseRecords}
+        width="min(960px, 100vw)"
+        rootClassName="parse-records-drawer"
+        styles={{ body: { padding: 20 } }}
+      >
+        {recordsOpen ? (
+          <ParseRecordsPanel
+            docType={docType}
+            documentId={recordsDocumentId}
+            embedded
+            onShowAll={() => openParseRecords()}
+          />
+        ) : null}
+      </Drawer>
+
+      <Modal
+        title={(parseTarget?.parse_count || 0) > 0 ? '重新解析文档' : '解析文档'}
+        open={Boolean(parseTarget)}
+        onCancel={() => setParseTarget(null)}
+        onOk={handleParse}
+        okText="开始解析"
+        cancelText="取消"
+        width={520}
+      >
+        <Typography.Text strong>{parseTarget?.file_name}</Typography.Text>
+        <Typography.Paragraph type="secondary" style={{ marginTop: 8 }}>
+          处理完成后会更新该文档的查询内容和关系数据。
+        </Typography.Paragraph>
+        {supportsVisionModel ? (
+          <div className="type-parse-model-field">
+            <Typography.Text>工程图识别模型（可选）</Typography.Text>
+            <Select
+              value={parseModel || '__default__'}
+              onChange={(value) => setParseModel(value === '__default__' ? undefined : value)}
+              options={[
+                { value: '__default__', label: '使用系统默认模型' },
+                ...models.map((model) => ({ value: model.model_id, label: model.name })),
+              ]}
+            />
+            {modelConfigStatus && !modelConfigStatus.chat_configured ? (
+              <Alert
+                type="warning"
+                showIcon
+                message="未配置工程图识别模型；文字和表格仍可处理，图片内容可能被跳过。"
+                action={<Button size="small" onClick={() => navigate('/models')}>前往设置</Button>}
+              />
+            ) : null}
+          </div>
+        ) : null}
       </Modal>
 
       <Modal
-        title={`任务日志：${logModal?.title || ''}`}
-        open={logModal?.open}
+        title="删除文档"
+        open={Boolean(deleteTarget)}
+        onCancel={() => setDeleteTarget(null)}
+        onOk={handleDeleteDoc}
+        okText="删除"
+        cancelText="取消"
+        okButtonProps={{ danger: true }}
+        confirmLoading={deleteLoading}
+      >
+        <Typography.Paragraph>
+          确定删除“{deleteTarget?.file_name}”吗？相关处理结果也会一并删除。
+        </Typography.Paragraph>
+      </Modal>
+
+      <Modal
+        title={`处理进度 · ${logModal?.title || ''}`}
+        open={Boolean(logModal)}
         onCancel={() => setLogModal(null)}
         footer={<Button onClick={() => setLogModal(null)}>关闭</Button>}
-        width={640}
+        width={680}
       >
         <Progress percent={logContent.progress} size="small" style={{ marginBottom: 12 }} />
-        <div
-          style={{
-            background: 'rgba(0,0,0,0.85)', color: '#d9d9d9', borderRadius: 8, padding: 12,
-            maxHeight: 360, overflow: 'auto', fontFamily: 'monospace', fontSize: 12, whiteSpace: 'pre-wrap',
-          }}
-        >
-          {logContent.logs.length === 0 ? '暂无日志输出' : logContent.logs.join('\n')}
+        <div className="type-task-log">
+          {logContent.logs.length === 0 ? '正在等待任务输出…' : logContent.logs.join('\n')}
         </div>
       </Modal>
     </div>

@@ -9,9 +9,9 @@ import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 const { Header, Content } = Layout;
 
 const NAV = [
-  { key: '/', icon: <FolderOpenOutlined />, label: '七类文档知识库' },
-  { key: '/diagnosis', icon: <RobotOutlined />, label: 'ICP 故障诊断' },
-  { key: '/models', icon: <SettingOutlined />, label: '系统设置' },
+  { key: '/', icon: <FolderOpenOutlined />, label: '七类文档知识库', shortLabel: '文档' },
+  { key: '/diagnosis', icon: <RobotOutlined />, label: 'ICP 故障诊断', shortLabel: '诊断' },
+  { key: '/models', icon: <SettingOutlined />, label: '系统设置', shortLabel: '设置' },
 ];
 
 export default function MainLayout() {
@@ -30,14 +30,15 @@ export default function MainLayout() {
   return (
     <Layout style={{ minHeight: '100vh', height: '100vh', overflow: 'hidden', background: 'transparent' }}>
       <Header
+        className="main-header"
         style={{
           background: 'rgba(255,255,255,0.35)',
           backdropFilter: 'blur(18px) saturate(170%)',
           WebkitBackdropFilter: 'blur(18px) saturate(170%)',
           borderBottom: '1px solid rgba(255,255,255,0.55)',
-          display: 'flex',
+          display: 'grid',
+          gridTemplateColumns: 'minmax(0, 1fr) auto minmax(0, 1fr)',
           alignItems: 'center',
-          justifyContent: 'space-between',
           padding: '0 24px',
           position: 'sticky',
           top: 0,
@@ -47,6 +48,7 @@ export default function MainLayout() {
         }}
       >
         <button
+          className="main-brand"
           type="button"
           aria-label="返回 ICP 七类文档知识库首页"
           onClick={() => navigate('/')}
@@ -87,33 +89,31 @@ export default function MainLayout() {
           >
             ICP
           </span>
-          <span style={{ lineHeight: 1.25 }}>
-            <span style={{ display: 'block', fontWeight: 700, color: '#1f1f1f' }}>ICP 故障诊断知识系统</span>
-            <span style={{ display: 'block', fontSize: 11, color: '#8c8c8c', marginTop: 2 }}>
-              七类文档 · 混合检索 · 多源证据
-            </span>
+          <span className="main-brand-copy" style={{ lineHeight: 1.25 }}>
+            <span className="main-brand-title" style={{ display: 'block', fontWeight: 700, color: '#1f1f1f' }}>ICP 故障诊断知识系统</span>
           </span>
         </button>
 
-        <div className="glass-tabbar" style={{ flexWrap: 'wrap' }}>
+        <div className="glass-tabbar main-nav" style={{ justifySelf: 'center' }}>
           {NAV.map((item) => (
             <button
               key={item.key}
               type="button"
               className={`glass-tabbar-item${selected === item.key ? ' active' : ''}`}
+              aria-label={item.label}
               onClick={() => navigate(item.key)}
             >
               {item.icon}
-              <span>{item.label}</span>
+              <span className="main-nav-label-full">{item.label}</span>
+              <span className="main-nav-label-short" aria-hidden="true">{item.shortLabel}</span>
             </button>
           ))}
         </div>
-
-        <div style={{ minWidth: 260, textAlign: 'right', color: '#8c8c8c', fontSize: 12 }}>
-          诊断结果需结合正式维修程序复核
-        </div>
       </Header>
-      <Content style={{ padding: isFullWorkspace ? 0 : '24px 24px 0', overflow: 'auto' }}>
+      <Content
+        className={isFullWorkspace ? 'main-workspace-content' : undefined}
+        style={{ padding: isFullWorkspace ? 0 : '24px 24px 0', minHeight: 0, overflow: isFullWorkspace ? 'hidden' : 'auto' }}
+      >
         <Outlet />
       </Content>
     </Layout>

@@ -1,0 +1,662 @@
+{
+  "name": "ICP 智能体多轮对话回归集",
+  "version": "2026-09-02",
+  "description": "基于 test-docs 中的合成资料编写。每组 turns 必须在同一会话依次发送，用于检验指代消解、问题意图、资料路由、跨文档补全、来源边界和数值计算授权；不可作为真实维修依据。所有问法均为重新措辞，不直接复用样例文档原句。",
+  "defaults": {
+    "assertions": {
+      "required_event_types": ["answer", "done"],
+      "answer_not_contains": [
+        "待复核（未绑定已批准直接证据）",
+        "证据边界：部分说明未附可直接核验的来源",
+        "当前已批准证据不足以支持可直接陈述的事实结论",
+        "\\\"record_id\\\"",
+        "\\\"answer_fields\\\"",
+        "occurred_at=",
+        "verification_result=",
+        "final_solution="
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "MT-ARCH-01-module-context",
+      "metadata": {
+        "category": "架构基础信息与指代追问",
+        "coverage": ["function_locator", "conversation_state"],
+        "expected_records": ["MOD-GPP-MSM", "FUNC-230"]
+      },
+      "turns": [
+        {
+          "id": "definition",
+          "question": "MOD-GPP-MSM 这个部件在系统里做什么？请说出它的中文名称、归属和主要职责。",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["function_locator"],
+            "required_used_doc_types": ["function_locator"],
+            "required_used_record_ids": ["MOD-GPP-MSM"],
+            "min_citations": 1,
+            "answer_regex": ["模板|数据|存储"]
+          }
+        },
+        {
+          "id": "importance",
+          "question": "那它为什么重要？如果它暂时不可用，任务侧最先受影响的是什么？",
+          "metadata": {"checks": "必须把“它”解析为上一轮 MOD-GPP-MSM，而不是泛化到任意模块。"},
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["function_locator"],
+            "required_used_doc_types": ["function_locator"],
+            "min_citations": 1,
+            "answer_regex": ["模板|任务|数据"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-ARCH-02-complete-system",
+      "metadata": {
+        "category": "整套架构完整性",
+        "coverage": ["function_locator", "graph_traversal"],
+        "expected_records": ["SUB-PWR", "SUB-GPP", "SUB-IFC", "SUB-DSP", "SUB-HMS", "SUB-TCS"]
+      },
+      "turns": [
+        {
+          "id": "overview",
+          "question": "SYN-ICP-9000 从总体上由哪几块功能域组成？请给我完整列表，不要只挑和告警有关的部分。",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["function_locator", "graph_traversal"],
+            "required_used_doc_types": ["function_locator"],
+            "min_citations": 1,
+            "answer_regex": ["6|六", "电源", "显示", "时钟"]
+          }
+        },
+        {
+          "id": "count-check",
+          "question": "所以总数是几个？刚才有没有把供电和显示相关部分漏掉？",
+          "metadata": {"checks": "追问应回到整套系统集合，不能沿用局部检索结果。"},
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["function_locator"],
+            "min_citations": 1,
+            "answer_regex": ["6|六", "电源", "显示"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-FAULT-01-hot-power-fallback",
+      "metadata": {
+        "category": "详细故障现象、维修与历史闭环",
+        "coverage": ["fmeca_query", "mfl_query", "fault_history_query", "graph_traversal"],
+        "expected_records": ["FM-SYN-006", "MFL-SYN-006", "HIS-SYN-002"]
+      },
+      "turns": [
+        {
+          "id": "symptom",
+          "question": "设备受热且负荷偏高时，主供电支路会掉下去，另一路接住业务；温度回落后原支路又恢复。优先从哪些方向判断？",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["fmeca_query", "graph_traversal"],
+            "any_used_doc_types": ["fmeca", "hmc", "fault_history"],
+            "min_citations": 1,
+            "answer_not_contains": ["已经确认唯一根因"],
+            "answer_regex": ["热|焊|连接|间歇"]
+          }
+        },
+        {
+          "id": "repair-and-history",
+          "question": "如果现场复现了这个现象，先怎么检查和处置？以前的相近案例在什么条件下出现、最后怎么验证恢复？",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["mfl_query", "fault_history_query"],
+            "required_used_doc_types": ["fault_history"],
+            "required_used_record_ids": ["HIS-SYN-002"],
+            "required_answer_facets": ["resolution", "history_time", "history_action", "history_result"],
+            "min_citations": 1,
+            "answer_regex": ["热循环|满载|28\\.0"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-HMC-01-structured-code-followup",
+      "metadata": {
+        "category": "HMC 条件编码与连续追问",
+        "coverage": ["hmc_query", "mfl_query", "fault_history_query"],
+        "expected_records": ["91810001**0001"]
+      },
+      "turns": [
+        {
+          "id": "decode",
+          "question": "日志给出 LCN 91810001、HSC 0001。请按 HMC 手册解释这一组合对应的现象，并给出先做什么检查。",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["hmc_query"],
+            "required_used_doc_types": ["hmc"],
+            "required_used_record_ids": ["91810001**0001"],
+            "min_citations": 1,
+            "answer_regex": ["ICU|输入|钳位|采样"]
+          }
+        },
+        {
+          "id": "repair",
+          "question": "针对刚才这个报码，维修清单是否给了可执行的处理办法或状态接口？不要把相似报码混进来。",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["hmc_query", "mfl_query"],
+            "any_used_doc_types": ["hmc", "mfl"],
+            "min_citations": 1,
+            "answer_not_contains": ["用户提供的 HAMC", "风扇"],
+            "answer_regex": ["检查|维修|状态"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-FTA-01-causal-chain-without-jargon",
+      "metadata": {
+        "category": "隐含因果链的 FTA 路由",
+        "coverage": ["fta_query", "fmeca_query", "graph_traversal"],
+        "expected_records": ["FTA-SYN-003", "FM-SYN-040", "FM-SYN-041", "FM-SYN-042"]
+      },
+      "turns": [
+        {
+          "id": "cause",
+          "question": "内部报文已经生成，可接在外面的设备一直拿不到可用数据。不要只列模块，按可能断开的环节说明原因。",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["fta_query", "fmeca_query", "graph_traversal"],
+            "required_used_doc_types": ["fta", "fmeca"],
+            "min_citations": 1,
+            "answer_not_contains": ["已经确认网关硬件损坏"],
+            "answer_regex": ["链路|协议|队列|转发"]
+          }
+        },
+        {
+          "id": "discriminate",
+          "question": "为了把这些可能性区分开，现场应该优先看哪些指标或接口？如果资料中有维修动作也请一并给出。",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "any_tools": ["mfl_query", "fault_history_query", "fmeca_query"],
+            "required_answer_facets": ["resolution"],
+            "min_citations": 1,
+            "answer_regex": ["队列|端口|状态|配置"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-FTA-02-explicit-calculation",
+      "metadata": {
+        "category": "FTA 数值授权",
+        "coverage": ["fta_query", "fta_analyzer"],
+        "expected_records": ["FTA-SYN-005"]
+      },
+      "turns": [
+        {
+          "id": "structure",
+          "question": "运行一段时间后设备会自己反复重新起来。FTA 文档把这个结果关联到哪些下层条件？先只解释结构，不要自己算概率。",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["fta_query"],
+            "forbidden_tools": ["fta_analyzer"],
+            "required_used_doc_types": ["fta"],
+            "min_citations": 1,
+            "answer_not_contains": ["显示输出通道无信号"],
+            "answer_regex": ["OR|AND|逻辑|条件"]
+          }
+        },
+        {
+          "id": "calculate",
+          "question": "现在请严格按这份 FTA 的已验证结构，计算最小割集；没有可计算参数的部分请直接标出，不能补造数字。",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["fta_query", "fta_analyzer"],
+            "required_used_doc_types": ["fta"],
+            "min_citations": 1,
+            "answer_regex": ["最小割集|缺少|参数"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-RBD-01-redundancy-boundary",
+      "metadata": {
+        "category": "隐含冗余问题与 RBD 结论边界",
+        "coverage": ["rbd_query", "fmeca_query", "graph_traversal"],
+        "expected_records": ["RBD-SYN-001", "FM-SYN-007"]
+      },
+      "turns": [
+        {
+          "id": "impact",
+          "question": "B 路稳压偏低，但 A 路目前还能承担负载。继续带着这个状态工作，冗余能力和任务连续性会怎样？",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["fmeca_query", "rbd_query", "graph_traversal"],
+            "forbidden_tools": ["rbd_calculator"],
+            "required_used_doc_types": ["fmeca", "rbd"],
+            "min_citations": 1,
+            "answer_regex": ["冗余|备用|容错"]
+          }
+        },
+        {
+          "id": "boundary",
+          "question": "请明确说一下可靠性框图能证明什么、不能替代什么。它能直接给出根因或维修结论吗？",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["rbd_query"],
+            "required_used_doc_types": ["rbd"],
+            "min_citations": 1,
+            "answer_regex": ["成功路径|冗余|不能.*根因|不能.*维修"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-RBD-02-explicit-source-miss",
+      "metadata": {
+        "category": "点名资料但无直接对象记录",
+        "coverage": ["rbd_query", "source_coverage"],
+        "expected_behavior": "RBD 必须实际调用；若没有与滤波器老化直接绑定的 RBD 记录，必须明示未找到，不得把其他 RBD 当作直接结论。"
+      },
+      "turns": [
+        {
+          "id": "ask-rbd",
+          "question": "请明确查 RBD 可靠性框图：输入端滤波器变差时，现有框图有没有直接写出它所在的成功路径？",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["rbd_query"],
+            "forbidden_tools": ["rbd_calculator"],
+            "min_citations": 0,
+            "answer_regex": ["RBD|可靠性框图", "未找到|没有.*直接|不能以其他资料替代"]
+          }
+        },
+        {
+          "id": "fallback-boundary",
+          "question": "那就只根据已经查到的资料回答：哪些结论能说，哪些不能说？不要用不相干的框图来补足。",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "any_tools": ["fmeca_query", "rbd_query"],
+            "answer_regex": ["不能|边界|直接"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-RBD-03-explicit-calculation",
+      "metadata": {
+        "category": "RBD 数值授权与比较",
+        "coverage": ["rbd_query", "rbd_calculator"],
+        "expected_records": ["RBD-SYN-001", "RBD-SYN-002", "RBD-SYN-003", "RBD-SYN-004"]
+      },
+      "turns": [
+        {
+          "id": "no-calculation",
+          "question": "在可靠性框图中，供电、核心运算、外部信息交换和显示通路分别依赖哪些串联或备份环节？先不要计算。",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["rbd_query"],
+            "forbidden_tools": ["rbd_calculator"],
+            "required_used_doc_types": ["rbd"],
+            "min_citations": 1,
+            "answer_regex": ["串联|并联|冗余|备用", "核心处理|GPP", "外部通信|BCA|BCB|NGW|网关", "显示输出|DPM|DCS"]
+          }
+        },
+        {
+          "id": "ten-hour-calculation",
+          "question": "按文档给的失效率，以十小时任务期重新算四条通路的成功概率，并告诉我最低的一条；只使用已经验证的参数。",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["rbd_query", "rbd_calculator"],
+            "required_used_doc_types": ["rbd"],
+            "min_citations": 1,
+            "answer_regex": ["0\\.99888052|显示|屏显"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-MFL-01-api-maintenance",
+      "metadata": {
+        "category": "维修清单、状态接口与历史",
+        "coverage": ["mfl_query", "fault_history_query", "graph_traversal"],
+        "expected_records": ["MFL-SYN-049", "GetOIMFaultStatus", "HIS-SYN-017"]
+      },
+      "turns": [
+        {
+          "id": "maintenance",
+          "question": "内部画面源没有停，但外接显示端持续空白，端子和终端已经替换过。下一步该查看哪个模块，能通过什么状态调用确认？",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["mfl_query", "graph_traversal"],
+            "required_used_doc_types": ["mfl"],
+            "min_citations": 1,
+            "answer_regex": ["OIM|输出接口|GetOIMFaultStatus"]
+          }
+        },
+        {
+          "id": "history",
+          "question": "历史上同样的外接显示问题最后确认在哪，处理后怎样证明链路恢复？",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["fault_history_query"],
+            "required_used_doc_types": ["fault_history"],
+            "required_used_record_ids": ["HIS-SYN-017"],
+            "required_answer_facets": ["history_time", "history_action", "history_result"],
+            "min_citations": 1,
+            "answer_regex": ["输出驱动|4 h|4小时|测试图"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-HISTORY-01-line-versus-board",
+      "metadata": {
+        "category": "历史案例追问和反向排除",
+        "coverage": ["fault_history_query", "mfl_query"],
+        "expected_records": ["HIS-SYN-011", "MFL-SYN-031"]
+      },
+      "turns": [
+        {
+          "id": "history-query",
+          "question": "有没有遇到过 A 通道完全收不到、B 通道仍能收的情况？最后是换接口板，还是处理连接与接地？",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["fault_history_query"],
+            "required_used_doc_types": ["fault_history"],
+            "required_used_record_ids": ["HIS-SYN-011"],
+            "required_answer_facets": ["cause", "resolution", "history_time", "history_action", "history_result"],
+            "min_citations": 1,
+            "answer_regex": ["连接|线束|接地"],
+            "answer_not_contains": ["更换 BCA 板卡"]
+          }
+        },
+        {
+          "id": "verification-detail",
+          "question": "这个案例用什么结果排除了板卡本身？请把复测标准说清楚。",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["fault_history_query"],
+            "required_used_doc_types": ["fault_history"],
+            "required_answer_facets": ["history_result"],
+            "min_citations": 1,
+            "answer_regex": ["2 h|2小时|无丢帧|幅值"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-MODULE-01-fault-completeness",
+      "metadata": {
+        "category": "模块故障模式完整收集",
+        "coverage": ["function_locator", "fmeca_query", "mfl_query", "graph_traversal"],
+        "expected_records": ["FUNC-530", "FM-SYN-061", "FM-SYN-062", "FM-SYN-063"]
+      },
+      "turns": [
+        {
+          "id": "identify",
+          "question": "FUNC-530 的模块名称是什么，主要负责保存哪类信息？",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["function_locator"],
+            "required_used_doc_types": ["function_locator"],
+            "required_used_record_ids": ["FUNC-530"],
+            "min_citations": 1,
+            "answer_regex": ["故障记录|快照|存储"]
+          }
+        },
+        {
+          "id": "all-failure-modes",
+          "question": "这个模块所有已记录的失效表现有哪些？请按资料完整列出，不要因为我没有说具体报码就只给一条。",
+          "metadata": {"checks": "完整集合查询；不得误当成单一故障定位。"},
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["fmeca_query", "graph_traversal"],
+            "required_used_doc_types": ["fmeca"],
+            "min_citations": 1,
+            "answer_regex": ["无法保存|写入|空间|快照", "原因|机理", "严酷度|检测|判别|影响"]
+          }
+        },
+        {
+          "id": "repair-path",
+          "question": "其中“新快照写不进去”这一类，资料建议怎么处理？有可用的状态接口吗？",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["mfl_query"],
+            "required_used_doc_types": ["mfl"],
+            "min_citations": 1,
+            "answer_regex": ["GetFLSFaultStatus|存储|写入"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-CROSS-01-public-clock",
+      "metadata": {
+        "category": "跨文档公共原因与多跳关系",
+        "coverage": ["function_locator", "fmeca_query", "fta_query", "fault_history_query", "graph_traversal"],
+        "expected_records": ["FUNC-610", "FM-SYN-064", "FTA-SYN-008", "HIS-SYN-022"]
+      },
+      "turns": [
+        {
+          "id": "common-cause",
+          "question": "多块业务板几乎同时失去统一节拍，通信和画面一起停。像这种共因问题应优先落在哪个公共功能上？",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["fta_query", "graph_traversal"],
+            "any_used_doc_types": ["fta", "fmeca", "fault_history"],
+            "min_citations": 1,
+            "answer_regex": ["时钟|时基|CGM"]
+          }
+        },
+        {
+          "id": "cross-document-evidence",
+          "question": "把这个判断分别用架构、故障模式和历史案例来交叉说明；历史上最终怎么处理并验证？",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["function_locator", "fmeca_query", "fault_history_query", "graph_traversal"],
+            "required_used_doc_types": ["fault_history"],
+            "required_used_record_ids": ["HIS-SYN-022"],
+            "required_answer_facets": ["history_time", "history_action", "history_result"],
+            "min_citations": 1,
+            "answer_regex": ["24 h|24小时|备用时基|同步"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-SOURCE-01-explicit-fta-followup",
+      "metadata": {
+        "category": "点名 FTA 与后续维修资料",
+        "coverage": ["fta_query", "mfl_query", "source_coverage"],
+        "expected_records": ["FTA-SYN-004", "MFL-SYN-049"]
+      },
+      "turns": [
+        {
+          "id": "explicit-fta",
+          "question": "请直接查询 FTA 故障树，不要只看相似文本：外部显示无画面这一结果在树里有哪些分支？",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["fta_query"],
+            "required_used_doc_types": ["fta"],
+            "min_citations": 1,
+            "answer_regex": ["显示|输出|分支|逻辑", "帧缓存溢出|画面合成任务挂起|输出编码格式错误"]
+          }
+        },
+        {
+          "id": "mfl-after-fta",
+          "question": "针对树中和输出侧有关的分支，维修清单给了哪些可执行核查？",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["mfl_query"],
+            "required_used_doc_types": ["mfl"],
+            "min_citations": 1,
+            "answer_regex": ["连接|输出驱动|接口时钟|GetOIMFaultStatus"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-UNRESOLVED-01-no-silent-substitution",
+      "metadata": {
+        "category": "不存在代码与资料未命中",
+        "coverage": ["hmc_query", "source_coverage"],
+        "expected_behavior": "必须明确说明无直接匹配，不能构造报码解释。"
+      },
+      "turns": [
+        {
+          "id": "unknown-code",
+          "question": "LCN 99999999、HSC 1234 代表什么故障？请只以 HMC 手册为准。",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["hmc_query"],
+            "required_used_doc_types": [],
+            "answer_regex": ["未找到|无匹配|核对"],
+            "answer_not_contains": ["代表.*故障", "已经定位", "HUM 放电控制失效|TCM 温控闭环失效"]
+          }
+        },
+        {
+          "id": "ask-next-input",
+          "question": "那为了继续查，最少还需要我提供什么原始信息？",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "answer_regex": ["HAMC|原始告警|构型|完整"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-ROUTER-01-capability-and-scope",
+      "metadata": {
+        "category": "能力说明与范围外请求",
+        "coverage": ["scope_router"],
+        "expected_behavior": "不应为了回答能力或范围外问题而访问工程知识库。"
+      },
+      "turns": [
+        {
+          "id": "capability",
+          "question": "你能帮我处理哪些类型的 ICP 问题，什么时候会去查故障历史或可靠性资料？",
+          "assertions": {
+            "required_scope_routes": ["agent_capability"],
+            "forbidden_tools": ["function_locator", "hybrid_search", "hmc_query", "fmeca_query", "fta_query", "rbd_query", "mfl_query", "fault_history_query", "graph_traversal", "fta_analyzer", "rbd_calculator"],
+            "answer_regex": ["七类|知识库|FTA|RBD"]
+          }
+        },
+        {
+          "id": "outside-scope",
+          "question": "那你顺便根据今天的天气替我安排上海一日游。",
+          "assertions": {
+            "required_scope_routes": ["out_of_scope"],
+            "forbidden_tools": ["function_locator", "hybrid_search", "hmc_query", "fmeca_query", "fta_query", "rbd_query", "mfl_query", "fault_history_query", "graph_traversal", "fta_analyzer", "rbd_calculator"],
+            "answer_regex": ["当前知识库|ICP|范围"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-ROUTER-02-ambiguous-followup",
+      "metadata": {
+        "category": "信息不足的澄清与会话恢复",
+        "coverage": ["scope_router", "conversation_state", "function_locator"],
+        "expected_records": ["MOD-IFC-NGW", "FM-SYN-038"]
+      },
+      "turns": [
+        {
+          "id": "ambiguous",
+          "question": "它又不正常了。",
+          "assertions": {
+            "required_scope_routes": ["clarification"],
+            "forbidden_tools": ["function_locator", "hybrid_search", "hmc_query", "fmeca_query", "fta_query", "rbd_query", "mfl_query", "fault_history_query", "graph_traversal", "fta_analyzer", "rbd_calculator"],
+            "answer_regex": ["请|说明|现象|模块|告警"]
+          }
+        },
+        {
+          "id": "supply-context",
+          "question": "是网络网关：流量一大外部数据就断续，负荷低时又恢复。",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "any_tools": ["fmeca_query", "fta_query", "mfl_query"],
+            "min_citations": 1,
+            "answer_regex": ["队列|缓存|拥塞|网关"]
+          }
+        },
+        {
+          "id": "pronoun-followup",
+          "question": "它的处理动作和可复核指标分别是什么？",
+          "metadata": {"checks": "“它”应承接网络网关的上一轮对象。"},
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "any_tools": ["mfl_query", "fault_history_query"],
+            "min_citations": 1,
+            "answer_regex": ["队列|丢包|GetNGWFaultStatus|100%"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-FMECA-01-component-impact",
+      "metadata": {
+        "category": "元器件状态、后果与维修建议",
+        "coverage": ["fmeca_query", "mfl_query"],
+        "expected_records": ["FM-SYN-002"]
+      },
+      "turns": [
+        {
+          "id": "effect",
+          "question": "输入侧的滤波电容开始衰减，为什么现场可能表现成多个功能偶发不稳，而不是只坏一个模块？",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["fmeca_query"],
+            "required_used_doc_types": ["fmeca"],
+            "min_citations": 1,
+            "answer_regex": ["纹波|干扰|相关"]
+          }
+        },
+        {
+          "id": "action",
+          "question": "这种情况下如何验证，再决定是否更换？请把资料中的检查与处置分开说。",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "any_tools": ["mfl_query", "hmc_query", "fmeca_query"],
+            "required_answer_facets": ["resolution"],
+            "min_citations": 1,
+            "answer_regex": ["检查|测量|更换|纹波"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-ARCH-03-data-flow-followup",
+      "metadata": {
+        "category": "数据通路与自然语言追问",
+        "coverage": ["function_locator", "graph_traversal"],
+        "expected_records": ["SUB-IFC", "MOD-IFC-BCA", "MOD-IFC-BCB", "FUNC-330", "SUB-GPP"]
+      },
+      "turns": [
+        {
+          "id": "flow",
+          "question": "外部总线送进来的内容先由谁接收，在哪一步变成系统内部能用的格式，随后交到哪里做业务处理？",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["function_locator", "graph_traversal"],
+            "required_used_doc_types": ["function_locator"],
+            "min_citations": 1,
+            "answer_regex": ["IFC|BCA|BCB|协议|GPP"]
+          }
+        },
+        {
+          "id": "format-failure",
+          "question": "如果帧校验通过，但字段解释全错，刚才那条链路里应重点看哪一段？",
+          "assertions": {
+            "required_scope_routes": ["knowledge_base"],
+            "required_tools": ["fmeca_query", "fta_query", "graph_traversal"],
+            "required_used_doc_types": ["fmeca", "fta"],
+            "min_citations": 1,
+            "answer_regex": ["协议|映射|版本|转换"]
+          }
+        }
+      ]
+    }
+  ]
+}

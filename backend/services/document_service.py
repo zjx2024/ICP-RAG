@@ -6,6 +6,7 @@ import os
 import json
 import asyncio
 import concurrent.futures
+from contextlib import nullcontext
 from datetime import datetime
 from functools import partial
 from typing import Dict, List, Optional
@@ -17,11 +18,20 @@ from backend.core.docx_parser import DocumentParser
 from backend.core.embedding import embedding_service
 from backend.core.llm_service import llm_service
 from backend.core.task_manager import task_manager
-from backend.storage.es_client import es_client
-from backend.storage.minio_client import minio_client
+from backend.storage.artifact_store import artifact_store, storage_key_from
 from backend.storage.postgres_client import postgres_client
+from backend.storage.search_store import search_store
 
 llm_semaphore = asyncio.Semaphore(3)
+
+
+def _materialize_image(image: Dict):
+    """Return a scoped local path for new artifacts or legacy parser paths."""
+
+    storage_key = image.get("storage_key") or image.get("minio_path")
+    if storage_key:
+        return artifact_store.materialize(storage_key, suffix=os.path.splitext(storage_key)[1])
+    return nullcontext(image.get("local_path", ""))
 
 def convert_fault_tree_to_hugegraph(fault_tree_graph: dict, doc_id: str, kb_id: str, image_index: int):
     vertices = []
@@ -104,27 +114,21 @@ async def parse_document_background(task_id: str, kb_id: str, doc_id: str, model
         
         await task_manager.update_progress(task_id, 8, f"[INFO] 加载文件: {file_name}")
         
-        try:
-            file_data = minio_client.get_file(document["minio_path"])
-            file_ext = os.path.splitext(file_name)[1].lower()
-            temp_path = f"/tmp/parse_{doc_id}{file_ext}"
-            with open(temp_path, "wb") as f:
-                f.write(file_data)
-            await task_manager.update_progress(task_id, 12, "[INFO] 文件下载完成")
-        except Exception:
-            temp_path = f"/tmp/{doc_id}_{file_name}"
-            await task_manager.update_progress(task_id, 12, "[WARNING] 使用本地文件路径")
-        
-        await task_manager.check_cancelled(task_id)
-        
-        await task_manager.update_progress(task_id, 15, "[INFO] 初始化文档解析器")
-        
-        def parse_document_sync():
-            parser = DocumentParser(temp_path, doc_id)
-            return parser.process()
-        
-        await task_manager.update_progress(task_id, 17, "[INFO] 开始解析文档内容...")
-        result = await loop.run_in_executor(None, parse_document_sync)
+        file_ext = os.path.splitext(file_name)[1].lower()
+        with artifact_store.materialize(storage_key_from(document), suffix=file_ext) as temp_path:
+            await task_manager.update_progress(task_id, 12, "[INFO] ArtifactStore 原件已就绪")
+            await task_manager.check_cancelled(task_id)
+
+            await task_manager.update_progress(task_id, 15, "[INFO] 初始化文档解析器")
+
+            def parse_document_sync():
+                parser = DocumentParser(
+                    temp_path, doc_id, source_name=file_name
+                )
+                return parser.process()
+
+            await task_manager.update_progress(task_id, 17, "[INFO] 开始解析文档内容...")
+            result = await loop.run_in_executor(None, parse_document_sync)
         
         if "error" in result:
             raise Exception(result["error"])
@@ -135,9 +139,6 @@ async def parse_document_background(task_id: str, kb_id: str, doc_id: str, model
         await task_manager.update_progress(task_id, 20, f"[SUCCESS] 文档解析完成，发现 {total_blocks} 个分块")
         
         total_chunks = 0
-        index_name = es_client.get_main_index_name("default")
-        es_client.create_index(index_name)
-        
         fault_tree_count = 0
         
         block_counter = 0
@@ -161,20 +162,21 @@ async def parse_document_background(task_id: str, kb_id: str, doc_id: str, model
                 await task_manager.update_progress(task_id, progress, f"  ├─ 发现 {image_count} 张图片，开始分析...")
             
             for img_idx, img in enumerate(block_info["images"]):
-                image_local_path = img.get("local_path", "")
-                if image_local_path and os.path.exists(image_local_path):
+                with _materialize_image(img) as image_local_path:
+                    if not image_local_path or not os.path.exists(image_local_path):
+                        continue
                     await task_manager.update_progress(task_id, progress, f"  │  └─ 分析图片 {img_idx + 1}/{image_count}: {img.get('title', '未命名图片')}")
-                    
+
                     try:
                         async with llm_semaphore:
                             await task_manager.update_progress(task_id, progress, f"  │     └─ 调用 LLM 分析图片内容...")
                             img_analysis = await loop.run_in_executor(None, llm_service.analyze_image,
                                 image_local_path, img.get("title", ""), block_key, text_content, model_config)
-                        
+
                         img["llm_description"] = img_analysis.get("description", "")
                         img["image_type"] = img_analysis.get("image_type", "normal")
                         enhanced_content_parts.append(f"\n[图片分析] {img_analysis.get('description', '')}")
-                        
+
                         if img_analysis.get("image_type") == "fault_tree" and img_analysis.get("fault_tree_graph"):
                             await task_manager.update_progress(task_id, progress, f"  │     └─ 检测到故障树，保存结构化数据到 PostgreSQL...")
                             try:
@@ -184,7 +186,7 @@ async def parse_document_background(task_id: str, kb_id: str, doc_id: str, model
                                     fault_tree_id, doc_id, kb_id, chunk_id, image_id,
                                     img.get("title", ""), json.dumps(img_analysis["fault_tree_graph"], ensure_ascii=False))
                                 fault_tree_count += 1
-                                await task_manager.update_progress(task_id, progress, f"  │        └─ 已保存故障树结构化数据（手动生成知识图谱时入库）")
+                                await task_manager.update_progress(task_id, progress, f"  │        └─ 已保存故障树结构化数据（旧通用链路可重建投影）")
                             except Exception as e:
                                 await task_manager.update_progress(task_id, progress, f"  │        └─ 故障树数据保存失败: {str(e)[:100]}")
                     except Exception as e:
@@ -233,14 +235,13 @@ async def parse_document_background(task_id: str, kb_id: str, doc_id: str, model
                         "title": block_info.get("title", ""),
                         "section": block_key,
                         "content": enhanced_text_content,
-                        "content_vector": vector,
                         "kb_id": kb_id,
                         "content_type": "text",
                         "created_at": datetime.now().isoformat(),
                         "updated_at": datetime.now().isoformat()
                     }
-                    await task_manager.update_progress(task_id, progress, f"        └─ 保存向量到 Elasticsearch")
-                    await loop.run_in_executor(None, partial(es_client.client.index, index=index_name, id=chunk_id, body=doc))
+                    await task_manager.update_progress(task_id, progress, f"        └─ 保存向量到检索投影")
+                    await loop.run_in_executor(None, partial(search_store.upsert, chunk_id, doc, vector=vector))
                 except Exception as e:
                     await task_manager.update_progress(task_id, progress, f"        └─ 向量保存失败: {str(e)[:100]}")
             
@@ -254,7 +255,9 @@ async def parse_document_background(task_id: str, kb_id: str, doc_id: str, model
                 try:
                     await loop.run_in_executor(None, postgres_client.insert_image,
                         image_id, doc_id, chunk_id, img.get("title", ""),
-                        llm_description, img.get("minio_path", ""), image_type, image_url)
+                        llm_description,
+                        img.get("storage_key") or img.get("minio_path", ""),
+                        image_type, image_url)
                     
                     img_content = f"图片: {img.get('title', '')}\n{llm_description}"
                     img_vector = await loop.run_in_executor(None, embedding_service.embed, img_content)
@@ -265,14 +268,13 @@ async def parse_document_background(task_id: str, kb_id: str, doc_id: str, model
                         "title": img.get("title", ""),
                         "section": block_key,
                         "content": img_content,
-                        "content_vector": img_vector,
                         "kb_id": kb_id,
                         "content_type": "image",
                         "image_url": image_url,
                         "created_at": datetime.now().isoformat(),
                         "updated_at": datetime.now().isoformat()
                     }
-                    await loop.run_in_executor(None, partial(es_client.client.index, index=index_name, id=image_id, body=img_doc))
+                    await loop.run_in_executor(None, partial(search_store.upsert, image_id, img_doc, vector=img_vector))
                 except Exception as e:
                     await task_manager.update_progress(task_id, progress, f"  ├─ 图片数据保存失败: {str(e)[:100]}")
             
@@ -295,13 +297,12 @@ async def parse_document_background(task_id: str, kb_id: str, doc_id: str, model
                         "title": tbl.get("title", ""),
                         "section": block_key,
                         "content": tbl_content,
-                        "content_vector": tbl_vector,
                         "kb_id": kb_id,
                         "content_type": "table",
                         "created_at": datetime.now().isoformat(),
                         "updated_at": datetime.now().isoformat()
                     }
-                    await loop.run_in_executor(None, partial(es_client.client.index, index=index_name, id=table_id, body=tbl_doc))
+                    await loop.run_in_executor(None, partial(search_store.upsert, table_id, tbl_doc, vector=tbl_vector))
                 except Exception as e:
                     await task_manager.update_progress(task_id, progress, f"  └─ 表格数据保存失败: {str(e)[:100]}")
             
@@ -320,7 +321,7 @@ async def parse_document_background(task_id: str, kb_id: str, doc_id: str, model
         
         message = f"文档解析完成，共生成 {total_chunks} 个分块"
         if fault_tree_count:
-            message += f"，检测到 {fault_tree_count} 张故障树图，结构化数据已保存（手动生成知识图谱时入库）"
+            message += f"，检测到 {fault_tree_count} 张故障树图，结构化数据已保存（旧通用链路可重建）"
         
         await task_manager.set_result(task_id, {
             "doc_id": doc_id,
@@ -347,7 +348,7 @@ async def parse_document_background(task_id: str, kb_id: str, doc_id: str, model
 
 async def parse_icp_document_background(task_id: str, doc_id: str, model_config: Optional[Dict] = None):
     """按 icp_documents.doc_type 路由到对应解析器（ExcelRow / FaultTree / Text），
-    解析器负责 PG + ES 入库，本函数负责进度/状态/结果落库。"""
+    解析器负责 PG + 检索投影入库，本函数负责进度/状态/结果落库。"""
     loop = asyncio.get_event_loop()
 
     try:
@@ -363,58 +364,123 @@ async def parse_icp_document_background(task_id: str, doc_id: str, model_config:
 
         await task_manager.update_progress(task_id, 8, f"[INFO] 加载文件: {file_name}")
 
-        try:
-            file_data = minio_client.get_file(document["minio_path"])
-            file_ext = os.path.splitext(file_name)[1].lower()
-            temp_path = f"/tmp/icp_parse_{doc_id}{file_ext}"
-            with open(temp_path, "wb") as f:
-                f.write(file_data)
-            await task_manager.update_progress(task_id, 12, "[INFO] 文件下载完成")
-        except Exception:
-            temp_path = f"/tmp/icp_parse_{doc_id}"
-            await task_manager.update_progress(task_id, 12, "[WARNING] 使用本地文件路径")
+        file_ext = os.path.splitext(file_name)[1].lower()
+        storage_key = storage_key_from(document)
+        with artifact_store.materialize(storage_key, suffix=file_ext) as temp_path:
+            await task_manager.update_progress(task_id, 12, "[INFO] ArtifactStore 原件已就绪")
+            await task_manager.check_cancelled(task_id)
+
+            # doc_type 路由解析器
+            from backend.core.parsers import ParseContext, ParserRegistry
+            from backend.core.document_metadata import (
+                extract_document_metadata,
+                metadata_search_tags,
+            )
+            parser = ParserRegistry.get(doc_type)
+            document_metadata = extract_document_metadata(temp_path)
+            postgres_client.update_icp_document_metadata(doc_id, document_metadata)
+            ctx = ParseContext(
+                doc_id=doc_id,
+                doc_type=doc_type,
+                file_name=file_name,
+                task_id=task_id,
+                model_config=model_config,
+                temp_path=temp_path,
+                kb_id=doc_type,
+                storage_key=storage_key,
+                common_tags=metadata_search_tags(document_metadata),
+            )
+
+            # 解析器内部进度回调：只追加日志，沿用当前进度值（避免 None 传入）
+            prog = {"value": 18}
+
+            def progress_cb(msg: str):
+                asyncio.run_coroutine_threadsafe(
+                    task_manager.update_progress(task_id, prog["value"], f"[{doc_type}] {msg}"), loop).result()
+
+            ctx.progress_cb = progress_cb
+
+            await task_manager.update_progress(task_id, 15, f"[INFO] 解析器: {type(parser).__name__}（doc_type={doc_type}）")
+
+            errors = await loop.run_in_executor(None, parser.validate, temp_path)
+            if errors:
+                raise Exception("格式校验失败: " + "; ".join(errors))
+
+            projection_reset_error = ""
+            try:
+                await loop.run_in_executor(
+                    None,
+                    search_store.delete_by_filter,
+                    {"doc_id": doc_id},
+                )
+            except Exception as exc:
+                # PostgreSQL facts remain authoritative.  Continue parsing and
+                # make the required projection rebuild visible in last_result.
+                projection_reset_error = str(exc)[:500]
+                await task_manager.update_progress(
+                    task_id,
+                    18,
+                    f"[WARN] 旧检索投影清理失败，将标记待重建: {projection_reset_error}",
+                )
+
+            await task_manager.update_progress(task_id, 18, "[INFO] 开始解析...")
+            prog["value"] = 30
+            result = await loop.run_in_executor(None, parser.parse, temp_path, ctx)
 
         await task_manager.check_cancelled(task_id)
 
-        # doc_type 路由解析器
-        from backend.core.parsers import ParseContext, ParserRegistry
-        parser = ParserRegistry.get(doc_type)
-        ctx = ParseContext(
-            doc_id=doc_id,
-            doc_type=doc_type,
-            file_name=file_name,
-            task_id=task_id,
-            model_config=model_config,
-            temp_path=temp_path,
-            kb_id=doc_type,
-        )
-
-        # 解析器内部进度回调：只追加日志，沿用当前进度值（避免 None 传入）
-        prog = {"value": 18}
-
-        def progress_cb(msg: str):
-            asyncio.run_coroutine_threadsafe(
-                task_manager.update_progress(task_id, prog["value"], f"[{doc_type}] {msg}"), loop).result()
-
-        ctx.progress_cb = progress_cb
-
-        await task_manager.update_progress(task_id, 15, f"[INFO] 解析器: {type(parser).__name__}（doc_type={doc_type}）")
-
-        errors = await loop.run_in_executor(None, parser.validate, temp_path)
-        if errors:
-            raise Exception("格式校验失败: " + "; ".join(errors))
-
-        await task_manager.update_progress(task_id, 18, "[INFO] 开始解析...")
-        prog["value"] = 30
-        result = await loop.run_in_executor(None, parser.parse, temp_path, ctx)
-
-        await task_manager.check_cancelled(task_id)
-
-        # 状态更新：图类含三元组 → kg_pending，其余 indexed
-        stats = result.stats
-        new_status = "kg_pending" if stats.get("kg_pending") else "indexed"
+        # PostgreSQL 与检索投影完成后，七类文档都进入可重建的 HugeGraph
+        # 自动投影阶段。不存在显式关系时也只写 Document 来源节点，绝不
+        # 通过 LLM 或相似度补造关系。
+        stats = dict(result.stats)
+        if stats.get("projection_failed"):
+            # PostgreSQL facts are valid, but the rebuildable search replica is
+            # incomplete. Keep the document queryable through authoritative
+            # tools while making the repair requirement explicit to operators.
+            stats["projection_rebuild_required"] = True
+        if projection_reset_error:
+            stats["projection_rebuild_required"] = True
+            stats.setdefault("projection_warnings", []).append(projection_reset_error)
+        stats["kg_pending"] = True
+        new_status = "kg_pending"
         postgres_client.update_icp_document_status(doc_id, new_status)
-        postgres_client.update_icp_document_result(doc_id, {**stats, "kg_pending": stats.get("kg_pending", False)})
+        postgres_client.update_icp_document_result(doc_id, {**stats, "kg_pending": True})
+
+        graph_task_id = None
+        try:
+            graph_task_id = await task_manager.create_task(
+                doc_id=doc_id,
+                kb_id=doc_type,
+                file_name=file_name,
+                task_type="generate_kg",
+            )
+            if not postgres_client.transition_icp_document_status(
+                doc_id, ("kg_pending",), "generating_kg"
+            ):
+                raise RuntimeError("文档状态已变化，自动图任务未启动")
+            from backend.services.kg_service import generate_icp_graph_background
+
+            asyncio.create_task(
+                generate_icp_graph_background(
+                    graph_task_id,
+                    doc_id,
+                    doc_type,
+                    file_name,
+                )
+            )
+            new_status = "generating_kg"
+            stats["graph_task_id"] = graph_task_id
+        except Exception as graph_schedule_error:
+            postgres_client.update_icp_document_status(doc_id, "kg_pending")
+            stats.setdefault("graph_warnings", []).append(
+                f"自动图任务未启动，可安全重试: {str(graph_schedule_error)[:500]}"
+            )
+            await task_manager.update_progress(
+                task_id,
+                95,
+                f"[WARN] 自动图任务未启动，可稍后重试: {str(graph_schedule_error)[:200]}",
+            )
+            postgres_client.update_icp_document_result(doc_id, stats)
 
         await task_manager.update_progress(task_id, 100, f"[FINISH] {result.message}")
         await task_manager.update_status(task_id, "completed")
@@ -423,6 +489,7 @@ async def parse_icp_document_background(task_id: str, doc_id: str, model_config:
             "doc_type": doc_type,
             "status": new_status,
             "stats": stats,
+            "graph_task_id": graph_task_id,
             "message": result.message,
         })
 
@@ -438,4 +505,14 @@ async def parse_icp_document_background(task_id: str, doc_id: str, model_config:
         await task_manager.update_progress(task_id, 0, f"[ERROR] 解析失败: {str(e)}")
         await task_manager.update_status(task_id, "failed")
         postgres_client.update_icp_document_status(doc_id, "failed")
-
+        try:
+            # Never leave partially rebuilt search documents visible after a
+            # PostgreSQL/parser failure.  They are projections and can be
+            # regenerated from the raw artifact and authority tables.
+            await loop.run_in_executor(
+                None,
+                search_store.delete_by_filter,
+                {"doc_id": doc_id},
+            )
+        except Exception:
+            pass

@@ -1,11 +1,19 @@
-from typing import List, Dict, Optional, Any, Tuple
+import logging
+from typing import List, Dict, Optional, Any
+
+from backend.core.retrieval_pipeline import RetrievalOutcome, build_retrieval_pipeline
 from backend.storage.postgres_client import postgres_client
-from backend.storage.es_client import es_client
 from backend.storage.hugegraph_client import hugegraph_client
 from backend.core.embedding import embedding_service
 
+logger = logging.getLogger(__name__)
+
 class RetrievalMode:
     POSTGRES_FULLTEXT = "postgres_fulltext"
+    VECTOR = "vector"
+    KEYWORD = "keyword"
+    HYBRID = "hybrid"
+    # Historical mode strings remain API-compatible aliases.
     ES_VECTOR = "es_vector"
     ES_KEYWORD = "es_keyword"
     ES_HYBRID = "es_hybrid"
@@ -20,9 +28,35 @@ class RetrievalMode:
 class KnowledgeRetriever:
     def __init__(self):
         self.rrf_k = 60
-    
-    def _get_es_index_name(self, kb_id: str) -> str:
-        return es_client.get_main_index_name("default")
+        self._pipeline = None
+
+    @property
+    def pipeline(self):
+        if self._pipeline is None:
+            self._pipeline = build_retrieval_pipeline()
+        return self._pipeline
+
+    @staticmethod
+    def _filters(kb_id: str = "", kb_ids: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+        values = [value for value in (kb_ids or []) if value]
+        if values:
+            return {"kb_id": values}
+        return {"kb_id": kb_id} if kb_id else None
+
+    @staticmethod
+    def _search_hit_to_result(hit: Any, retrieval_mode: str) -> Dict[str, Any]:
+        if isinstance(hit, dict):
+            document = dict(hit.get("document") or hit)
+            hit_id = hit.get("id") or document.get("chunk_id") or document.get("id") or ""
+            score = hit.get("score", document.get("score", 0.0))
+        else:
+            document = dict(getattr(hit, "document", {}) or {})
+            hit_id = getattr(hit, "id", "") or document.get("chunk_id") or document.get("id") or ""
+            score = getattr(hit, "score", document.get("score", 0.0))
+        document.setdefault("chunk_id", hit_id)
+        document["score"] = score
+        document["retrieval_mode"] = retrieval_mode
+        return document
     
     def search_postgres_fulltext(self, kb_id: str, query: str, top_k: int = 10) -> List[Dict]:
         try:
@@ -57,167 +91,115 @@ class KnowledgeRetriever:
             print(f"PostgreSQL fulltext search failed: {e}")
             return []
     
-    def search_es_vector(self, kb_id: str, query: str, top_k: int = 10) -> List[Dict]:
+    def search_vector(
+        self,
+        kb_id: str,
+        query: str,
+        top_k: int = 10,
+        *,
+        embedding_model_id: Optional[str] = None,
+        kb_ids: Optional[List[str]] = None,
+    ) -> List[Dict]:
+        """Backend-neutral dense recall; keyword fallback keeps retrieval usable."""
         try:
-            try:
-                query_vector = embedding_service.embed(query)
-            except ValueError:
-                logger.error("Embedding 模型未配置，回退到关键词搜索")
-                return self.search_es_keyword(kb_id, query, top_k)
+            query_vector = embedding_service.embed(query, model_id=embedding_model_id)
             if not query_vector or all(v == 0 for v in query_vector):
                 logger.warning("Embedding 返回零向量，回退到关键词搜索")
-                return self.search_es_keyword(kb_id, query, top_k)
-            
-            index_name = self._get_es_index_name(kb_id)
-            query_body = {
-                "query": {
-                    "bool": {
-                        "must": [
-                            {"term": {"kb_id": kb_id}}
-                        ]
-                    }
-                },
-                "knn": {
-                    "field": "content_vector",
-                    "query_vector": query_vector,
-                    "k": top_k,
-                    "num_candidates": top_k * 10
-                },
-                "size": top_k,
-                "_source": ["content", "title", "section", "doc_id", "doc_name", "content_type", "chunk_id", "image_url"]
-            }
-            
-            result = es_client.client.search(index=index_name, body=query_body)
-            hits = result.get("hits", {}).get("hits", [])
-            
-            results = []
-            for hit in hits:
-                source = hit.get("_source", {})
-                results.append({
-                    "chunk_id": source.get("chunk_id", hit.get("_id", "")),
-                    "doc_id": source.get("doc_id", ""),
-                    "title": source.get("title", ""),
-                    "content": source.get("content", "")[:500],
-                    "section": source.get("section", ""),
-                    "doc_name": source.get("doc_name", ""),
-                    "content_type": source.get("content_type", "text"),
-                    "image_url": source.get("image_url", ""),
-                    "retrieval_mode": "es_vector",
-                    "score": hit.get("_score", 0.0)
-                })
-            return results
-        except Exception as e:
-            print(f"ES vector search failed: {e}, falling back to keyword search")
-            return self.search_es_keyword(kb_id, query, top_k)
-    
-    def search_es_keyword(self, kb_id: str, query: str, top_k: int = 10) -> List[Dict]:
-        try:
-            index_name = self._get_es_index_name(kb_id)
-            query_body = {
-                "query": {
-                    "bool": {
-                        "must": [
-                            {"term": {"kb_id": kb_id}},
-                            {
-                                "multi_match": {
-                                    "query": query,
-                                    "fields": ["content^3", "title^2", "section"]
-                                }
-                            }
-                        ]
-                    }
-                },
-                "size": top_k,
-                "_source": ["content", "title", "section", "doc_id", "doc_name", "content_type", "chunk_id", "image_url"]
-            }
-            
-            result = es_client.client.search(index=index_name, body=query_body)
-            hits = result.get("hits", {}).get("hits", [])
-            
-            results = []
-            for hit in hits:
-                source = hit.get("_source", {})
-                results.append({
-                    "chunk_id": source.get("chunk_id", hit.get("_id", "")),
-                    "doc_id": source.get("doc_id", ""),
-                    "title": source.get("title", ""),
-                    "content": source.get("content", "")[:500],
-                    "section": source.get("section", ""),
-                    "doc_name": source.get("doc_name", ""),
-                    "content_type": source.get("content_type", "text"),
-                    "image_url": source.get("image_url", ""),
-                    "retrieval_mode": "es_keyword",
-                    "score": hit.get("_score", 0.0)
-                })
-            return results
-        except Exception as e:
-            print(f"ES keyword search failed: {e}")
-            return []
-    
-    def search_es_hybrid(self, kb_id: str, query: str, top_k: int = 10,
-                         keyword_weight: float = 0.5, vector_weight: float = 0.5,
-                         embedding_model_id: str = None, kb_ids: List[str] = None) -> List[Dict]:
-        try:
-            index_name = self._get_es_index_name(kb_id)
-            try:
-                query_vector = embedding_service.embed(query, model_id=embedding_model_id)
-            except ValueError:
-                logger.error("Embedding 模型未配置，混合搜索回退到关键词搜索")
-                return self.search_es_keyword(kb_id, query, top_k)
-            # 多知识库过滤：kb_ids 提供时用 terms（IN 语义），否则回退单 kb term
-            kb_filter = {"terms": {"kb_id": [k for k in kb_ids if k]}} if kb_ids else {"term": {"kb_id": kb_id}}
+                return self.search_keyword(kb_id, query, top_k, kb_ids=kb_ids)
+            from backend.storage.search_store import search_store
 
-            query_body = {
-                "query": {
-                    "bool": {
-                        "must": [kb_filter],
-                        "should": []
-                    }
-                },
-                "size": top_k,
-                "_source": ["content", "title", "section", "doc_id", "doc_name", "content_type", "chunk_id", "image_url"]
-            }
-            
-            if query:
-                query_body["query"]["bool"]["should"].append({
-                    "multi_match": {
-                        "query": query,
-                        "fields": ["content^3", "title^2", "section"],
-                        "boost": keyword_weight
-                    }
-                })
-            
-            if query_vector and not all(v == 0 for v in query_vector):
-                query_body["knn"] = {
-                    "field": "content_vector",
-                    "query_vector": query_vector,
-                    "k": top_k,
-                    "num_candidates": top_k * 10,
-                    "boost": vector_weight
-                }
-            
-            result = es_client.client.search(index=index_name, body=query_body)
-            hits = result.get("hits", {}).get("hits", [])
-            
-            results = []
-            for hit in hits:
-                source = hit.get("_source", {})
-                results.append({
-                    "chunk_id": source.get("chunk_id", hit.get("_id", "")),
-                    "doc_id": source.get("doc_id", ""),
-                    "title": source.get("title", ""),
-                    "content": source.get("content", "")[:3000],
-                    "section": source.get("section", ""),
-                    "doc_name": source.get("doc_name", ""),
-                    "content_type": source.get("content_type", "text"),
-                    "image_url": source.get("image_url", ""),
-                    "retrieval_mode": "es_hybrid",
-                    "score": hit.get("_score", 0.0)
-                })
-            return results
+            hits = search_store.vector_search(
+                query_vector,
+                filters=self._filters(kb_id, kb_ids),
+                top_k=top_k,
+            )
+            return [self._search_hit_to_result(hit, "vector") for hit in hits]
         except Exception as e:
-            print(f"ES hybrid search failed: {e}")
+            logger.warning("Vector search failed, falling back to keyword search: %s", e)
+            return self.search_keyword(kb_id, query, top_k, kb_ids=kb_ids)
+
+    def search_keyword(
+        self,
+        kb_id: str,
+        query: str,
+        top_k: int = 10,
+        *,
+        kb_ids: Optional[List[str]] = None,
+    ) -> List[Dict]:
+        """Backend-neutral keyword recall."""
+        try:
+            from backend.storage.search_store import search_store
+
+            hits = search_store.keyword_search(
+                query,
+                filters=self._filters(kb_id, kb_ids),
+                top_k=top_k,
+            )
+            return [self._search_hit_to_result(hit, "keyword") for hit in hits]
+        except Exception as e:
+            logger.warning("Keyword search failed: %s", e)
             return []
+
+    def search_hybrid_with_info(
+        self,
+        kb_id: str,
+        query: str,
+        top_k: int = 10,
+        keyword_weight: float = 0.5,
+        vector_weight: float = 0.5,
+        embedding_model_id: Optional[str] = None,
+        kb_ids: Optional[List[str]] = None,
+        agent_id: str = "",
+        rerank_model_id: str = "",
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> RetrievalOutcome:
+        """Unified backend-neutral retrieval including full-candidate rerank."""
+        return self.pipeline.retrieve(
+            query=query,
+            top_k=top_k,
+            filters=filters if filters is not None else self._filters(kb_id, kb_ids),
+            embedding_model_id=embedding_model_id,
+            agent_id=agent_id,
+            rerank_model_id=rerank_model_id,
+            keyword_weight=keyword_weight,
+            vector_weight=vector_weight,
+        )
+
+    def search_hybrid(self, kb_id: str, query: str, top_k: int = 10, **kwargs) -> List[Dict]:
+        return self.search_hybrid_with_info(kb_id, query, top_k, **kwargs).results
+
+    # Compatibility aliases: public API paths and mode strings remain stable,
+    # while the implementation no longer depends on Elasticsearch directly.
+    def search_es_vector(self, kb_id: str, query: str, top_k: int = 10) -> List[Dict]:
+        return [dict(item, retrieval_mode="es_vector") for item in self.search_vector(kb_id, query, top_k)]
+
+    def search_es_keyword(self, kb_id: str, query: str, top_k: int = 10) -> List[Dict]:
+        return [dict(item, retrieval_mode="es_keyword") for item in self.search_keyword(kb_id, query, top_k)]
+
+    def search_es_hybrid(
+        self,
+        kb_id: str,
+        query: str,
+        top_k: int = 10,
+        keyword_weight: float = 0.5,
+        vector_weight: float = 0.5,
+        embedding_model_id: str = None,
+        kb_ids: List[str] = None,
+        agent_id: str = "",
+        rerank_model_id: str = "",
+    ) -> List[Dict]:
+        results = self.search_hybrid(
+            kb_id,
+            query,
+            top_k,
+            keyword_weight=keyword_weight,
+            vector_weight=vector_weight,
+            embedding_model_id=embedding_model_id,
+            kb_ids=kb_ids,
+            agent_id=agent_id,
+            rerank_model_id=rerank_model_id,
+        )
+        return [dict(item, retrieval_mode="es_hybrid") for item in results]
     
     def search_kg_entity(self, kb_id: str, query: str, top_k: int = 20) -> List[Dict]:
         try:
@@ -340,98 +322,31 @@ class KnowledgeRetriever:
             related_chunk_ids = hugegraph_client.get_related_chunks_by_entities(kb_id, entity_names)
             
             if not related_chunk_ids:
-                return self.search_es_hybrid(kb_id, query, top_k)
+                return self.search_hybrid(kb_id, query, top_k)
             
             enhanced_query_parts = [query]
             enhanced_query_parts.extend(entity_names)
             enhanced_query_parts.extend(enhanced_keywords)
             enhanced_query = " ".join(enhanced_query_parts)
-            
-            index_name = self._get_es_index_name(kb_id)
-            try:
-                query_vector = embedding_service.embed(enhanced_query)
-            except ValueError:
-                logger.error("Embedding 模型未配置，增强查询回退到关键词搜索")
-                return self.search_es_keyword(kb_id, query, top_k)
-            
-            query_body = {
-                "query": {
-                    "bool": {
-                        "must": [
-                            {"term": {"kb_id": kb_id}},
-                            {
-                                "terms": {
-                                    "chunk_id": related_chunk_ids[:50]
-                                }
-                            }
-                        ],
-                        "should": [
-                            {
-                                "multi_match": {
-                                    "query": query,
-                                    "fields": ["content^3", "title^2", "section"],
-                                    "boost": 1.0
-                                }
-                            }
-                        ]
-                    }
-                },
-                "size": top_k,
-                "_source": ["content", "title", "section", "doc_id", "doc_name", "content_type", "chunk_id", "image_url"]
-            }
-            
-            if enhanced_keywords:
-                query_body["query"]["bool"]["should"].append({
-                    "multi_match": {
-                        "query": " ".join(enhanced_keywords),
-                        "fields": ["content^5", "title^3"],
-                        "boost": 1.5
-                    }
-                })
-            
-            if entity_names:
-                query_body["query"]["bool"]["should"].append({
-                    "multi_match": {
-                        "query": " ".join(entity_names),
-                        "fields": ["content^2", "title^2"],
-                        "boost": 0.8
-                    }
-                })
-            
-            if query_vector and not all(v == 0 for v in query_vector):
-                query_body["knn"] = {
-                    "field": "content_vector",
-                    "query_vector": query_vector,
-                    "k": top_k,
-                    "num_candidates": top_k * 10,
-                    "boost": 1.0
-                }
-            
-            result = es_client.client.search(index=index_name, body=query_body)
-            hits = result.get("hits", {}).get("hits", [])
-            
-            results = []
-            for hit in hits:
-                source = hit.get("_source", {})
-                results.append({
-                    "chunk_id": source.get("chunk_id", hit.get("_id", "")),
-                    "doc_id": source.get("doc_id", ""),
-                    "title": source.get("title", ""),
-                    "content": source.get("content", "")[:500],
-                    "section": source.get("section", ""),
-                    "doc_name": source.get("doc_name", ""),
-                    "content_type": source.get("content_type", "text"),
-                    "image_url": source.get("image_url", ""),
-                    "retrieval_mode": "graph_enhanced",
-                    "score": hit.get("_score", 0.0),
-                    "related_entities": entity_names,
-                    "enhanced_keywords": enhanced_keywords
-                })
-            
-            return results
+
+            outcome = self.search_hybrid_with_info(
+                kb_id,
+                enhanced_query,
+                top_k,
+                filters={"kb_id": kb_id, "chunk_id": related_chunk_ids[:50]},
+            )
+            return [
+                dict(
+                    item,
+                    retrieval_mode="graph_enhanced",
+                    related_entities=entity_names,
+                    enhanced_keywords=enhanced_keywords,
+                )
+                for item in outcome.results
+            ]
         except Exception as e:
             print(f"Graph enhanced search failed: {e}")
-            return self.search_es_hybrid(kb_id, query, top_k)
+            return self.search_hybrid(kb_id, query, top_k)
     
     def search_kg_relation_weighted(self, kb_id: str, query: str, top_k: int = 20, 
                                      min_weight: int = 1, depth: int = 2) -> List[Dict]:
@@ -534,11 +449,11 @@ class KnowledgeRetriever:
                         chunks_count: int = None, entities_count: int = None) -> Dict:
         try:
             pg_results = self.search_postgres_fulltext(kb_id, query, top_k * 2)
-            es_vector_results = self.search_es_vector(kb_id, query, top_k * 2)
-            es_keyword_results = self.search_es_keyword(kb_id, query, top_k * 2)
+            vector_results = self.search_vector(kb_id, query, top_k * 2)
+            keyword_results = self.search_keyword(kb_id, query, top_k * 2)
             kg_entity_results = self.search_kg_entity(kb_id, query, top_k * 2)
             
-            results_list = [pg_results, es_vector_results, es_keyword_results, kg_entity_results]
+            results_list = [pg_results, vector_results, keyword_results, kg_entity_results]
             
             final_results = self._apply_rrf(results_list)
             
@@ -612,6 +527,27 @@ class KnowledgeRetriever:
                top_k: int = 10, **kwargs) -> Any:
         modes_map = {
             RetrievalMode.POSTGRES_FULLTEXT: lambda: self.search_postgres_fulltext(kb_id, query, top_k),
+            RetrievalMode.VECTOR: lambda: self.search_vector(
+                kb_id,
+                query,
+                top_k,
+                embedding_model_id=kwargs.get("embedding_model_id"),
+                kb_ids=kwargs.get("kb_ids"),
+            ),
+            RetrievalMode.KEYWORD: lambda: self.search_keyword(
+                kb_id, query, top_k, kb_ids=kwargs.get("kb_ids")
+            ),
+            RetrievalMode.HYBRID: lambda: self.search_hybrid(
+                kb_id,
+                query,
+                top_k,
+                keyword_weight=kwargs.get("keyword_weight", 0.5),
+                vector_weight=kwargs.get("vector_weight", 0.5),
+                embedding_model_id=kwargs.get("embedding_model_id"),
+                kb_ids=kwargs.get("kb_ids"),
+                agent_id=kwargs.get("agent_id", ""),
+                rerank_model_id=kwargs.get("rerank_model_id", ""),
+            ),
             RetrievalMode.ES_VECTOR: lambda: self.search_es_vector(kb_id, query, top_k),
             RetrievalMode.ES_KEYWORD: lambda: self.search_es_keyword(kb_id, query, top_k),
             RetrievalMode.ES_HYBRID: lambda: self.search_es_hybrid(
@@ -652,41 +588,23 @@ class KnowledgeRetriever:
     
     def search_community_reports(self, kb_id: str, query: str, top_k: int = 5) -> List[Dict]:
         try:
-            index_name = es_client.get_main_index_name("default")
-            query_body = {
-                "query": {
-                    "bool": {
-                        "must": [
-                            {"term": {"kb_id": kb_id}},
-                            {"term": {"knowledge_graph_kwd.keyword": "community_report"}}
-                        ],
-                        # topology stale 报告社区结构已变，不参与召回
-                        "must_not": [{"term": {"stale_kwd": "topology"}}],
-                        "should": [
-                            {"multi_match": {
-                                "query": query,
-                                "fields": ["report.title^3", "report.summary^2", "report.findings.summary", "entities"]
-                            }}
-                        ],
-                        "minimum_should_match": 0
-                    }
-                },
-                "size": top_k,
-                "_source": ["report_id", "community_id", "entities", "report", "doc_id", "doc_ids",
-                            "created_at", "stale_kwd"]
-            }
+            from backend.storage.search_store import search_store
 
-            result = es_client.client.search(index=index_name, body=query_body)
-            hits = result.get("hits", {}).get("hits", [])
+            hits = search_store.search_community_reports(kb_id=kb_id, query=query, top_k=top_k)
 
             results = []
             for hit in hits:
-                source = hit.get("_source", {})
+                if isinstance(hit, dict):
+                    source = dict(hit.get("document") or hit)
+                    hit_score = hit.get("score", source.get("score", 0.0))
+                else:
+                    source = dict(getattr(hit, "document", {}) or {})
+                    hit_score = getattr(hit, "score", source.get("score", 0.0))
                 report = source.get("report", {})
                 stale = source.get("stale_kwd", "N")
-                base_score = float(hit.get("_score", 0.0) or 0.0)
-                # content stale 报告正文引用了已删除文档的描述，降权使用
-                score = base_score * 0.7 if stale == "content" else base_score
+                # SearchStore owns stale filtering/weighting; do not apply the
+                # content-stale penalty a second time in the retrieval layer.
+                score = float(hit_score or 0.0)
 
                 results.append({
                     "report_id": source.get("report_id", ""),
@@ -714,18 +632,20 @@ class KnowledgeRetriever:
                           chunks_count: int = None, entities_count: int = None, 
                           reports_count: int = None) -> Dict:
         try:
-            es_hybrid_results = self.search_es_hybrid(kb_id, query, top_k * 2)
+            retrieval_outcome = self.search_hybrid_with_info(kb_id, query, top_k)
+            chunk_results = retrieval_outcome.results
+            retrieval_info = retrieval_outcome.info()
             kg_entity_results = self.search_kg_entity(kb_id, query, top_k * 2)
             community_report_results = self.search_community_reports(kb_id, query, top_k * 2)
             
-            for r in es_hybrid_results:
+            for r in chunk_results:
                 r["data_type"] = "chunk"
             for r in kg_entity_results:
                 r["data_type"] = "entity"
             for r in community_report_results:
                 r["data_type"] = "community_report"
             
-            chunks_available = len(es_hybrid_results)
+            chunks_available = len(chunk_results)
             entities_available = len(kg_entity_results)
             reports_available = len(community_report_results)
             
@@ -736,28 +656,32 @@ class KnowledgeRetriever:
                     "community_reports": [],
                     "total_chunks": 0,
                     "total_entities": 0,
-                    "total_reports": 0
+                    "total_reports": 0,
+                    "retrieval_info": retrieval_info,
                 }
             
             use_manual = any(c is not None for c in [chunks_count, entities_count, reports_count])
             
             if use_manual:
-                return self._search_rag_fusion_manual(
-                    es_hybrid_results, kg_entity_results, community_report_results,
+                result = self._search_rag_fusion_manual(
+                    chunk_results, kg_entity_results, community_report_results,
                     chunks_available, entities_available, reports_available,
                     chunks_count, entities_count, reports_count
                 )
+                result["retrieval_info"] = retrieval_info
+                return result
             
             total_avail = chunks_available + entities_available + reports_available
             
             if total_avail <= top_k:
                 return {
-                    "chunks": es_hybrid_results,
+                    "chunks": chunk_results,
                     "entities": kg_entity_results,
                     "community_reports": community_report_results,
                     "total_chunks": chunks_available,
                     "total_entities": entities_available,
-                    "total_reports": reports_available
+                    "total_reports": reports_available,
+                    "retrieval_info": retrieval_info,
                 }
             
             has_chunks = chunks_available > 0
@@ -767,17 +691,20 @@ class KnowledgeRetriever:
             
             if type_count == 1:
                 if has_chunks:
-                    final_chunks = es_hybrid_results[:top_k]
+                    final_chunks = chunk_results[:top_k]
                     return {"chunks": final_chunks, "entities": [], "community_reports": [],
-                            "total_chunks": len(final_chunks), "total_entities": 0, "total_reports": 0}
+                            "total_chunks": len(final_chunks), "total_entities": 0, "total_reports": 0,
+                            "retrieval_info": retrieval_info}
                 elif has_entities:
                     final_entities = kg_entity_results[:top_k]
                     return {"chunks": [], "entities": final_entities, "community_reports": [],
-                            "total_chunks": 0, "total_entities": len(final_entities), "total_reports": 0}
+                            "total_chunks": 0, "total_entities": len(final_entities), "total_reports": 0,
+                            "retrieval_info": retrieval_info}
                 else:
                     final_reports = community_report_results[:top_k]
                     return {"chunks": [], "entities": [], "community_reports": final_reports,
-                            "total_chunks": 0, "total_entities": 0, "total_reports": len(final_reports)}
+                            "total_chunks": 0, "total_entities": 0, "total_reports": len(final_reports),
+                            "retrieval_info": retrieval_info}
             
             base_weights = {"chunks": 0.5, "entities": 0.3, "reports": 0.2}
             active_types = {}
@@ -872,7 +799,7 @@ class KnowledgeRetriever:
                 if idx > 1000:
                     break
             
-            final_chunks = es_hybrid_results[:chunks_count]
+            final_chunks = chunk_results[:chunks_count]
             final_entities = kg_entity_results[:entities_count]
             final_reports = community_report_results[:reports_count]
             
@@ -882,7 +809,8 @@ class KnowledgeRetriever:
                 "community_reports": final_reports,
                 "total_chunks": len(final_chunks),
                 "total_entities": len(final_entities),
-                "total_reports": len(final_reports)
+                "total_reports": len(final_reports),
+                "retrieval_info": retrieval_info,
             }
         except Exception as e:
             print(f"RAG fusion search failed: {e}")
@@ -892,10 +820,14 @@ class KnowledgeRetriever:
                 "community_reports": [],
                 "total_chunks": 0,
                 "total_entities": 0,
-                "total_reports": 0
+                "total_reports": 0,
+                "retrieval_info": {
+                    "reranked": False,
+                    "fallback": f"RAG Fusion 检索失败: {e}",
+                },
             }
     
-    def _search_rag_fusion_manual(self, es_hybrid_results, kg_entity_results, 
+    def _search_rag_fusion_manual(self, chunk_results, kg_entity_results,
                                    community_report_results, chunks_available, 
                                    entities_available, reports_available,
                                    chunks_count, entities_count, reports_count):
@@ -918,7 +850,7 @@ class KnowledgeRetriever:
                 if reports_count is not None:
                     r_count = min(reports_count, reports_available)
             
-            final_chunks = es_hybrid_results[:c_count]
+            final_chunks = chunk_results[:c_count]
             final_entities = kg_entity_results[:e_count]
             final_reports = community_report_results[:r_count]
             

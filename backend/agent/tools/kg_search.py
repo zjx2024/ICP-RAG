@@ -1,7 +1,7 @@
 """kg_search 工具节点。
 
 设计原则：复制 dify_code_node_kg_lite.py 的已验证逻辑到本文件，
-原文件保留不动。仅将硬编码 URL 改为从 config 读取。
+原文件保留不动。HugeGraph 地址从 config 读取，社区报告通过统一检索门面读取。
 """
 import json
 import time
@@ -12,12 +12,11 @@ import requests
 from typing import Dict
 
 from backend.config.config import config
-from backend.storage.es_client import es_client  # 只读引用
+from backend.storage.search_store import search_store
 
 logger = logging.getLogger(__name__)
 
 _HG = f"http://{config.HUGEGRAPH_HOST}:{config.HUGEGRAPH_PORT}"
-_IDX = es_client.get_main_index_name("default")
 
 
 def _quote_vid(vid):
@@ -87,41 +86,30 @@ def _hg_edges(vid, limit=20):
     return r.json().get("edges", [])
 
 
-def _es_reports(kb_ids, entity_names, query, tk):
-    """ES 查社区报告：返回完整社区信息（含 findings/rating/community_id/entities）
-
-    检索策略（三路 should，按相关性加权）：
-    1. terms 精确匹配：实体名完全在社区 entities 列表中（最高优先级，boost=8）
-    2. multi_match：query 在 report.title/summary/findings.summary 中匹配
-    3. match：单个实体名在 entities 中模糊匹配（boost=3）
-    """
+def _search_reports(kb_ids, entity_names, query, tk):
+    """通过 OpenSearch 门面查社区报告，不在工具层拼接 DSL/HTTP。"""
     if isinstance(kb_ids, str):
         kb_ids = [kb_ids]
     kb_ids = [k for k in (kb_ids or []) if k]
-    should = []
-    # 路径 1：实体名精确匹配社区 entities 列表（实体 → 所属社区）
-    # 注意：entities 是 text 类型，必须用 entities.keyword 才能精确匹配
-    if entity_names:
-        should.append({"terms": {"entities.keyword": entity_names[:20], "boost": 8}})
-    # 路径 2：query 全文匹配 report 字段（含 findings.summary）
-    if query:
-        should.append({"multi_match": {"query": query,
-            "fields": ["report.title^3", "report.summary^2", "report.findings.summary^2", "entities"]}})
-    # 路径 3：单个实体名模糊匹配 entities
-    for n in entity_names[:10]:
-        should.append({"match": {"entities": {"query": n, "boost": 3}}})
-    if not should or not kb_ids:
+    if not kb_ids or (not entity_names and not query):
         return []
-    body = {"size": tk, "query": {"bool": {"should": should, "minimum_should_match": 1,
-            "filter": [{"terms": {"kb_id": kb_ids}}, {"term": {"knowledge_graph_kwd": "community_report"}}]}},
-            "sort": [{"_score": "desc"}]}
     try:
-        r = requests.post(f"{es_client.client.transport.hosts[0]['host'] if es_client.client.transport.hosts else 'localhost:9200'}/{_IDX}/_search",
-                          json=body, timeout=10)
-        hits = r.json().get("hits", {}).get("hits", [])
+        hits = []
+        for kb_id in kb_ids:
+            hits.extend(search_store.search_community_reports(
+                kb_id=kb_id,
+                query=query or None,
+                entity_names=entity_names[:20],
+                top_k=tk,
+            ))
         out = []
         for h in hits:
-            s = h["_source"]
+            if hasattr(h, "document"):
+                s = h.document
+                score = h.score
+            else:
+                s = h.get("document") or h.get("_source") or h
+                score = h.get("score", h.get("_score", 0))
             rep = s.get("report", {})
             if not isinstance(rep, dict):
                 rep = {"title": str(rep)[:80], "summary": str(rep)}
@@ -145,9 +133,10 @@ def _es_reports(kb_ids, entity_names, query, tk):
                 "community_id": s.get("community_id"),
                 "entities": s.get("entities", []) or [],
                 "doc_ids": s.get("doc_ids", []) or [],
-                "score": h.get("_score", 0),
+                "score": score or 0,
             })
-        return out
+        out.sort(key=lambda item: item.get("score", 0), reverse=True)
+        return out[:tk]
     except Exception:
         return []
 
@@ -425,7 +414,7 @@ def _kg_search(kb_ids, query: str, entity_keywords=None, type_keywords=None, top
     ents = list(all_matched.values())[:tk * 3]
 
     entity_names = [e["name"] for e in ents if e.get("name")]
-    reports = _es_reports(kb_ids, entity_names, query.strip(), tk)
+    reports = _search_reports(kb_ids, entity_names, query.strip(), tk)
 
     seen, rels = set(), []
     for r in hop_rels:

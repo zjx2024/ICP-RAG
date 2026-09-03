@@ -21,10 +21,13 @@ export interface ICPDocument {
   doc_id: string;
   doc_type: string;
   file_name: string;
+  storage_key?: string;
+  /** @deprecated 兼容旧 API；新代码请使用 storage_key。 */
   minio_path?: string;
   status: string; // uploaded/parsing/indexed/kg_pending/kg_done/failed
   parse_count?: number;
   last_result?: Record<string, unknown> | null;
+  metadata?: Record<string, unknown> | null;
   created_at?: string;
   updated_at?: string;
 }
@@ -38,10 +41,16 @@ export interface ICPParseResult {
 }
 
 export interface ICPOriginalBlock {
-  title: string;
-  level: number;
+  id?: string;
+  kind?: 'paragraph' | 'table' | 'image' | string;
+  sequence?: number;
+  source_ref?: string;
+  image_index?: number;
+  title?: string;
+  level?: number;
   text?: string;
   table?: string[][];
+  image_url?: string;
 }
 
 export interface ICPOriginalResponse {
@@ -51,6 +60,24 @@ export interface ICPOriginalResponse {
   page: number;
   size: number;
   blocks: ICPOriginalBlock[];
+}
+
+export interface ICPEvidencePreview {
+  found: boolean;
+  resolved_source_ref: string;
+  structure_summary?: string;
+  excerpt?: string;
+  table?: {
+    title?: string;
+    headers: string[];
+    row: string[];
+    source_ref?: string;
+  };
+  image?: {
+    title?: string;
+    image_url: string;
+    source_ref?: string;
+  };
 }
 
 export interface ICPVectorResponse {
@@ -74,6 +101,30 @@ export interface ICPFaultTree {
   chunk_id: string;
   image_id: string;
   image_title: string;
+  diagram_id?: string;
+  revision_id?: string;
+  revision_no?: number;
+  review_status?: 'pending' | 'conflicted' | 'confirmed' | 'rejected';
+  projection_status?: 'not_projected' | 'publishing' | 'published' | 'failed' | 'stale';
+  /** 自动图处理状态；review_status 仅用于兼容历史修订。 */
+  automation_status?: string;
+  validation_status?: string;
+  validation_tier?: string;
+  validation_method?: string;
+  validator_version?: string;
+  validated_at?: string;
+  validation_report?: Record<string, unknown>;
+  quarantine_reason?: string;
+  processed_by?: string;
+  processed_at?: string;
+  retryable?: boolean;
+  conflict_count?: number;
+  conflicts?: Array<Record<string, unknown>>;
+  lock_version?: number;
+  reviewed_by?: string;
+  review_note?: string;
+  is_active?: boolean;
+  candidate_count?: number;
   graph: {
     root_fault_id?: string;
     metadata?: Record<string, unknown>;
@@ -118,6 +169,9 @@ export interface DocumentStatus {
   file_name: string;
   kb_id: string;
   status: DocStatus;
+  storage_key?: string;
+  /** @deprecated Physical DB compatibility column; use storage_key. */
+  minio_path?: string;
   total_chunks?: number;
   created_at?: string;
   kb_name?: string;
@@ -325,6 +379,8 @@ export interface ImageItem {
   image_type: string;
   image_url: string;
   chunk_id: string;
+  storage_key: string;
+  /** @deprecated 兼容旧 API；新代码请使用 storage_key。 */
   minio_path: string;
   created_at?: string;
 }
@@ -388,6 +444,7 @@ export interface AgentSession {
   agent_id: string;
   user_id: string;
   title: string;
+  title_origin?: 'default' | 'auto' | 'manual';
   pinned?: boolean;
   archived?: boolean;
   message_count?: number;
@@ -395,12 +452,53 @@ export interface AgentSession {
   updated_at?: string;
 }
 
+export type AgentEvidenceStatus =
+  | 'answer_used'
+  | 'used'
+  | 'approved'
+  | 'blocked'
+  | 'excluded'
+  | 'candidate'
+  | string;
+
+/**
+ * 一轮问答内可审计的证据条目。
+ *
+ * `evidence_id` 是跨回答稳定的业务标识；`answer_citation_id` 只是本轮正文中的显示序号。
+ * 旧会话可能只有 citations 且没有这些字段，页面会按正文标记做兼容回退。
+ */
+export interface AgentEvidence {
+  evidence_id?: string;
+  status?: AgentEvidenceStatus;
+  answer_citation_id?: number;
+  doc_id?: string;
+  doc_name?: string;
+  title?: string;
+  display_summary?: string;
+  content?: string;
+  snippet?: string;
+  doc_type?: string;
+  authority?: string;
+  evidence_level?: string;
+  validation_tier?: string;
+  source_ref?: string;
+  record_id?: string;
+  chunk_id?: string;
+  image_url?: string;
+  document_metadata?: Record<string, unknown>;
+  [k: string]: unknown;
+}
+
 export interface AgentMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   thinking_events?: unknown[];
-  citations?: Array<{ doc_name?: string; title?: string; content?: string; [k: string]: unknown }>;
+  /** 正文实际引用的紧凑列表；新接口中与 [^n] 一一对应。 */
+  citations?: AgentEvidence[];
+  /** 受限的全过程证据目录，不包含模型的原始思维链。 */
+  evidence_catalog?: AgentEvidence[];
+  used_evidence_ids?: string[];
   feedback?: 'like' | 'dislike';
   created_at?: string;
 }

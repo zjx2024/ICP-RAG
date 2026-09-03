@@ -43,7 +43,7 @@ export const unbindAgentModel = (agentId: string, role: string) =>
 export const fetchSessions = (agentId: string) =>
   request<AgentSession[]>(`${API}/session${buildQuery({ agent_id: agentId })}`);
 
-export const createSession = (agentId: string, title = '新会话') =>
+export const createSession = (agentId: string, title = '新诊断会话') =>
   request<AgentSession>(`${API}/session`, {
     method: 'POST',
     body: JSON.stringify({ agent_id: agentId, user_id: 'default', title }),
@@ -59,7 +59,7 @@ export const deleteSession = (sessionId: string) =>
   request<{ deleted: boolean }>(`${API}/session/${sessionId}`, { method: 'DELETE' });
 
 export const generateSessionTitle = (sessionId: string) =>
-  request<{ title: string }>(`${API}/session/${sessionId}/title`, { method: 'POST' });
+  request<AgentSession>(`${API}/session/${sessionId}/title`, { method: 'POST' });
 
 export const compressSession = (sessionId: string) =>
   request<{ session_id: string; before_tokens: number; after_tokens: number; deleted_count: number; summary: string }>(
@@ -79,6 +79,12 @@ export function chatStream(
     signal,
   });
 }
+
+export const stopChat = (sessionId: string) =>
+  request<{ stopped: boolean; session_id: string; reason?: string }>(
+    `${API}/chat/stop${buildQuery({ session_id: sessionId })}`,
+    { method: 'POST' },
+  );
 
 export const sendFeedback = (messageId: string, feedback: 'like' | 'dislike') =>
   request<{ message_id: string; feedback: string }>(

@@ -13,7 +13,7 @@ DOCUMENT_TYPES = [
         "系统架构与功能说明",
         "系统/子系统/模块/功能/接口及典型失效表现，是 Function Locator 的知识骨架",
         "text",
-        ".docx,.txt",
+        ".docx,.xlsx,.xlsm,.xls,.txt,.md",
         "function_architecture",
         "icp_functions",
         "function_locator",
@@ -25,7 +25,7 @@ DOCUMENT_TYPES = [
         "HMC 故障代码手册",
         "LCN/HAMC/HSC、故障描述现象以及故障分析程序/维修方法",
         "table",
-        ".docx,.xlsx,.xls",
+        ".docx,.xlsx,.xlsm,.xls",
         "hmc",
         "fault_hmc",
         "hmc",
@@ -37,7 +37,7 @@ DOCUMENT_TYPES = [
         "FTA 故障树分析",
         "顶事件、中间事件、基本事件及 AND/OR 逻辑关系",
         "image",
-        ".docx,.png,.jpg,.jpeg",
+        ".docx,.png,.jpg,.jpeg,.bmp,.gif,.webp",
         "fta",
         "document_fault_trees",
         "fta",
@@ -49,7 +49,7 @@ DOCUMENT_TYPES = [
         "RBD 可靠性框图分析",
         "功能块、串并联/冗余结构、成功判据与可靠性参数",
         "image",
-        ".docx,.png,.jpg,.jpeg",
+        ".docx,.png,.jpg,.jpeg,.bmp,.gif,.webp",
         "rbd",
         "document_fault_trees",
         "rbd",
@@ -61,7 +61,7 @@ DOCUMENT_TYPES = [
         "FMECA 故障模式影响及危害性分析",
         "故障模式、原因、局部/最终影响、严酷度、概率、检测与改进措施",
         "table",
-        ".docx,.xlsx,.xls",
+        ".docx,.xlsx,.xlsm,.xls",
         "fmeca",
         "fmea",
         "fmeca",
@@ -73,7 +73,7 @@ DOCUMENT_TYPES = [
         "MFL 维修故障清单",
         "模块/SUR板/功能子电路故障模式、API 上报和维修定位信息",
         "table",
-        ".docx,.xlsx,.xls",
+        ".docx,.xlsx,.xlsm,.xls",
         "mfl",
         "mfl",
         "mfl",
@@ -85,7 +85,7 @@ DOCUMENT_TYPES = [
         "故障历史查询文档",
         "历史故障现象、排故方法、根因、处理步骤、最终方案和关联文档",
         "text",
-        ".docx,.txt",
+        ".docx,.txt,.md",
         "fault_history",
         "fault_history_cases",
         "fault_history",
@@ -127,3 +127,7 @@ def normalize_document_types() -> None:
         except Exception:
             pass
         logger.warning("Failed to normalize ICP document types: %s", exc)
+        # The startup layer decides whether this is a warning (developer mode)
+        # or a fatal dependency error (strict/container mode). Swallowing it
+        # here would let a service report ready with a stale seven-type registry.
+        raise

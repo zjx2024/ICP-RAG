@@ -1,6 +1,6 @@
 """文档删除级联处理的纯函数辅助模块。
 
-本模块刻意不实例化任何存储客户端（ES/PG/HugeGraph/MinIO），所需客户端由调用方
+本模块刻意不实例化任何存储客户端（检索/PG/HugeGraph/ArtifactStore），所需客户端由调用方
 注入，便于在单测中直接导入而不会触发服务连接。
 """
 
@@ -33,8 +33,8 @@ def parse_json_parts(raw):
         return []
 
 
-def handle_community_reports(es_client, index_name, doc_id, kb_id, fully_removed_entities):
-    """删除文档后分级处理 ES 社区报告：
+def handle_community_reports(search_store, postgres_client, doc_id, kb_id, fully_removed_entities):
+    """删除文档后分级处理社区报告真源与检索投影：
 
     - 单文档社区报告：物理删除
     - 多文档且无实体被彻底删除：标 content stale（仅描述被裁剪，正文引用过时）
@@ -42,13 +42,15 @@ def handle_community_reports(es_client, index_name, doc_id, kb_id, fully_removed
 
     stale 报告由后续异步重建任务刷新正文，检索阶段据此降权。
     """
-    community_reports = es_client.search_community_reports(index_name, kb_id=kb_id, doc_id=doc_id)
+    community_reports = postgres_client.get_community_reports(kb_id=kb_id, doc_id=doc_id)
     fully_removed_set = {str(n).upper() for n in fully_removed_entities if n}
     now = datetime.now().isoformat()
+    deleted = 0
+    updated = 0
 
     for report in community_reports:
-        es_doc_id = report.get("es_doc_id", "")
-        if not es_doc_id:
+        projection_id = report.get("projection_id") or report.get("es_doc_id", "")
+        if not projection_id:
             continue
 
         report_doc_ids = report.get("doc_ids", [])
@@ -60,10 +62,16 @@ def handle_community_reports(es_client, index_name, doc_id, kb_id, fully_removed
         gone_in_community = {e for e in report_entities if str(e).upper() in fully_removed_set}
 
         if len(report_doc_ids) <= 1:
+            # PG 是权威源，先更新 PG，再更新可重建投影。
+            postgres_client.delete_community_report(projection_id)
             try:
-                es_client.client.delete(index=index_name, id=es_doc_id)
+                search_store.delete_by_id(projection_id)
             except Exception:
-                pass  # 文档可能已被前序步骤删除，忽略 404
+                # 投影删除失败时恢复真源，保留可重试锦标，
+                # 避免只留下一条无法从 PG 定位的孤儿投影。
+                postgres_client.upsert_community_report(projection_id, report)
+                raise
+            deleted += 1
         else:
             new_doc_ids = [d for d in report_doc_ids if d != doc_id]
             if gone_in_community:
@@ -72,16 +80,28 @@ def handle_community_reports(es_client, index_name, doc_id, kb_id, fully_removed
             else:
                 stale = "content"
                 reason = "doc_deleted:entities_trimmed"
-            update_body = {
-                "doc": {
-                    "doc_ids": new_doc_ids,
-                    "doc_id": new_doc_ids[0] if new_doc_ids else "",
-                    "stale_kwd": stale,
-                    "stale_reason": reason,
-                    "stale_at": now,
-                }
+            updates = {
+                "doc_ids": new_doc_ids,
+                "doc_id": new_doc_ids[0] if new_doc_ids else "",
+                "stale_kwd": stale,
+                "stale_reason": reason,
+                "stale_at": now,
             }
+            postgres_client.mark_community_report_stale(
+                projection_id, new_doc_ids, stale, reason, now
+            )
+            projection = {
+                key: value
+                for key, value in report.items()
+                if key not in {"es_doc_id", "updated_at"}
+            }
+            projection.update(updates)
+            projection.setdefault("knowledge_graph_kwd", "community_report")
             try:
-                es_client.client.update(index=index_name, id=es_doc_id, body=update_body)
+                search_store.upsert(projection_id, projection)
             except Exception:
-                pass  # 文档可能已被前序步骤删除，忽略 404
+                postgres_client.upsert_community_report(projection_id, report)
+                raise
+            updated += 1
+
+    return {"deleted": deleted, "updated": updated}

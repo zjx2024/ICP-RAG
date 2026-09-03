@@ -1,27 +1,49 @@
-import React, { useEffect, useState } from 'react';
-import { Layout, Menu, Typography, Space, Tag } from 'antd';
+import { useEffect, useState } from 'react';
+import type { ReactNode } from 'react';
+import { Typography } from 'antd';
 import {
-  ArrowLeftOutlined, DatabaseOutlined, EyeOutlined,
-  ApartmentOutlined, ShareAltOutlined, FileTextOutlined,
+  ArrowLeftOutlined,
+  DatabaseOutlined,
+  EyeOutlined,
+  FileTextOutlined,
   LoadingOutlined,
+  ShareAltOutlined,
+  TableOutlined,
 } from '@ant-design/icons';
-import { useParams, useNavigate, useLocation, Outlet } from 'react-router-dom';
+import { Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { fetchDocumentType } from '@/api/icp';
 import type { DocTypeInfo } from '@/types';
 
-const { Sider, Content } = Layout;
-
-// 上传统一放在知识库首页；类型页只负责管理、解析、查看和日志。
-const BASE_MENU = [
-  { key: 'documents', icon: <DatabaseOutlined />, label: '文档管理' },
-  { key: 'view', icon: <EyeOutlined />, label: '内容查看' },
-  { key: 'logs', icon: <FileTextOutlined />, label: '日志管理' },
+const TYPE_NAV = [
+  { key: 'documents', icon: <DatabaseOutlined />, label: '文档' },
+  { key: 'view', icon: <EyeOutlined />, label: '内容' },
+  { key: 'visualize', icon: <ShareAltOutlined />, label: '关系图' },
 ];
 
-const IMAGE_MENU = [
-  { key: 'graph', icon: <ApartmentOutlined />, label: '知识图谱生成' },
-  { key: 'visualize', icon: <ShareAltOutlined />, label: '知识图谱可视化' },
-];
+const FORM_LABEL: Record<DocTypeInfo['data_form'], string> = {
+  table: '表格文档',
+  image: '工程图文档',
+  text: '图文文档',
+};
+
+const FORM_ICON: Record<DocTypeInfo['data_form'], ReactNode> = {
+  table: <TableOutlined />,
+  image: <ShareAltOutlined />,
+  text: <FileTextOutlined />,
+};
+
+function formatInputFormats(formats?: string) {
+  if (!formats) return '';
+  const values = new Set<string>();
+  formats.split(',').forEach((raw) => {
+    const ext = raw.trim().toLowerCase();
+    if (['.doc', '.docx'].includes(ext)) values.add('Word');
+    else if (['.xls', '.xlsx', '.xlsm'].includes(ext)) values.add('Excel');
+    else if (['.txt', '.md'].includes(ext)) values.add('文本');
+    else if (['.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp'].includes(ext)) values.add('图片');
+  });
+  return Array.from(values).join(' / ');
+}
 
 export default function TypeLayout() {
   const { docType = '' } = useParams<{ docType: string }>();
@@ -32,80 +54,87 @@ export default function TypeLayout() {
 
   useEffect(() => {
     if (!docType) return;
+    let active = true;
     setTypeInfo(null);
     setNotFound(false);
     fetchDocumentType(docType)
-      .then(setTypeInfo)
-      .catch(() => setNotFound(true));
+      .then((value) => { if (active) setTypeInfo(value); })
+      .catch(() => { if (active) setNotFound(true); });
+    return () => { active = false; };
   }, [docType]);
 
   const segments = location.pathname.split('/').filter(Boolean);
   const raw = segments.length >= 3 ? segments[2] : 'documents';
-  const selected = raw === 'doc' || raw === 'upload' ? 'documents' : raw;
-
-  const isImage = typeInfo?.data_form === 'image';
-  const SUB_MENU = isImage ? [...BASE_MENU, ...IMAGE_MENU] : BASE_MENU;
+  const selected = raw === 'doc' || raw === 'upload' || raw === 'logs' ? 'documents' : raw;
+  const formatLabel = typeInfo ? FORM_LABEL[typeInfo.data_form] : '';
+  const inputLabel = formatInputFormats(typeInfo?.input_formats);
 
   if (notFound) {
     return (
-      <div style={{ textAlign: 'center', padding: 80 }}>
-        <Typography.Title level={4}>文档类型不存在或已被停用</Typography.Title>
-        <button type="button" className="glass-tabbar-item" onClick={() => navigate('/')}>返回首页</button>
+      <div className="type-workspace-error">
+        <Typography.Title level={4}>文档类型不存在或已停用</Typography.Title>
+        <button type="button" className="type-back-button" onClick={() => navigate('/')}>
+          <ArrowLeftOutlined /> 返回七类文档
+        </button>
       </div>
     );
   }
 
   return (
-    <Layout style={{ height: 'calc(100vh - 64px)', overflow: 'hidden', background: 'transparent' }}>
-      <Sider
-        width={210}
-        style={{
-          height: '100%',
-          overflow: 'auto',
-          backdropFilter: 'blur(14px) saturate(160%)',
-          WebkitBackdropFilter: 'blur(14px) saturate(160%)',
-          borderRight: '1px solid rgba(255,255,255,0.65)',
-          paddingTop: 16,
-          background: 'rgba(255,255,255,0.45)',
-        }}
-      >
-        <div style={{ padding: '4px 16px 12px', borderBottom: '1px solid rgba(0,0,0,0.06)', marginBottom: 8 }}>
-          <button type="button" className="glass-tabbar-item" style={{ marginBottom: 10 }} onClick={() => navigate('/')}>
-            <ArrowLeftOutlined /> 返回类型列表
+    <div className="type-workspace">
+      <header className="type-workspace-header">
+        <div className="type-workspace-heading">
+          <button
+            type="button"
+            className="type-back-button"
+            onClick={() => navigate('/')}
+            aria-label="返回七类文档知识库"
+          >
+            <ArrowLeftOutlined />
+            <span>七类文档</span>
           </button>
-          <Space style={{ display: 'flex' }}>
-            {typeInfo ? (
-              <Typography.Text strong style={{ color: '#262626', fontSize: 14 }} ellipsis>
-                {typeInfo.name}
-              </Typography.Text>
-            ) : (
-              <LoadingOutlined />
-            )}
-          </Space>
-          {typeInfo?.description ? (
-            <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: '4px 0 0' }} ellipsis={{ rows: 2 }}>
-              {typeInfo.description}
-            </Typography.Paragraph>
+
+          <div className="type-workspace-identity">
+            <span className="type-workspace-icon" aria-hidden="true">
+              {typeInfo ? FORM_ICON[typeInfo.data_form] : <LoadingOutlined />}
+            </span>
+            <div className="type-workspace-copy">
+              <div className="type-workspace-title-row">
+                <Typography.Title level={4} ellipsis style={{ margin: 0 }}>
+                  {typeInfo?.name || '正在加载文档类型'}
+                </Typography.Title>
+                {typeInfo && <span className="type-workspace-kind">{formatLabel}</span>}
+              </div>
+            </div>
+          </div>
+
+          {inputLabel ? (
+            <div className="type-workspace-format" title={typeInfo?.input_formats}>
+              <span>支持格式</span>
+              <strong>{inputLabel}</strong>
+            </div>
           ) : null}
-          <Space size={4} wrap style={{ marginTop: 6 }}>
-            <Tag color={isImage ? 'purple' : typeInfo?.data_form === 'table' ? 'geekblue' : 'green'}>
-              {typeInfo?.data_form === 'image' ? '图类' : typeInfo?.data_form === 'table' ? '表格类' : '文本类'}
-            </Tag>
-            {typeInfo?.input_formats ? <Tag>{typeInfo.input_formats}</Tag> : null}
-            {isImage ? <Tag color="gold">两阶段图谱</Tag> : null}
-          </Space>
         </div>
-        <Menu
-          mode="inline"
-          selectedKeys={[selected]}
-          items={SUB_MENU}
-          onClick={({ key }) => navigate(`/type/${docType}/${key}`)}
-          style={{ background: 'transparent', borderInlineEnd: 'none' }}
-        />
-      </Sider>
-      <Content style={{ overflow: 'auto', padding: '0 24px 24px' }}>
+
+        <nav className="type-workspace-nav" aria-label="文档类型工作区导航">
+          {TYPE_NAV.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              className={`type-workspace-nav-item${selected === item.key ? ' active' : ''}`}
+              aria-current={selected === item.key ? 'page' : undefined}
+              onClick={() => navigate(`/type/${docType}/${item.key}`)}
+            >
+              {item.icon}
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </nav>
+      </header>
+
+      <main className="type-workspace-content">
         <Outlet />
-      </Content>
-    </Layout>
+      </main>
+    </div>
   );
 }

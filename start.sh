@@ -4,7 +4,7 @@
 # 这样 Dify 对接页面上显示的 API 地址就能在局域网内被其他主机访问
 #
 # 配套脚本职责：
-#   ./start.sh        启动全部服务（镜像已存在则直接启动，缺失才自动构建）
+#   ./start.sh        启动 PostgreSQL / OpenSearch / HugeGraph / Hubble
 #   ./stop.sh         停止全部服务（docker compose down）
 #   ./restart-app.sh  只重建并重启 app 服务（改代码后的快速迭代）
 
@@ -74,8 +74,12 @@ write_env() {
 write_env
 echo "[INFO] 已写入 $ENV_FILE"
 
+# LocalFS 必须在宿主机持久化；由当前用户预先创建，避免
+# Docker 自动创建为 root 目录后本地热启动无法写入。
+mkdir -p "$SCRIPT_DIR/volumes/artifacts/images" "$SCRIPT_DIR/volumes/opensearch"
+
 # ---------- 启动 docker compose ----------
-# 无参数时默认只启动基础设施（postgres/es/minio/hugegraph/hubble）：
+# 无参数时默认只启动基础设施（postgres/opensearch/hugegraph/hubble）：
 # 应用服务（app）不随基础设施启动 —— 开发用 ./start_server.sh 源码热启动（uvicorn 19999），
 # 避免容器版 app 占用 19999 端口与热启动冲突。
 # 有参数时透传给 compose，例如：
@@ -83,7 +87,9 @@ echo "[INFO] 已写入 $ENV_FILE"
 #   ./start.sh up -d --build      强制重建镜像后启动
 #   ./start.sh ps                 查看服务状态
 if [ "$#" -eq 0 ]; then
-    set -- up -d postgres elasticsearch minio hugegraph hubble
+    set -- up -d postgres opensearch hugegraph hubble
 fi
 echo "[INFO] 启动 docker compose (项目名: $PROJECT_NAME) ..."
-exec docker compose -p "$PROJECT_NAME" -f "$SCRIPT_DIR/docker-compose.yml" "$@"
+# 不显式指定 -f，使 Docker Compose 能读取 .env 中可选的 COMPOSE_FILE
+#（当前机器用 docker-compose.local.yml 解决宿主机端口冲突）。
+exec docker compose -p "$PROJECT_NAME" "$@"

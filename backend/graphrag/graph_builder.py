@@ -3,13 +3,13 @@ import json
 import networkx as nx
 from difflib import SequenceMatcher
 from typing import Dict, Tuple, List, Optional
-from backend.storage.es_client import es_client
+from backend.storage.search_store import search_store
 from backend.core.embedding import embedding_service
 from backend.config.config import config
 
 class GraphBuilder:
     def __init__(self):
-        self.es_client = es_client
+        self.search_store = search_store
         self.embedding_service = embedding_service
         self._similarity_threshold = 0.85
     
@@ -221,8 +221,6 @@ class GraphBuilder:
     
     def save_to_index(self, tenant_id: str, kb_id: str, graph: nx.Graph, entities: Dict, relations: Dict):
         try:
-            index_name = self.es_client.get_main_index_name(tenant_id)
-            
             for node_name, attrs in graph.nodes(data=True):
                 content = f"{node_name} - {attrs.get('description', '')}"
                 try:
@@ -238,7 +236,6 @@ class GraphBuilder:
                     "chunk_id": chunk_id,
                     "doc_name": "",
                     "content": content,
-                    "content_vector": embedding,
                     "content_type": "entity",
                     "knowledge_graph_kwd": "entity",
                     "entity_kwd": node_name,
@@ -251,9 +248,7 @@ class GraphBuilder:
                     "title": node_name,
                     "section": attrs.get("description", "")[:100]
                 }
-                self.es_client.index_document(tenant_id, attrs.get("project_id", ""), kb_id, 
-                                             attrs.get("doc_id", ""), chunk_id, content, embedding,
-                                             content_type="entity", **chunk)
+                self.search_store.upsert(chunk_id, chunk, vector=embedding)
             
             for src, tgt, attrs in graph.edges(data=True):
                 content = f"{src}->{tgt}: {attrs.get('description', '')}"
@@ -270,7 +265,6 @@ class GraphBuilder:
                     "chunk_id": chunk_id,
                     "doc_name": "",
                     "content": content,
-                    "content_vector": embedding,
                     "content_type": "relation",
                     "knowledge_graph_kwd": "relation",
                     "from_entity_kwd": src,
@@ -282,9 +276,7 @@ class GraphBuilder:
                     "title": f"{src}-{tgt}",
                     "section": attrs.get("description", "")[:100]
                 }
-                self.es_client.index_document(tenant_id, attrs.get("project_id", ""), kb_id, 
-                                             attrs.get("doc_id", ""), chunk_id, content, embedding,
-                                             content_type="relation", **chunk)
+                self.search_store.upsert(chunk_id, chunk, vector=embedding)
             
             print(f"Graph saved successfully: {len(graph.nodes)} nodes, {len(graph.edges)} edges")
         except Exception as e:
@@ -292,7 +284,7 @@ class GraphBuilder:
     
     def delete_graph_by_doc_id(self, tenant_id: str, kb_id: str, doc_id: str):
         try:
-            self.es_client.delete_by_doc_id(tenant_id, kb_id, doc_id)
+            self.search_store.delete_by_filter({"kb_id": kb_id, "doc_id": doc_id})
             print(f"Deleted graph data for doc_id: {doc_id}")
         except Exception as e:
             print(f"Failed to delete graph by doc_id: {e}")

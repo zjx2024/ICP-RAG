@@ -1,66 +1,68 @@
 # ===== ICP_RAG 新一代版本：独立基础设施（与 RAG_Agent_v1.0 端口完全隔离）=====
-# 宿主机端口映射：postgres 5433 / ES 9201 / minio 9002+9003 / hugegraph 8082 / hubble 18089 / app 19999
+# 宿主机端口映射：postgres 5433 / OpenSearch 9201 / hugegraph 8082 / hubble 18089 / app 19999
+# 原始文档和工程图由 app 内 ArtifactStore + LocalFS 管理，不再运行 MinIO 服务。
+# OpenSearch 同时承载 CJK BM25 全文索引与 BGE-M3 1024 维向量索引；不引入 Milvus。
 # 不写死 container_name：由 `-p icp` 自动生成 icp-<service>-1，避免与历史遗留容器重名
 # 热启动（源码）请使用 ./start_server.sh（uvicorn --reload，监听 19999）
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   postgres:
     image: postgres:15
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: knowledge_graph
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-knowledge_graph}
     volumes:
       - ./volumes/postgres:/var/lib/postgresql/data
     ports:
       - "5433:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-knowledge_graph}"]
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
+    logging: *default-logging
     networks:
       - icp-network
 
-  elasticsearch:
-    image: elasticsearch:8.14.0
+  opensearch:
+    image: opensearchproject/opensearch:3.6.0
     environment:
       - discovery.type=single-node
-      - ES_JAVA_OPTS=-Xms512m -Xmx512m
-      - xpack.security.enabled=false
+      - bootstrap.memory_lock=true
+      - DISABLE_SECURITY_PLUGIN=true
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      - OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g
     volumes:
-      - ./volumes/es:/usr/share/elasticsearch/data
+      - ./volumes/opensearch:/usr/share/opensearch/data
     ports:
       - "9201:9200"
-      - "9301:9300"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
     healthcheck:
-      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q 'green\\|yellow'"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health | grep -q 'green\\|yellow'"]
       interval: 10s
       timeout: 10s
-      retries: 10
-    networks:
-      - icp-network
-
-  minio:
-    image: minio/minio:latest
-    environment:
-      MINIO_ROOT_USER: admin
-      MINIO_ROOT_PASSWORD: password
-    volumes:
-      - ./volumes/minio:/data
-    ports:
-      - "9002:9000"
-      - "9003:9001"
-    command: server /data --console-address ":9001"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -s http://localhost:9000/minio/health/live"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
+      retries: 30
+      start_period: 40s
+    restart: unless-stopped
+    logging: *default-logging
     networks:
       - icp-network
 
   hugegraph:
-    image: hugegraph/hugegraph:latest
+    image: hugegraph/hugegraph:1.7.0
     ports:
       - "8082:8080"
     volumes:
@@ -74,11 +76,13 @@ services:
       interval: 10s
       timeout: 10s
       retries: 20
+    restart: unless-stopped
+    logging: *default-logging
     networks:
       - icp-network
 
   hubble:
-    image: hugegraph/hubble:latest
+    image: hugegraph/hubble:1.7.0
     ports:
       - "18089:8088"
     environment:
@@ -86,45 +90,73 @@ services:
     depends_on:
       hugegraph:
         condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
     networks:
       - icp-network
 
   app:
+    # 固定镜像名，确保离线导出/导入后 `compose up` 能直接复用应用镜像。
+    image: knowledge-graph-app:latest
     build:
       context: .
       dockerfile: Dockerfile
     ports:
       - "19999:9999"
-    # .env 中所有变量都会注入容器，修改 .env 即可调整配置
+    # 与宿主机源码热启动使用同一 UID/GID，避免 bind mount 中产生
+    # root:root 0750 文件后普通用户无法继续解析或回收。
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    # .env 可选；不存在时使用安全的本地开发默认值。
     # environment 中的值会覆盖 env_file，用于容器内部网络寻址
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       # 容器内部网络寻址（覆盖 .env 中的 localhost 值）
-      ES_HOST: elasticsearch
-      MINIO_ENDPOINT: minio:9000
+      OPENSEARCH_HOST: opensearch
+      OPENSEARCH_PORT: 9200
+      OPENSEARCH_SCHEME: http
+      OPENSEARCH_VERIFY_CERTS: "false"
+      OPENSEARCH_INDEX_ALIAS: ${OPENSEARCH_INDEX_ALIAS:-knowledge_graph_default}
+      OPENSEARCH_INDEX_VERSION: ${OPENSEARCH_INDEX_VERSION:-v1}
+      STRICT_DEPENDENCIES: "true"
       POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-knowledge_graph}
       HUGEGRAPH_HOST: hugegraph
       HUGEGRAPH_PORT: 8080
 
-      # 图片目录必须指向挂载点 /app/storage/images（默认会解析为镜像内 /app/app/storage/images，
-      # 导致静态服务读到镜像旧目录、解析产物写入容器可写层，容器重建即丢失）
-      IMAGE_STORAGE_DIR: /app/storage/images
+      # 本地 ArtifactStore 挂载点。/images 只暴露其 images 子目录，
+      # 原始文档等其他对象不会被静态服务公开。
+      ARTIFACT_BACKEND: local
+      ARTIFACT_STORAGE_DIR: /app/data/artifacts
+      ARTIFACT_TRASH_ENABLED: "true"
+      IMAGE_STORAGE_DIR: /app/data/artifacts/images
 
       # 服务器局域网 IP，由 start.sh 自动检测写入 .env
       SERVER_IP: ${SERVER_IP:-}
+      HOME: /tmp
+      PYTHONDONTWRITEBYTECODE: "1"
     depends_on:
       postgres:
         condition: service_healthy
-      elasticsearch:
-        condition: service_healthy
-      minio:
+      opensearch:
         condition: service_healthy
       hugegraph:
         condition: service_healthy
-    # 图片持久化：解析产物图片必须挂载宿主机目录，否则重建容器/镜像即丢失（画廊/检索图片 404）
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9999/livez', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    logging: *default-logging
+    # 原件、解析产物和工程图证据统一持久化。
     volumes:
-      - ./app/storage/images:/app/storage/images
+      - ./volumes/artifacts:/app/data/artifacts
     # 代码已打进镜像（Dockerfile COPY . .），无需 bind mount 代码
     # 这样镜像 + volumes/ 即可完整移植（Dify 式部署）
     networks:

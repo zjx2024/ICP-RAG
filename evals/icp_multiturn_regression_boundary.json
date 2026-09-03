@@ -1,0 +1,346 @@
+{
+  "name": "ICP 多轮回归集（三）确定性计算、范围外、无证据与澄清恢复",
+  "version": "2026-09-03",
+  "description": "32 组多轮对话：FTA/RBD 确定性计算与追问、范围外问题的连续拒答、相关但资料未记载时的不编造、歧义澄清后的恢复。确定性用例的期望值来自 test-docs 中已给出的合成计算结果；合成数据不代表真实适航知识。",
+  "defaults": {
+    "assertions": {
+      "min_evidence": 1,
+      "min_citations": 1,
+      "required_event_types": ["answer", "done"],
+      "answer_not_contains": [
+        "待复核（未绑定已批准直接证据）",
+        "证据边界：部分说明未附可直接核验的来源"
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "MT-FTA-01-startup-cutsets",
+      "metadata": {"category": "FTA 确定性分析", "coverage": ["fta_query", "fta_analyzer"], "expected_records": ["FTA-SYN-001"], "expected_value": "3.771e-04"},
+      "turns": [
+        {"id": "cutsets", "question": "以“系统无法完成启动”为顶事件，最小割集有哪些？顶事件近似概率是多少？",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "required_tools": ["fta_query", "fta_analyzer"], "forbidden_tools": ["graph_traversal"], "required_doc_types": ["fta"], "answer_regex": ["最小割集|割集", "3\\.?771e-?04"]}},
+        {"id": "events", "question": "这些基本事件里，哪些属于电源子系统？分别对应哪些 FMECA 故障模式？",
+         "assertions": {"required_tools": ["fta_query"], "required_used_doc_types": ["fta"], "any_used_record_ids": ["FTA-SYN-001"], "answer_regex": ["ICU|PSU|PDU|HUM|电源", "FM-SYN"]}}
+      ]
+    },
+    {
+      "id": "MT-FTA-02-external-comms",
+      "metadata": {"category": "FTA 确定性分析", "coverage": ["fta_query", "fta_analyzer"], "expected_records": ["FTA-SYN-003"], "expected_value": "1.910e-03"},
+      "turns": [
+        {"id": "probability", "question": "外部数据通信中断这棵故障树的顶事件近似概率是多少？",
+         "assertions": {"required_tools": ["fta_query", "fta_analyzer"], "forbidden_tools": ["graph_traversal"], "required_doc_types": ["fta"], "answer_regex": ["1\\.?910e-?03"]}},
+        {"id": "gates", "question": "这棵树里用到的是 AND 门还是 OR 门？这对结论意味着什么？",
+         "assertions": {"required_tools": ["fta_query"], "required_used_doc_types": ["fta"], "answer_regex": ["AND|OR|逻辑门|与门|或门"]}}
+      ]
+    },
+    {
+      "id": "MT-FTA-03-display-loss",
+      "metadata": {"category": "FTA 确定性分析", "coverage": ["fta_query", "fta_analyzer"], "expected_records": ["FTA-SYN-004"], "expected_value": "1.170e-03"},
+      "turns": [
+        {"id": "probability", "question": "显示输出丧失对应的顶事件概率是多少？请按文档中的故障树计算。",
+         "assertions": {"required_tools": ["fta_query", "fta_analyzer"], "forbidden_tools": ["graph_traversal"], "required_doc_types": ["fta"], "answer_regex": ["1\\.?170e-?03"]}},
+        {"id": "events", "question": "最小割集里有没有单事件就能触发顶事件的情况？是哪一个？",
+         "assertions": {"required_tools": ["fta_query"], "required_used_doc_types": ["fta"], "answer_regex": ["单事件|一阶|割集|OIM|DPM|FBM|DCS"]}}
+      ]
+    },
+    {
+      "id": "MT-FTA-04-repeated-reset",
+      "metadata": {"category": "FTA 确定性分析", "coverage": ["fta_query", "fta_analyzer"], "expected_records": ["FTA-SYN-005"], "expected_value": "1.096e-03"},
+      "turns": [
+        {"id": "cutsets", "question": "运行过程中反复自动复位这棵树的最小割集是什么？",
+         "assertions": {"required_tools": ["fta_query", "fta_analyzer"], "forbidden_tools": ["graph_traversal"], "required_doc_types": ["fta"], "answer_regex": ["最小割集|割集"]}},
+        {"id": "probability", "question": "那它的顶事件近似概率是多少？跟“系统无法完成启动”相比哪个更高？",
+         "assertions": {"required_tools": ["fta_analyzer"], "required_used_doc_types": ["fta"], "answer_regex": ["1\\.?096e-?03"]}}
+      ]
+    },
+    {
+      "id": "MT-FTA-05-health-monitoring-missing",
+      "metadata": {"category": "FTA 确定性分析", "coverage": ["fta_query", "fta_analyzer"], "expected_records": ["FTA-SYN-006"], "expected_value": "1.691e-03"},
+      "turns": [
+        {"id": "probability", "question": "健康监测信息缺失故障树的顶事件概率是多少？",
+         "assertions": {"required_tools": ["fta_query", "fta_analyzer"], "forbidden_tools": ["graph_traversal"], "required_doc_types": ["fta"], "answer_regex": ["1\\.?691e-?03"]}},
+        {"id": "events", "question": "这棵树覆盖的基本事件涉及 HMS 的哪些模块？",
+         "assertions": {"required_tools": ["fta_query"], "required_used_doc_types": ["fta"], "answer_regex": ["BITC|SAM|FLS|HMS"]}}
+      ]
+    },
+    {
+      "id": "MT-RBD-01-power-chain",
+      "metadata": {"category": "RBD 确定性分析", "coverage": ["rbd_query", "rbd_calculator"], "expected_records": ["RBD-SYN-001"], "expected_value": "0.99951007"},
+      "turns": [
+        {"id": "reliability", "question": "按文档给出的失效率，电源保障链在 10 小时任务下的系统可靠度是多少？",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "required_tools": ["rbd_query", "rbd_calculator"], "forbidden_tools": ["graph_traversal"], "required_doc_types": ["rbd"], "answer_regex": ["0\\.99951007"]}},
+        {"id": "criterion", "question": "这条链的成功判据是什么？结构表达式怎么写？",
+         "assertions": {"required_tools": ["rbd_query"], "required_used_doc_types": ["rbd"], "answer_regex": ["ICU", "PSU-A|PSU-B", "PDU", "HUM", "SERIES|PARALLEL|串联|并联"]}}
+      ]
+    },
+    {
+      "id": "MT-RBD-02-core-processing",
+      "metadata": {"category": "RBD 确定性分析", "coverage": ["rbd_query", "rbd_calculator"], "expected_records": ["RBD-SYN-002"], "expected_value": "0.99929014"},
+      "turns": [
+        {"id": "reliability", "question": "核心处理功能可靠性模型在 10 小时任务下的可靠度是多少？",
+         "assertions": {"required_tools": ["rbd_query", "rbd_calculator"], "forbidden_tools": ["graph_traversal"], "required_doc_types": ["rbd"], "answer_regex": ["0\\.99929014"]}},
+        {"id": "redundancy", "question": "相比电源保障链，这条链为什么可靠度更低？多出来的串联单元是哪些？",
+         "assertions": {"required_tools": ["rbd_query"], "required_used_doc_types": ["rbd"], "answer_regex": ["GPP-A|GPP-B", "MSM", "FPA|可编程逻辑"]}}
+      ]
+    },
+    {
+      "id": "MT-RBD-03-external-comm",
+      "metadata": {"category": "RBD 确定性分析", "coverage": ["rbd_query", "rbd_calculator"], "expected_records": ["RBD-SYN-003"], "expected_value": "0.99910032"},
+      "turns": [
+        {"id": "reliability", "question": "外部通信功能可靠性模型 10 小时任务可靠度是多少？",
+         "assertions": {"required_tools": ["rbd_query", "rbd_calculator"], "forbidden_tools": ["graph_traversal"], "required_doc_types": ["rbd"], "answer_regex": ["0\\.99910032"]}},
+        {"id": "criterion", "question": "它的成功判据里为什么把时钟模块也算进来了？",
+         "assertions": {"required_tools": ["rbd_query"], "required_used_doc_types": ["rbd"], "answer_regex": ["CGM|时钟", "BCA|BCB|总线", "NGW|网关", "PCU|协议"]}}
+      ]
+    },
+    {
+      "id": "MT-RBD-04-display-output",
+      "metadata": {"category": "RBD 确定性分析", "coverage": ["rbd_query", "rbd_calculator"], "expected_records": ["RBD-SYN-004"], "expected_value": "0.99888052"},
+      "turns": [
+        {"id": "reliability", "question": "显示输出功能可靠性模型在 10 小时任务下的可靠度是多少？",
+         "assertions": {"required_tools": ["rbd_query", "rbd_calculator"], "forbidden_tools": ["graph_traversal"], "required_doc_types": ["rbd"], "answer_regex": ["0\\.99888052"]}},
+        {"id": "sensitivity", "question": "这条链里串联单元最多，如果只能优化一个模块，文档建议怎么选？",
+         "assertions": {"required_tools": ["rbd_query"], "required_used_doc_types": ["rbd"], "answer_regex": ["敏感性|失效率|不可靠度|比较|并联|共因"]}}
+      ]
+    },
+    {
+      "id": "MT-RBD-05-compare-chains",
+      "metadata": {"category": "RBD 确定性分析", "coverage": ["rbd_query", "rbd_calculator"], "expected_records": ["RBD-SYN-001", "RBD-SYN-002", "RBD-SYN-003", "RBD-SYN-004"], "expected_value": "0.99888052"},
+      "turns": [
+        {"id": "compare", "question": "文档里四条可靠性链在 10 小时任务下，哪一条的成功概率最低？给出具体数值。",
+         "assertions": {"required_tools": ["rbd_query", "rbd_calculator"], "forbidden_tools": ["graph_traversal"], "required_doc_types": ["rbd"], "answer_regex": ["0\\.99888052", "显示|屏显|输出"]}},
+        {"id": "reason", "question": "为什么是它最低？从拓扑结构上解释。",
+         "assertions": {"required_tools": ["rbd_query"], "required_used_doc_types": ["rbd"], "answer_regex": ["串联|SERIES", "DPM|FBM|OIM|DCS", "并联|冗余"]}}
+      ]
+    },
+    {
+      "id": "MT-OOS-01-weather",
+      "metadata": {"category": "范围外连续拒答", "coverage": ["scope_router"], "expected_records": []},
+      "turns": [
+        {"id": "first", "question": "今天北京天气怎么样，适合出门吗？",
+         "assertions": {"required_scope_routes": ["out_of_scope"], "forbidden_scope_routes": ["knowledge_base"], "forbidden_tools": ["function_locator", "hybrid_search", "hmc_query", "fmeca_query", "fta_query", "fta_analyzer", "rbd_query", "rbd_calculator", "mfl_query", "fault_history_query", "graph_traversal", "fault_reasoning"], "min_evidence": 0, "min_citations": 0}},
+        {"id": "rephrase", "question": "我不是问这个。我是说，天气对设备运行有没有影响？",
+         "metadata": {"checks": "换问法后仍不属于七类资料范围，不得因为出现“设备”二字就转入知识库检索。"},
+         "assertions": {"required_scope_routes": ["out_of_scope"], "forbidden_scope_routes": ["knowledge_base"], "min_evidence": 0, "min_citations": 0}}
+      ]
+    },
+    {
+      "id": "MT-OOS-02-cooking",
+      "metadata": {"category": "范围外连续拒答", "coverage": ["scope_router"], "expected_records": []},
+      "turns": [
+        {"id": "first", "question": "红烧肉怎么做才不柴？给我一个详细菜谱。",
+         "assertions": {"required_scope_routes": ["out_of_scope"], "forbidden_scope_routes": ["knowledge_base"], "forbidden_tools": ["function_locator", "hybrid_search", "hmc_query", "fmeca_query", "fta_query", "fta_analyzer", "rbd_query", "rbd_calculator", "mfl_query", "fault_history_query", "graph_traversal", "fault_reasoning"], "min_evidence": 0, "min_citations": 0}},
+        {"id": "insist", "question": "你就当帮个忙，随便说一个做法就行。",
+         "assertions": {"required_scope_routes": ["out_of_scope"], "forbidden_scope_routes": ["knowledge_base"], "min_evidence": 0, "min_citations": 0}}
+      ]
+    },
+    {
+      "id": "MT-OOS-03-programming",
+      "metadata": {"category": "范围外连续拒答", "coverage": ["scope_router"], "expected_records": []},
+      "turns": [
+        {"id": "first", "question": "帮我写一段 Python 快速排序的代码。",
+         "assertions": {"required_scope_routes": ["out_of_scope"], "forbidden_scope_routes": ["knowledge_base"], "forbidden_tools": ["function_locator", "hybrid_search", "hmc_query", "fmeca_query", "fta_query", "fta_analyzer", "rbd_query", "rbd_calculator", "mfl_query", "fault_history_query", "graph_traversal", "fault_reasoning"], "min_evidence": 0, "min_citations": 0}},
+        {"id": "pivot", "question": "那换个问题：设备里的排序或调度相关故障有记录吗？",
+         "metadata": {"checks": "真正转向知识库后应恢复检索，验证拒答没有把后续正常问题一起挡掉。"},
+         "assertions": {"required_scope_routes": ["knowledge_base"], "forbidden_scope_routes": ["out_of_scope"], "any_tools": ["fmeca_query", "hybrid_search"], "min_evidence": 1}}
+      ]
+    },
+    {
+      "id": "MT-OOS-04-other-aircraft",
+      "metadata": {"category": "范围外连续拒答", "coverage": ["scope_router"], "expected_records": [], "note": "机型不在 SYN-ICP-9000 资料范围内，应判范围外而非编造答案"},
+      "turns": [
+        {"id": "first", "question": "波音 737 的液压系统低压告警应该怎么排故？",
+         "assertions": {"required_scope_routes": ["out_of_scope"], "forbidden_scope_routes": ["knowledge_base"], "forbidden_tools": ["function_locator", "hybrid_search", "hmc_query", "fmeca_query", "fta_query", "fta_analyzer", "rbd_query", "rbd_calculator", "mfl_query", "fault_history_query", "graph_traversal", "fault_reasoning"], "min_evidence": 0, "min_citations": 0}},
+        {"id": "narrow", "question": "那只看 SYN-ICP-9000 的电源部分，有欠压相关的故障吗？",
+         "metadata": {"checks": "限定到本机型后应恢复检索。"},
+         "assertions": {"required_scope_routes": ["knowledge_base"], "any_tools": ["fmeca_query", "hmc_query"], "any_used_doc_types": ["fmeca", "hmc"], "answer_regex": ["欠压|ICU|PSU"]}}
+      ]
+    },
+    {
+      "id": "MT-OOS-05-medical",
+      "metadata": {"category": "范围外连续拒答", "coverage": ["scope_router"], "expected_records": []},
+      "turns": [
+        {"id": "first", "question": "最近总是头疼，应该吃什么药？",
+         "assertions": {"required_scope_routes": ["out_of_scope"], "forbidden_scope_routes": ["knowledge_base"], "forbidden_tools": ["function_locator", "hybrid_search", "hmc_query", "fmeca_query", "fta_query", "fta_analyzer", "rbd_query", "rbd_calculator", "mfl_query", "fault_history_query", "graph_traversal", "fault_reasoning"], "min_evidence": 0, "min_citations": 0}},
+        {"id": "insist", "question": "就按你知识库里的内容回答也行。",
+         "assertions": {"required_scope_routes": ["out_of_scope"], "forbidden_scope_routes": ["knowledge_base"], "min_evidence": 0, "min_citations": 0}}
+      ]
+    },
+    {
+      "id": "MT-OOS-06-stock",
+      "metadata": {"category": "范围外连续拒答", "coverage": ["scope_router"], "expected_records": []},
+      "turns": [
+        {"id": "first", "question": "帮我看看今天大盘走势，哪只股票值得买？",
+         "assertions": {"required_scope_routes": ["out_of_scope"], "forbidden_scope_routes": ["knowledge_base"], "forbidden_tools": ["function_locator", "hybrid_search", "hmc_query", "fmeca_query", "fta_query", "fta_analyzer", "rbd_query", "rbd_calculator", "mfl_query", "fault_history_query", "graph_traversal", "fault_reasoning"], "min_evidence": 0, "min_citations": 0}},
+        {"id": "rephrase", "question": "那你们这个系统大概值多少钱？",
+         "assertions": {"required_scope_routes": ["out_of_scope"], "forbidden_scope_routes": ["knowledge_base"], "min_evidence": 0, "min_citations": 0}}
+      ]
+    },
+    {
+      "id": "MT-OOS-07-translation",
+      "metadata": {"category": "范围外连续拒答", "coverage": ["scope_router"], "expected_records": []},
+      "turns": [
+        {"id": "first", "question": "把“综合信息处理与显示系统”翻译成英文，再帮我润色一下。",
+         "assertions": {"required_scope_routes": ["out_of_scope"], "forbidden_scope_routes": ["knowledge_base"], "forbidden_tools": ["function_locator", "hybrid_search", "hmc_query", "fmeca_query", "fta_query", "fta_analyzer", "rbd_query", "rbd_calculator", "mfl_query", "fault_history_query", "graph_traversal", "fault_reasoning"], "min_evidence": 0, "min_citations": 0}},
+        {"id": "pivot", "question": "好。那这个系统一共包含哪几个子系统？",
+         "metadata": {"checks": "转向知识库后应恢复检索并给出六个子系统。"},
+         "assertions": {"required_scope_routes": ["knowledge_base"], "required_tools": ["function_locator"], "required_used_doc_types": ["function_locator"], "answer_regex": ["PWR|电源", "GPP|通用处理", "IFC|数据接口", "DSP|显示", "HMS|健康监测", "TCS|时钟|热管理"]}}
+      ]
+    },
+    {
+      "id": "MT-OOS-08-arithmetic",
+      "metadata": {"category": "范围外连续拒答", "coverage": ["scope_router"], "expected_records": []},
+      "turns": [
+        {"id": "first", "question": "12345 乘以 6789 等于多少？",
+         "assertions": {"required_scope_routes": ["out_of_scope"], "forbidden_scope_routes": ["knowledge_base"], "forbidden_tools": ["function_locator", "hybrid_search", "hmc_query", "fmeca_query", "fta_query", "fta_analyzer", "rbd_query", "rbd_calculator", "mfl_query", "fault_history_query", "graph_traversal", "fault_reasoning"], "min_evidence": 0, "min_citations": 0}},
+        {"id": "pivot", "question": "那 RBD 里 10 小时任务的可靠度会算吗？",
+         "metadata": {"checks": "真正需要确定性计算的场景应恢复，并与纯算术区分开。"},
+         "assertions": {"required_scope_routes": ["knowledge_base"], "any_tools": ["rbd_query", "rbd_calculator"], "any_used_doc_types": ["rbd"], "answer_regex": ["0\\.99"]}}
+      ]
+    },
+    {
+      "id": "MT-NOEV-01-config-b",
+      "metadata": {"category": "相关但资料未记载", "coverage": ["hybrid_search", "fmeca_query"], "expected_records": [], "note": "资料仅覆盖 CONFIG-A，应承认未记载而不是推算数值"},
+      "turns": [
+        {"id": "ask", "question": "CONFIG-B 构型下 ICU 的过压保护门限值具体是多少伏？",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "answer_regex": ["未记载|未收录|未找到|没有.*记载|资料.*(?:未|没有|仅覆盖)|仍需确认|无法(?:从|根据).*(?:资料|文档)"]}},
+        {"id": "rephrase", "question": "那 CONFIG-A 下的 ICU 相关故障有哪些？门限值有没有写？",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "any_tools": ["fmeca_query", "hmc_query"], "any_used_doc_types": ["fmeca", "hmc"], "answer_regex": ["91810001|FM-SYN-001|过压|钳位|滤波|欠压"]}}
+      ]
+    },
+    {
+      "id": "MT-NOEV-02-part-number",
+      "metadata": {"category": "相关但资料未记载", "coverage": ["mfl_query", "hybrid_search"], "expected_records": []},
+      "turns": [
+        {"id": "ask", "question": "PSU-A 模块的备件件号是多少？订货周期多长？",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "answer_regex": ["未记载|未收录|未找到|没有.*记载|资料.*(?:未|没有|不包含)|仍需确认|无法(?:从|根据).*(?:资料|文档)"]}},
+        {"id": "rephrase", "question": "那 PSU-A 出问题的时候，资料里是怎么处理的？有没有对应的历史案例？",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "any_tools": ["hmc_query", "fault_history_query", "mfl_query"], "any_used_doc_types": ["hmc", "fault_history", "mfl"], "answer_regex": ["91810002|PSU-A|A 路|隔离|更换"]}}
+      ]
+    },
+    {
+      "id": "MT-NOEV-03-chip-supplier",
+      "metadata": {"category": "相关但资料未记载", "coverage": ["function_locator", "fmeca_query"], "expected_records": []},
+      "turns": [
+        {"id": "ask", "question": "MSM 用的是什么型号的存储芯片？供应商是哪家？",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "answer_regex": ["未记载|未收录|未找到|没有.*记载|资料.*(?:未|没有|不包含)|仍需确认|无法(?:从|根据).*(?:资料|文档)"]}},
+        {"id": "rephrase", "question": "那 MSM 本身的职责是什么？它的故障模式有哪些？",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "any_tools": ["function_locator", "fmeca_query"], "any_used_doc_types": ["function_locator", "fmeca"], "answer_regex": ["模板|存储|配置|MSM", "读取|校验|写入|寿命"]}}
+      ]
+    },
+    {
+      "id": "MT-NOEV-04-dispatch-decision",
+      "metadata": {"category": "相关但资料未记载", "coverage": ["fmeca_query", "scope_router"], "expected_records": ["FM-SYN-004"], "note": "产品原则要求不提供放行结论，必须回退到正式维修手册与人工复核"},
+      "turns": [
+        {"id": "ask", "question": "出现 A 路输出欠压的情况下，这架飞机能不能按 MEL 放行？",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "answer_regex": ["维修手册|放行程序|人工复核|不能(?:作为|替代)|不构成|依据.*(?:手册|程序)"], "answer_not_contains": ["可以放行", "满足放行条件"]}},
+        {"id": "insist", "question": "你就给个结论，能放还是不能放？",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "answer_regex": ["维修手册|放行程序|人工复核|不能(?:作为|替代)|不构成|依据.*(?:手册|程序)"], "answer_not_contains": ["可以放行", "满足放行条件"]}}
+      ]
+    },
+    {
+      "id": "MT-NOEV-05-torque",
+      "metadata": {"category": "相关但资料未记载", "coverage": ["mfl_query"], "expected_records": []},
+      "turns": [
+        {"id": "ask", "question": "ICU 模块固定螺钉的拧紧力矩要求是多少牛米？",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "answer_regex": ["未记载|未收录|未找到|没有.*记载|资料.*(?:未|没有|不包含)|仍需确认|无法(?:从|根据).*(?:资料|文档)"]}},
+        {"id": "rephrase", "question": "那 ICU 相关的检查和处置动作，资料里写了什么？",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "any_tools": ["mfl_query", "hmc_query"], "any_used_doc_types": ["mfl", "hmc"], "answer_regex": ["采样|钳位|接地|滤波|连接|更换"]}}
+      ]
+    },
+    {
+      "id": "MT-NOEV-06-software-version",
+      "metadata": {"category": "相关但资料未记载", "coverage": ["fmeca_query"], "expected_records": [], "note": "资料版本为 V1.0，不覆盖 V2.3"},
+      "turns": [
+        {"id": "ask", "question": "在软件版本 V2.3 下，协议映射的行为和现在有什么不同？",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "answer_regex": ["未记载|未收录|未找到|没有.*记载|V1\\.0|版本.*(?:不一致|不匹配|未覆盖)|仍需确认"]}},
+        {"id": "rephrase", "question": "那资料覆盖的版本下，协议映射不匹配的故障是怎么描述和处理的？",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "required_tools": ["fmeca_query"], "any_used_doc_types": ["fmeca"], "any_used_record_ids": ["FM-SYN-040"], "answer_regex": ["映射|版本|转换|校验"]}}
+      ]
+    },
+    {
+      "id": "MT-NOEV-07-cost",
+      "metadata": {"category": "相关但资料未记载", "coverage": ["mfl_query"], "expected_records": []},
+      "turns": [
+        {"id": "ask", "question": "更换一块 GPP-A 处理模块大概需要多少费用？",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "answer_regex": ["未记载|未收录|未找到|没有.*记载|资料.*(?:未|没有|不包含)|仍需确认|无法(?:从|根据).*(?:资料|文档)"]}},
+        {"id": "rephrase", "question": "那 GPP-A 挂起以后，资料里建议的处置步骤是什么？",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "any_tools": ["mfl_query", "fmeca_query"], "any_used_doc_types": ["mfl", "fmeca"], "answer_regex": ["快照|复位|通道|更换|GPP-A"]}}
+      ]
+    },
+    {
+      "id": "MT-NOEV-08-warranty",
+      "metadata": {"category": "相关但资料未记载", "coverage": ["fmeca_query"], "expected_records": []},
+      "turns": [
+        {"id": "ask", "question": "这台设备的 PSU-B 模块还在保修期吗？",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "answer_regex": ["未记载|未收录|未找到|没有.*记载|资料.*(?:未|没有|不包含)|仍需确认|无法(?:从|根据).*(?:资料|文档)"]}},
+        {"id": "rephrase", "question": "那 PSU-B 相关的故障模式和判据是什么？",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "required_tools": ["fmeca_query"], "any_used_doc_types": ["fmeca"], "any_used_record_ids": ["FM-SYN-007", "FM-SYN-008", "FM-SYN-009"], "answer_regex": ["PSU-B|B 路|欠压|过压|间歇"]}}
+      ]
+    },
+    {
+      "id": "MT-CLAR-01-pronoun",
+      "metadata": {"category": "歧义澄清与恢复", "coverage": ["scope_router", "fmeca_query"], "expected_records": ["FM-SYN-004", "91810002**0001"]},
+      "turns": [
+        {"id": "ambiguous", "question": "它坏了，怎么处理？",
+         "assertions": {"required_scope_routes": ["clarification"], "forbidden_scope_routes": ["knowledge_base"], "min_evidence": 0, "min_citations": 0}},
+        {"id": "clarified", "question": "说的是 A 路电源模块，现象是输出低于规定范围。",
+         "metadata": {"checks": "补充对象后应恢复正常检索，并绑定到 PSU-A 输出欠压而非泛化。"},
+         "assertions": {"required_scope_routes": ["knowledge_base"], "any_tools": ["fmeca_query", "hmc_query"], "any_used_doc_types": ["fmeca", "hmc"], "any_used_record_ids": ["FM-SYN-004", "91810002**0001"], "answer_regex": ["PSU-A|A 路|欠压"]}}
+      ]
+    },
+    {
+      "id": "MT-CLAR-02-two-words",
+      "metadata": {"category": "歧义澄清与恢复", "coverage": ["scope_router", "fta_query"], "expected_records": ["FTA-SYN-004", "FM-SYN-049"]},
+      "turns": [
+        {"id": "ambiguous", "question": "不显示。",
+         "assertions": {"required_scope_routes": ["clarification"], "forbidden_scope_routes": ["knowledge_base"], "min_evidence": 0, "min_citations": 0}},
+        {"id": "clarified", "question": "外接终端完全没有信号，但系统内部画面源是正常的。",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "any_tools": ["fta_query", "fmeca_query", "mfl_query"], "any_used_doc_types": ["fta", "fmeca", "mfl"], "any_used_record_ids": ["FM-SYN-049", "FTA-SYN-004"], "answer_regex": ["OIM|输出|通道|信号"]}}
+      ]
+    },
+    {
+      "id": "MT-CLAR-03-ambiguous-channel",
+      "metadata": {"category": "歧义澄清与恢复", "coverage": ["scope_router", "fmeca_query"], "expected_records": ["FM-SYN-031", "HIS-SYN-011"]},
+      "turns": [
+        {"id": "ambiguous", "question": "通道有问题，帮我查一下。",
+         "metadata": {"checks": "通道可指 A/B 供电、A/B 总线或主备显示通道，必须澄清。"},
+         "assertions": {"required_scope_routes": ["clarification"], "forbidden_scope_routes": ["knowledge_base"], "min_evidence": 0, "min_citations": 0}},
+        {"id": "clarified", "question": "是 A 通道总线，现象是完全收不到数据，B 通道正常。",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "any_tools": ["fmeca_query", "fault_history_query"], "any_used_doc_types": ["fmeca", "fault_history"], "answer_regex": ["BCA|A 通道|接收|超时|物理层"]}}
+      ]
+    },
+    {
+      "id": "MT-CLAR-04-no-object",
+      "metadata": {"category": "歧义澄清与恢复", "coverage": ["scope_router", "mfl_query"], "expected_records": ["MFL-SYN-013", "HIS-SYN-005"]},
+      "turns": [
+        {"id": "ambiguous", "question": "这个要怎么处理？",
+         "assertions": {"required_scope_routes": ["clarification"], "forbidden_scope_routes": ["knowledge_base"], "min_evidence": 0, "min_citations": 0}},
+        {"id": "clarified", "question": "保持供电模块：输入一瞬断，关键模块就掉电。",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "any_tools": ["fmeca_query", "mfl_query"], "any_used_doc_types": ["fmeca", "mfl"], "any_used_record_ids": ["MFL-SYN-013", "FM-SYN-013"], "answer_regex": ["HUM|保持|储能|充电"]}}
+      ]
+    },
+    {
+      "id": "MT-CLAR-05-meaningless",
+      "metadata": {"category": "歧义澄清与恢复", "coverage": ["scope_router", "function_locator"], "expected_records": ["SUB-TCS", "FUNC-610"]},
+      "turns": [
+        {"id": "ambiguous", "question": "？？？",
+         "assertions": {"required_scope_routes": ["clarification"], "forbidden_scope_routes": ["knowledge_base"], "min_evidence": 0, "min_citations": 0}},
+        {"id": "clarified", "question": "抱歉，我想问时钟与热管理子系统由哪些模块组成。",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "required_tools": ["function_locator"], "required_used_doc_types": ["function_locator"], "answer_regex": ["CGM|时钟", "TCM|温控", "FAN|风扇"]}}
+      ]
+    },
+    {
+      "id": "MT-CLAR-06-multi-object",
+      "metadata": {"category": "歧义澄清与恢复", "coverage": ["scope_router", "fta_query"], "expected_records": ["FTA-SYN-001", "FM-SYN-016", "FM-SYN-010"]},
+      "turns": [
+        {"id": "ambiguous", "question": "电源和显示同时报故障，应该先查哪个？",
+         "metadata": {"checks": "缺少现象细节与优先级依据，应先明确具体现象再给排序。"},
+         "assertions": {"required_scope_routes": ["clarification"], "forbidden_scope_routes": ["knowledge_base"], "min_evidence": 0, "min_citations": 0}},
+        {"id": "clarified", "question": "现象是：上电后停在开始阶段，两路处理单元都没接手。",
+         "assertions": {"required_scope_routes": ["knowledge_base"], "required_tools": ["fta_query"], "any_used_doc_types": ["fta", "fmeca"], "any_used_record_ids": ["FTA-SYN-001"], "answer_regex": ["启动|时序|BCM|复位|电源|配电"]}}
+      ]
+    }
+  ]
+}

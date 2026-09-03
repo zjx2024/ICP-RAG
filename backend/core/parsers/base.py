@@ -1,7 +1,7 @@
 """解析器统一接口与上下文/结果定义（ICP 类型驱动解析架构）。"""
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 @dataclass
@@ -13,12 +13,18 @@ class ParseContext:
     task_id: str = ""
     model_config: Optional[Dict] = None
     temp_path: str = ""
+    storage_key: str = ""       # ArtifactStore 中的原件逻辑键
     kb_id: str = ""          # 兼容：图类 document_fault_trees.kb_id 列语义存 doc_type
+    common_tags: Dict[str, Any] = field(default_factory=dict)
     progress_cb: Optional[Callable[[str], None]] = None  # SSE 进度回调（可选）
 
     def progress(self, message: str):
         if self.progress_cb:
             self.progress_cb(message)
+
+    def enrich(self, document: Dict[str, Any]) -> Dict[str, Any]:
+        """Attach document-level version/configuration tags to every projection."""
+        return {**self.common_tags, **document}
 
 
 @dataclass
@@ -41,4 +47,4 @@ class Parser(ABC):
 
     @abstractmethod
     def parse(self, file_path: str, ctx: ParseContext) -> ParseResult:
-        """执行解析并入库（PG + ES），返回统计。"""
+        """执行解析并入库（PostgreSQL + OpenSearch），返回统计。"""

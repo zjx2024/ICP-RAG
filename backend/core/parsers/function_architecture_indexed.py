@@ -1,7 +1,8 @@
 """Function Locator 状态适配。
 
-系统架构图的结构化结果已直接服务于 Function Locator，不要求人工再生成 HugeGraph，
-因此解析完成后保持 indexed，避免出现无法执行的 kg_pending 状态。
+确定性系统/模块/功能/接口由 PostgreSQL 直接服务；架构图片仅保存为待复核候选，
+当前阶段不发布 HugeGraph。因此解析完成后保持 indexed，避免出现无法执行的
+kg_pending 状态。
 """
 from backend.core.parsers.function_architecture import FunctionArchitectureParser
 from backend.core.parsers.registry import ParserRegistry

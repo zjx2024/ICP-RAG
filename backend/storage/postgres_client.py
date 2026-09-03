@@ -1,6 +1,8 @@
 import psycopg2
+import hashlib
 import json
 import logging
+from contextlib import contextmanager
 from backend.config.config import config
 
 logger = logging.getLogger(__name__)
@@ -11,6 +13,20 @@ class PostgresClient:
         self._name_cache = {}  # (kb_id, doc_id) -> (kb_name, doc_name) 快照缓存，避免每次插日志都查库
         self._connect()
 
+    @contextmanager
+    def read_cursor(self):
+        """执行并收口只读事务，避免 SELECT 后连接长期 idle in transaction。"""
+        try:
+            with self.conn.cursor() as cur:
+                yield cur
+            self.conn.commit()
+        except Exception:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            raise
+
     def _get_names(self, kb_id, doc_id):
         """获取知识库/文档名称用于日志留痕。优先用缓存，缓存未命中查库并写入缓存。
         文档/知识库被删除后查不到时回落到 None，调用方应优先传入已知快照名。"""
@@ -19,7 +35,7 @@ class PostgresClient:
             return self._name_cache[key]
         kb_name, doc_name = None, None
         try:
-            with self.conn.cursor() as cur:
+            with self.read_cursor() as cur:
                 if kb_id:
                     cur.execute("SELECT name FROM knowledge_bases WHERE kb_id = %s", (kb_id,))
                     r = cur.fetchone()
@@ -36,13 +52,26 @@ class PostgresClient:
         return kb_name, doc_name
 
     @staticmethod
+    def _with_storage_key_alias(data):
+        """为旧 ``minio_path`` 返回值补充中性的 ``storage_key`` 别名。
+
+        数据库物理列和现有 SQL 暂时保持不变；别名只存在于 Python 返回字典中，
+        使新代码不再依赖具体存储后端名称。即使旧值为 ``None`` 或空字符串也保留
+        同值别名，避免调用方需要判断返回结构是否变化。
+        """
+        if isinstance(data, dict) and "minio_path" in data:
+            data.setdefault("storage_key", data["minio_path"])
+        return data
+
+    @staticmethod
     def _row_to_dict(cur, row):
         """用游标列名把一行转成 dict，避免依赖列顺序（新增列时不会错位）。
         mock 模式下 description 为 None，行本身就是 dict 时直接返回，否则按位置兜底。"""
         if getattr(cur, "description", None):
-            return {desc[0]: value for desc, value in zip(cur.description, row)}
+            data = {desc[0]: value for desc, value in zip(cur.description, row)}
+            return PostgresClient._with_storage_key_alias(data)
         if isinstance(row, dict):
-            return dict(row)
+            return PostgresClient._with_storage_key_alias(dict(row))
         return {}
     
     def _connect(self):
@@ -55,7 +84,10 @@ class PostgresClient:
                 dbname=config.POSTGRES_DB
             )
             self._create_tables()
-        except Exception:
+        except Exception as exc:
+            logger.error("PostgreSQL 初始化失败: %s", exc)
+            if config.STRICT_DEPENDENCIES:
+                raise
             self.conn = MockPostgres()
     
     def _create_tables(self):
@@ -83,6 +115,30 @@ class PostgresClient:
                     FOREIGN KEY (kb_id) REFERENCES knowledge_bases(kb_id) ON DELETE CASCADE
                 )
             """)
+
+            # GraphRAG 社区报告的权威事实源。OpenSearch 仅保存可重建的
+            # 检索投影，因此报告本文、文档归属和 stale 状态必须先落 PG。
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS community_reports (
+                    projection_id VARCHAR(255) PRIMARY KEY,
+                    report_id VARCHAR(128) NOT NULL,
+                    community_id VARCHAR(128),
+                    kb_id VARCHAR(36) NOT NULL,
+                    doc_id VARCHAR(36),
+                    doc_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    entities JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    report JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    stale_kwd VARCHAR(32),
+                    stale_reason TEXT,
+                    stale_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (kb_id, report_id),
+                    FOREIGN KEY (kb_id) REFERENCES knowledge_bases(kb_id) ON DELETE CASCADE
+                )
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_community_reports_kb ON community_reports (kb_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_community_reports_doc ON community_reports (doc_id)")
 
             try:
                 cur.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS delete_step VARCHAR(32)")
@@ -119,14 +175,18 @@ class PostgresClient:
                     minio_path VARCHAR(512),
                     image_type VARCHAR(32) DEFAULT 'normal',
                     image_url VARCHAR(1024),
+                    mime_type VARCHAR(128),
+                    source_ref VARCHAR(1024),
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (doc_id) REFERENCES documents(doc_id) ON DELETE CASCADE,
+                    -- doc_id may belong to documents or icp_documents.
                     FOREIGN KEY (chunk_id) REFERENCES document_chunks(chunk_id) ON DELETE CASCADE
                 )
             """)
             
             try:
                 cur.execute("ALTER TABLE document_images ADD COLUMN IF NOT EXISTS image_url VARCHAR(1024)")
+                cur.execute("ALTER TABLE document_images ADD COLUMN IF NOT EXISTS mime_type VARCHAR(128)")
+                cur.execute("ALTER TABLE document_images ADD COLUMN IF NOT EXISTS source_ref VARCHAR(1024)")
             except Exception:
                 self.conn.rollback()
             
@@ -139,12 +199,12 @@ class PostgresClient:
                     description TEXT,
                     meta_data JSONB,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (doc_id) REFERENCES documents(doc_id) ON DELETE CASCADE,
+                    -- doc_id may belong to documents or icp_documents.
                     FOREIGN KEY (chunk_id) REFERENCES document_chunks(chunk_id) ON DELETE CASCADE
                 )
             """)
             
-            # 故障树结构化数据：解析阶段只保存，不写 HugeGraph；手动生成知识图谱时再入库
+            # 旧通用链路的故障树结构化数据；七类 ICP 专用链路使用自动校验投影。
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS document_fault_trees (
                     id VARCHAR(36) PRIMARY KEY,
@@ -154,10 +214,19 @@ class PostgresClient:
                     image_id VARCHAR(128),
                     image_title VARCHAR(512),
                     graph JSONB NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (doc_id) REFERENCES documents(doc_id) ON DELETE CASCADE
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+
+            # These media/graph tables are shared by the legacy knowledge-base
+            # documents and the ICP type-driven documents.  A PostgreSQL FK
+            # cannot target either of two owner tables, so old single-table
+            # constraints must be removed.  Deletion is explicit and atomic in
+            # the repository methods until artifact_refs lands in phase 2.
+            for table_name in ("document_images", "document_tables", "document_fault_trees"):
+                cur.execute(
+                    f"ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS {table_name}_doc_id_fkey"
+                )
             
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS llm_models (
@@ -412,29 +481,59 @@ class PostgresClient:
                     status      VARCHAR(32) DEFAULT 'uploaded',
                     parse_count INTEGER DEFAULT 0,
                     last_result JSONB,
+                    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
                     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            cur.execute("ALTER TABLE icp_documents ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_icp_docs_type ON icp_documents (doc_type)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_icp_docs_status ON icp_documents (status)")
 
-            # HMC 码查询真源表（组合唯一：同一 hmc_code 可对应多个 hsc）
+            # HMC 码查询真源表。业务码会在不同文档版本中重复，因此唯一性必须
+            # 包含 doc_id；跨版本选择由适用范围和文档元数据显式完成。
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS fault_hmc (
                     id            BIGSERIAL PRIMARY KEY,
                     doc_id        VARCHAR(36) NOT NULL,
+                    variant_id    VARCHAR(64) NOT NULL,
                     hmc_code      VARCHAR(20) NOT NULL,
                     lcn           VARCHAR(10) DEFAULT '**',
                     hamc          VARCHAR(10) DEFAULT '**',
                     hsc           VARCHAR(10) DEFAULT '**',
                     fault_desc    TEXT NOT NULL,
                     repair_method TEXT NOT NULL,
+                    source_ref    VARCHAR(1024),
+                    raw_data      JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    normalization_warnings JSONB NOT NULL DEFAULT '[]'::jsonb,
                     created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE (hmc_code, lcn, hamc, hsc)
+                    UNIQUE (doc_id, variant_id)
                 )
             """)
+            cur.execute("ALTER TABLE fault_hmc ADD COLUMN IF NOT EXISTS variant_id VARCHAR(64)")
+            cur.execute("ALTER TABLE fault_hmc ADD COLUMN IF NOT EXISTS source_ref VARCHAR(1024)")
+            cur.execute("ALTER TABLE fault_hmc ADD COLUMN IF NOT EXISTS raw_data JSONB NOT NULL DEFAULT '{}'::jsonb")
+            cur.execute("ALTER TABLE fault_hmc ADD COLUMN IF NOT EXISTS normalization_warnings JSONB NOT NULL DEFAULT '[]'::jsonb")
+            cur.execute("ALTER TABLE fault_hmc ALTER COLUMN hmc_code TYPE VARCHAR(100)")
+            cur.execute("ALTER TABLE fault_hmc ALTER COLUMN lcn TYPE VARCHAR(50)")
+            cur.execute("ALTER TABLE fault_hmc ALTER COLUMN hamc TYPE VARCHAR(50)")
+            cur.execute("ALTER TABLE fault_hmc ALTER COLUMN hsc TYPE VARCHAR(50)")
+            # Existing installations used one row per code and therefore lost
+            # independently worded source variants.  Seed migrated rows once;
+            # new parses supply a source-stable SHA-256 variant id.
+            cur.execute(
+                """UPDATE fault_hmc SET variant_id = md5(concat_ws(E'\\x1f',
+                       doc_id, hmc_code, lcn, hamc, hsc,
+                       COALESCE(source_ref, ''), id::text))
+                   WHERE variant_id IS NULL OR variant_id = ''"""
+            )
+            cur.execute("ALTER TABLE fault_hmc ALTER COLUMN variant_id SET NOT NULL")
+            cur.execute("ALTER TABLE fault_hmc DROP CONSTRAINT IF EXISTS fault_hmc_hmc_code_lcn_hamc_hsc_key")
+            cur.execute("ALTER TABLE fault_hmc DROP CONSTRAINT IF EXISTS fault_hmc_doc_id_hmc_code_lcn_hamc_hsc_key")
+            cur.execute("DROP INDEX IF EXISTS uq_fault_hmc_doc_code")
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_fault_hmc_doc_variant ON fault_hmc (doc_id, variant_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_hmc_doc_code ON fault_hmc (doc_id, hmc_code)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_hmc_3code ON fault_hmc (lcn, hamc, hsc)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_hmc_doc ON fault_hmc (doc_id)")
 
@@ -443,7 +542,7 @@ class PostgresClient:
                 CREATE TABLE IF NOT EXISTS fmea (
                     id                BIGSERIAL PRIMARY KEY,
                     doc_id            VARCHAR(36) NOT NULL,
-                    code              VARCHAR(50) NOT NULL UNIQUE,
+                    code              VARCHAR(50) NOT NULL,
                     product_flag      VARCHAR(100),
                     func_management   VARCHAR(100),
                     fault_mode        TEXT NOT NULL,
@@ -452,14 +551,34 @@ class PostgresClient:
                     local_impact      TEXT,
                     final_impact      TEXT,
                     severity          VARCHAR(20),
-                    probability       NUMERIC(10,6),
+                    severity_raw      VARCHAR(100),
+                    severity_normalized VARCHAR(100),
+                    probability       NUMERIC(30,18),
+                    probability_raw   VARCHAR(100),
+                    probability_level VARCHAR(50),
                     detect_method     TEXT,
                     design_improve    TEXT,
                     compensate_action TEXT,
+                    source_ref        VARCHAR(1024),
+                    raw_data          JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    normalization_warnings JSONB NOT NULL DEFAULT '[]'::jsonb,
                     created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (doc_id, code)
                 )
             """)
+            cur.execute("ALTER TABLE fmea ADD COLUMN IF NOT EXISTS severity_raw VARCHAR(100)")
+            cur.execute("ALTER TABLE fmea ADD COLUMN IF NOT EXISTS severity_normalized VARCHAR(100)")
+            cur.execute("ALTER TABLE fmea ALTER COLUMN probability TYPE NUMERIC(30,18)")
+            cur.execute("ALTER TABLE fmea ADD COLUMN IF NOT EXISTS probability_raw VARCHAR(100)")
+            cur.execute("ALTER TABLE fmea ADD COLUMN IF NOT EXISTS probability_level VARCHAR(50)")
+            cur.execute("ALTER TABLE fmea ADD COLUMN IF NOT EXISTS source_ref VARCHAR(1024)")
+            cur.execute("ALTER TABLE fmea ADD COLUMN IF NOT EXISTS raw_data JSONB NOT NULL DEFAULT '{}'::jsonb")
+            cur.execute("ALTER TABLE fmea ADD COLUMN IF NOT EXISTS normalization_warnings JSONB NOT NULL DEFAULT '[]'::jsonb")
+            cur.execute("ALTER TABLE fmea ALTER COLUMN code TYPE VARCHAR(100)")
+            cur.execute("ALTER TABLE fmea ALTER COLUMN mission_phase TYPE VARCHAR(300)")
+            cur.execute("ALTER TABLE fmea DROP CONSTRAINT IF EXISTS fmea_code_key")
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_fmea_doc_code ON fmea (doc_id, code)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_fmea_severity ON fmea (severity)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_fmea_doc ON fmea (doc_id)")
 
@@ -468,19 +587,38 @@ class PostgresClient:
                 CREATE TABLE IF NOT EXISTS mfl (
                     id               BIGSERIAL PRIMARY KEY,
                     doc_id           VARCHAR(36) NOT NULL,
-                    mfl_code         VARCHAR(50) NOT NULL UNIQUE,
+                    mfl_code         VARCHAR(50) NOT NULL,
                     module_fault     TEXT,
                     sur_fault        TEXT,
                     subcircuit_fault TEXT,
                     api_reportable   BOOLEAN DEFAULT FALSE,
+                    api_reportable_raw VARCHAR(100),
                     api_name         VARCHAR(200),
-                    api_method       VARCHAR(20),
+                    api_method       VARCHAR(200),
                     api_usage        TEXT,
                     platform_test    BOOLEAN DEFAULT FALSE,
+                    platform_test_raw VARCHAR(100),
+                    platform_test_status VARCHAR(50),
+                    maintenance_action TEXT,
+                    source_ref       VARCHAR(1024),
+                    raw_data         JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    normalization_warnings JSONB NOT NULL DEFAULT '[]'::jsonb,
                     created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (doc_id, mfl_code)
                 )
             """)
+            # 历史 schema 的 api_method 只有 20 字符，真实调用说明可能更长。
+            cur.execute("ALTER TABLE mfl ALTER COLUMN api_method TYPE VARCHAR(200)")
+            cur.execute("ALTER TABLE mfl ADD COLUMN IF NOT EXISTS api_reportable_raw VARCHAR(100)")
+            cur.execute("ALTER TABLE mfl ADD COLUMN IF NOT EXISTS platform_test_raw VARCHAR(100)")
+            cur.execute("ALTER TABLE mfl ADD COLUMN IF NOT EXISTS platform_test_status VARCHAR(50)")
+            cur.execute("ALTER TABLE mfl ADD COLUMN IF NOT EXISTS maintenance_action TEXT")
+            cur.execute("ALTER TABLE mfl ADD COLUMN IF NOT EXISTS source_ref VARCHAR(1024)")
+            cur.execute("ALTER TABLE mfl ADD COLUMN IF NOT EXISTS raw_data JSONB NOT NULL DEFAULT '{}'::jsonb")
+            cur.execute("ALTER TABLE mfl ADD COLUMN IF NOT EXISTS normalization_warnings JSONB NOT NULL DEFAULT '[]'::jsonb")
+            cur.execute("ALTER TABLE mfl DROP CONSTRAINT IF EXISTS mfl_mfl_code_key")
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_mfl_doc_code ON mfl (doc_id, mfl_code)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_mfl_api_name ON mfl (api_name)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_mfl_reportable ON mfl (api_reportable)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_mfl_doc ON mfl (doc_id)")
@@ -547,6 +685,123 @@ class PostgresClient:
                 "updated_at": row[4]
             } for row in rows]
 
+    @staticmethod
+    def _community_report_dict(row):
+        if not row:
+            return None
+        fields = (
+            "projection_id", "report_id", "community_id", "kb_id", "doc_id",
+            "doc_ids", "entities", "report", "stale_kwd", "stale_reason",
+            "stale_at", "created_at", "updated_at",
+        )
+        result = dict(zip(fields, row))
+        for field in ("doc_ids", "entities", "report"):
+            if isinstance(result.get(field), str):
+                try:
+                    result[field] = json.loads(result[field])
+                except (TypeError, ValueError):
+                    result[field] = [] if field != "report" else {}
+        for field in ("stale_at", "created_at", "updated_at"):
+            value = result.get(field)
+            if value is not None and hasattr(value, "isoformat"):
+                result[field] = value.isoformat()
+        # 兼容旧检索客户端的命名，路由层响应不需要改版。
+        result["es_doc_id"] = result["projection_id"]
+        return result
+
+    def upsert_community_report(self, projection_id, data):
+        """幂等写入社区报告真源，必须在写检索投影之前调用。"""
+        doc_ids = data.get("doc_ids") or ([data.get("doc_id")] if data.get("doc_id") else [])
+        doc_ids = [str(value) for value in doc_ids if value]
+        doc_id = data.get("doc_id") or (doc_ids[0] if doc_ids else "")
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO community_reports (
+                    projection_id, report_id, community_id, kb_id, doc_id,
+                    doc_ids, entities, report, stale_kwd, stale_reason, stale_at
+                ) VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s,%s)
+                ON CONFLICT (projection_id) DO UPDATE SET
+                    report_id = EXCLUDED.report_id,
+                    community_id = EXCLUDED.community_id,
+                    kb_id = EXCLUDED.kb_id,
+                    doc_id = EXCLUDED.doc_id,
+                    doc_ids = EXCLUDED.doc_ids,
+                    entities = EXCLUDED.entities,
+                    report = EXCLUDED.report,
+                    stale_kwd = EXCLUDED.stale_kwd,
+                    stale_reason = EXCLUDED.stale_reason,
+                    stale_at = EXCLUDED.stale_at,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (
+                projection_id,
+                data.get("report_id", ""),
+                data.get("community_id", ""),
+                data.get("kb_id", ""),
+                doc_id,
+                json.dumps(doc_ids, ensure_ascii=False),
+                json.dumps(data.get("entities") or [], ensure_ascii=False),
+                json.dumps(data.get("report") or {}, ensure_ascii=False),
+                data.get("stale_kwd"),
+                data.get("stale_reason"),
+                data.get("stale_at"),
+            ))
+        self.conn.commit()
+        return projection_id
+
+    def get_community_reports(self, kb_id, doc_id=None):
+        sql = """
+            SELECT projection_id, report_id, community_id, kb_id, doc_id,
+                   doc_ids, entities, report, stale_kwd, stale_reason, stale_at,
+                   created_at, updated_at
+            FROM community_reports WHERE kb_id = %s
+        """
+        params = [kb_id]
+        if doc_id:
+            sql += " AND doc_ids @> %s::jsonb"
+            params.append(json.dumps([doc_id]))
+        sql += " ORDER BY created_at DESC"
+        with self.conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            return [self._community_report_dict(row) for row in cur.fetchall()]
+
+    def delete_community_report(self, projection_id):
+        with self.conn.cursor() as cur:
+            cur.execute("DELETE FROM community_reports WHERE projection_id = %s", (projection_id,))
+            deleted = cur.rowcount > 0
+        self.conn.commit()
+        return deleted
+
+    def delete_community_reports_by_kb(self, kb_id):
+        with self.conn.cursor() as cur:
+            cur.execute("DELETE FROM community_reports WHERE kb_id = %s", (kb_id,))
+            deleted = cur.rowcount
+        self.conn.commit()
+        return deleted
+
+    def mark_community_report_stale(self, projection_id, doc_ids, stale_kwd, reason, stale_at):
+        doc_ids = [str(value) for value in (doc_ids or []) if value]
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                UPDATE community_reports
+                SET doc_ids = %s::jsonb,
+                    doc_id = %s,
+                    stale_kwd = %s,
+                    stale_reason = %s,
+                    stale_at = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE projection_id = %s
+            """, (
+                json.dumps(doc_ids, ensure_ascii=False),
+                doc_ids[0] if doc_ids else "",
+                stale_kwd,
+                reason,
+                stale_at,
+                projection_id,
+            ))
+            updated = cur.rowcount > 0
+        self.conn.commit()
+        return updated
+
     def kb_exists(self, kb_id):
         with self.conn.cursor() as cur:
             cur.execute("SELECT 1 FROM knowledge_bases WHERE kb_id = %s", (kb_id,))
@@ -562,6 +817,23 @@ class PostgresClient:
             cur.execute("DELETE FROM knowledge_bases WHERE kb_id = %s", (kb_id,))
             self.conn.commit()
         return cur.rowcount > 0
+
+    def delete_knowledge_base_with_documents(self, kb_id):
+        """Atomically remove a legacy KB and projections whose FK is polymorphic."""
+        try:
+            with self.conn.cursor() as cur:
+                owner_query = "SELECT doc_id FROM documents WHERE kb_id = %s"
+                cur.execute(f"DELETE FROM document_fault_trees WHERE doc_id IN ({owner_query})", (kb_id,))
+                cur.execute(f"DELETE FROM document_tables WHERE doc_id IN ({owner_query})", (kb_id,))
+                cur.execute(f"DELETE FROM document_images WHERE doc_id IN ({owner_query})", (kb_id,))
+                cur.execute(f"DELETE FROM document_chunks WHERE doc_id IN ({owner_query})", (kb_id,))
+                cur.execute("DELETE FROM knowledge_bases WHERE kb_id = %s", (kb_id,))
+                deleted = cur.rowcount > 0
+            self.conn.commit()
+            return deleted
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def update_knowledge_base(self, kb_id, name=None, description=None):
         with self.conn.cursor() as cur:
@@ -618,7 +890,7 @@ class PostgresClient:
                 FROM documents WHERE status = %s ORDER BY updated_at
             """, (status,))
             rows = cur.fetchall()
-            return [{
+            return [self._with_storage_key_alias({
                 "doc_id": row[0],
                 "file_name": row[1],
                 "kb_id": row[2],
@@ -628,7 +900,7 @@ class PostgresClient:
                 "delete_step": row[6],
                 "created_at": row[7],
                 "updated_at": row[8]
-            } for row in rows]
+            }) for row in rows]
     
     def update_document_chunks(self, doc_id, total_chunks):
         with self.conn.cursor() as cur:
@@ -643,7 +915,7 @@ class PostgresClient:
             cur.execute("SELECT * FROM documents WHERE doc_id = %s", (doc_id,))
             row = cur.fetchone()
             if row:
-                return {
+                return self._with_storage_key_alias({
                     "doc_id": row[0],
                     "file_name": row[1],
                     "kb_id": row[2],
@@ -654,14 +926,14 @@ class PostgresClient:
                     "updated_at": row[7],
                     "delete_step": row[8] if len(row) > 8 else None,
                     "is_deleted": row[9] if len(row) > 9 else False
-                }
+                })
             return None
     
     def get_documents_by_kb(self, kb_id):
         with self.conn.cursor() as cur:
             cur.execute("SELECT * FROM documents WHERE kb_id = %s ORDER BY created_at DESC", (kb_id,))
             rows = cur.fetchall()
-            return [{
+            return [self._with_storage_key_alias({
                 "doc_id": row[0],
                 "file_name": row[1],
                 "kb_id": row[2],
@@ -672,7 +944,7 @@ class PostgresClient:
                 "updated_at": row[7],
                 "delete_step": row[8] if len(row) > 8 else None,
                 "is_deleted": row[9] if len(row) > 9 else False
-            } for row in rows]
+            }) for row in rows]
     
     def delete_document(self, doc_id):
         """硬删除文档记录"""
@@ -831,13 +1103,40 @@ class PostgresClient:
             self.conn.rollback()
             raise e
     
-    def insert_image(self, image_id, doc_id, chunk_id, title, description, minio_path, image_type='normal', image_url=None):
+    def insert_image(
+        self,
+        image_id,
+        doc_id,
+        chunk_id,
+        title,
+        description,
+        minio_path,
+        image_type='normal',
+        image_url=None,
+        mime_type=None,
+        source_ref=None,
+    ):
         try:
             with self.conn.cursor() as cur:
                 cur.execute("""
-                    INSERT INTO document_images (image_id, doc_id, chunk_id, title, description, minio_path, image_type, image_url)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """, (image_id, doc_id, chunk_id, title, description, minio_path, image_type, image_url))
+                    INSERT INTO document_images
+                        (image_id, doc_id, chunk_id, title, description, minio_path,
+                         image_type, image_url, mime_type, source_ref)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (image_id) DO UPDATE SET
+                        doc_id=EXCLUDED.doc_id,
+                        chunk_id=EXCLUDED.chunk_id,
+                        title=EXCLUDED.title,
+                        description=EXCLUDED.description,
+                        minio_path=EXCLUDED.minio_path,
+                        image_type=EXCLUDED.image_type,
+                        image_url=EXCLUDED.image_url,
+                        mime_type=EXCLUDED.mime_type,
+                        source_ref=EXCLUDED.source_ref
+                """, (
+                    image_id, doc_id, chunk_id, title, description, minio_path,
+                    image_type, image_url, mime_type, source_ref,
+                ))
             self.conn.commit()
         except Exception as e:
             self.conn.rollback()
@@ -945,7 +1244,7 @@ class PostgresClient:
             raise e
     
     def get_model(self, model_id):
-        with self.conn.cursor() as cur:
+        with self.read_cursor() as cur:
             cur.execute("SELECT * FROM llm_models WHERE model_id = %s", (model_id,))
             row = cur.fetchone()
             if row:
@@ -971,7 +1270,7 @@ class PostgresClient:
             return None
     
     def list_models(self):
-        with self.conn.cursor() as cur:
+        with self.read_cursor() as cur:
             cur.execute("SELECT * FROM llm_models WHERE is_active = TRUE ORDER BY is_default DESC, created_at DESC")
             rows = cur.fetchall()
             return [{
@@ -995,7 +1294,7 @@ class PostgresClient:
             } for row in rows]
     
     def get_default_model(self):
-        with self.conn.cursor() as cur:
+        with self.read_cursor() as cur:
             cur.execute("SELECT * FROM llm_models WHERE is_default = TRUE AND is_active = TRUE LIMIT 1")
             row = cur.fetchone()
             if row:
@@ -1021,7 +1320,7 @@ class PostgresClient:
             return None
     
     def get_default_model_by_type(self, model_type):
-        with self.conn.cursor() as cur:
+        with self.read_cursor() as cur:
             cur.execute("""
                 SELECT * FROM llm_models 
                 WHERE model_type = %s AND is_default = TRUE AND is_active = TRUE 
@@ -1051,7 +1350,7 @@ class PostgresClient:
             return None
     
     def list_models_by_type(self, model_type):
-        with self.conn.cursor() as cur:
+        with self.read_cursor() as cur:
             cur.execute("""
                 SELECT * FROM llm_models 
                 WHERE model_type = %s AND is_active = TRUE 
@@ -1100,9 +1399,15 @@ class PostgresClient:
                 chunks.append(chunk)
             
             for chunk in chunks:
-                cur.execute("SELECT * FROM document_images WHERE chunk_id = %s", (chunk["chunk_id"],))
+                cur.execute(
+                    """SELECT image_id, doc_id, chunk_id, title, description,
+                              minio_path, image_type, image_url, mime_type,
+                              source_ref, created_at
+                       FROM document_images WHERE chunk_id = %s""",
+                    (chunk["chunk_id"],),
+                )
                 image_rows = cur.fetchall()
-                chunk["images"] = [{
+                chunk["images"] = [self._with_storage_key_alias({
                     "image_id": r[0],
                     "doc_id": r[1],
                     "chunk_id": r[2],
@@ -1110,9 +1415,11 @@ class PostgresClient:
                     "description": r[4],
                     "minio_path": r[5],
                     "image_type": r[6],
-                    "created_at": r[7],
-                    "image_url": r[8] if len(r) > 8 else None
-                } for r in image_rows]
+                    "image_url": r[7],
+                    "mime_type": r[8],
+                    "source_ref": r[9],
+                    "created_at": r[10],
+                }) for r in image_rows]
                 
                 cur.execute("SELECT * FROM document_tables WHERE chunk_id = %s", (chunk["chunk_id"],))
                 table_rows = cur.fetchall()
@@ -1163,9 +1470,15 @@ class PostgresClient:
     
     def get_images_by_doc(self, doc_id):
         with self.conn.cursor() as cur:
-            cur.execute("SELECT * FROM document_images WHERE doc_id = %s", (doc_id,))
+            cur.execute(
+                """SELECT image_id, doc_id, chunk_id, title, description,
+                          minio_path, image_type, image_url, mime_type,
+                          source_ref, created_at
+                   FROM document_images WHERE doc_id = %s""",
+                (doc_id,),
+            )
             rows = cur.fetchall()
-            return [{
+            return [self._with_storage_key_alias({
                 "image_id": row[0],
                 "doc_id": row[1],
                 "chunk_id": row[2],
@@ -1173,9 +1486,11 @@ class PostgresClient:
                 "description": row[4],
                 "minio_path": row[5],
                 "image_type": row[6],
-                "created_at": row[7],
-                "image_url": row[8] if len(row) > 8 else None
-            } for row in rows]
+                "image_url": row[7],
+                "mime_type": row[8],
+                "source_ref": row[9],
+                "created_at": row[10],
+            }) for row in rows]
     
     def get_all_image_docs(self, kb_id=None):
         with self.conn.cursor() as cur:
@@ -1523,10 +1838,19 @@ class PostgresClient:
             self.conn.commit()
 
     def get_icp_document(self, doc_id):
-        with self.conn.cursor() as cur:
-            cur.execute("SELECT * FROM icp_documents WHERE doc_id = %s", (doc_id,))
-            row = cur.fetchone()
-            return self._row_to_dict(cur, row) if row else None
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("SELECT * FROM icp_documents WHERE doc_id = %s", (doc_id,))
+                row = cur.fetchone()
+                result = self._row_to_dict(cur, row) if row else None
+            # psycopg opens a transaction for SELECT as well.  This method is
+            # used by graph reauthorization; leaving it idle would retain an
+            # ACCESS SHARE lock and block a concurrent idempotent schema check.
+            self.conn.commit()
+            return result
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def list_icp_documents(self, doc_type, status=None):
         with self.conn.cursor() as cur:
@@ -1543,6 +1867,29 @@ class PostgresClient:
                         (status, doc_id))
             self.conn.commit()
 
+    def transition_icp_document_status(self, doc_id, allowed_statuses, new_status):
+        """Atomically acquire an ICP document for parse/generate/delete work."""
+        allowed = tuple(allowed_statuses)
+        if not allowed:
+            return False
+        placeholders = ", ".join(["%s"] * len(allowed))
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE icp_documents
+                    SET status = %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE doc_id = %s AND status IN ({placeholders})
+                    """,
+                    (new_status, doc_id, *allowed),
+                )
+                changed = cur.rowcount > 0
+            self.conn.commit()
+            return changed
+        except Exception:
+            self.conn.rollback()
+            raise
+
     def update_icp_document_result(self, doc_id, last_result):
         with self.conn.cursor() as cur:
             cur.execute("""
@@ -1551,70 +1898,148 @@ class PostgresClient:
             """, (json.dumps(last_result, ensure_ascii=False), doc_id))
             self.conn.commit()
 
+    def update_icp_document_metadata(self, doc_id, metadata):
+        """Persist controlled cover metadata before creating search projections."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE icp_documents
+                SET metadata = %s::jsonb, updated_at = CURRENT_TIMESTAMP
+                WHERE doc_id = %s
+                """,
+                (json.dumps(metadata or {}, ensure_ascii=False), doc_id),
+            )
+            self.conn.commit()
+
     def delete_icp_document(self, doc_id):
         with self.conn.cursor() as cur:
             cur.execute("DELETE FROM icp_documents WHERE doc_id = %s", (doc_id,))
             self.conn.commit()
 
+    def delete_icp_document_with_sources(self, doc_id):
+        """Atomically delete one ICP master row and all PostgreSQL projections."""
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("DELETE FROM fault_hmc WHERE doc_id = %s", (doc_id,))
+                cur.execute("DELETE FROM fmea WHERE doc_id = %s", (doc_id,))
+                cur.execute("DELETE FROM mfl WHERE doc_id = %s", (doc_id,))
+                cur.execute("DELETE FROM document_fault_trees WHERE doc_id = %s", (doc_id,))
+                cur.execute("DELETE FROM document_tables WHERE doc_id = %s", (doc_id,))
+                cur.execute("DELETE FROM document_images WHERE doc_id = %s", (doc_id,))
+                cur.execute("DELETE FROM document_chunks WHERE doc_id = %s", (doc_id,))
+                cur.execute("DELETE FROM icp_documents WHERE doc_id = %s", (doc_id,))
+                deleted = cur.rowcount > 0
+            self.conn.commit()
+            return deleted
+        except Exception:
+            self.conn.rollback()
+            raise
+
     def upsert_hmc(self, doc_id, row):
-        """插入/更新 HMC 行，返回行 id（供 ES pg_id_kwd 回链真源表）。"""
+        """插入/更新 HMC 行，返回行 id（供检索投影 pg_id_kwd 回链真源表）。"""
         with self.conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO fault_hmc (doc_id, hmc_code, lcn, hamc, hsc, fault_desc, repair_method)
-                VALUES (%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT (hmc_code, lcn, hamc, hsc) DO UPDATE SET
-                    doc_id = EXCLUDED.doc_id, fault_desc = EXCLUDED.fault_desc,
-                    repair_method = EXCLUDED.repair_method, updated_at = CURRENT_TIMESTAMP
+                INSERT INTO fault_hmc
+                    (doc_id, variant_id, hmc_code, lcn, hamc, hsc, fault_desc, repair_method,
+                     source_ref, raw_data, normalization_warnings)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb)
+                ON CONFLICT (doc_id, variant_id) DO UPDATE SET
+                    hmc_code = EXCLUDED.hmc_code,
+                    lcn = EXCLUDED.lcn,
+                    hamc = EXCLUDED.hamc,
+                    hsc = EXCLUDED.hsc,
+                    fault_desc = EXCLUDED.fault_desc,
+                    repair_method = EXCLUDED.repair_method,
+                    source_ref = EXCLUDED.source_ref,
+                    raw_data = EXCLUDED.raw_data,
+                    normalization_warnings = EXCLUDED.normalization_warnings,
+                    updated_at = CURRENT_TIMESTAMP
                 RETURNING id
-            """, (doc_id, row.get("hmc_code"), row.get("lcn", "**"), row.get("hamc", "**"),
-                  row.get("hsc", "**"), row.get("fault_desc", ""), row.get("repair_method", "")))
+            """, (doc_id, row.get("variant_id") or hashlib.sha256(
+                      f"hmc\x1f{row.get('hmc_code', '')}\x1f{row.get('source_ref', '')}".encode("utf-8")
+                  ).hexdigest()[:32],
+                  row.get("hmc_code"), row.get("lcn", "**"), row.get("hamc", "**"),
+                  row.get("hsc", "**"), row.get("fault_desc", ""), row.get("repair_method", ""),
+                  row.get("source_ref"), json.dumps(row.get("raw_data") or {}, ensure_ascii=False),
+                  json.dumps(row.get("normalization_warnings") or [], ensure_ascii=False)))
             row_id = cur.fetchone()[0]
             self.conn.commit()
             return row_id
 
     def upsert_fmea(self, doc_id, row):
-        """插入/更新 FMECA 行，返回行 id（供 ES pg_id_kwd 回链真源表）。"""
+        """插入/更新 FMECA 行，返回行 id（供检索投影 pg_id_kwd 回链真源表）。"""
         with self.conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO fmea (doc_id, code, product_flag, func_management, fault_mode, fault_cause,
-                                  mission_phase, local_impact, final_impact, severity, probability,
-                                  detect_method, design_improve, compensate_action)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT (code) DO UPDATE SET
-                    doc_id = EXCLUDED.doc_id, product_flag = EXCLUDED.product_flag,
+                INSERT INTO fmea
+                    (doc_id, code, product_flag, func_management, fault_mode, fault_cause,
+                     mission_phase, local_impact, final_impact, severity, severity_raw,
+                     severity_normalized,
+                     probability, probability_raw, probability_level, detect_method,
+                     design_improve, compensate_action, source_ref, raw_data,
+                     normalization_warnings)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb)
+                ON CONFLICT (doc_id, code) DO UPDATE SET
+                    product_flag = EXCLUDED.product_flag,
                     func_management = EXCLUDED.func_management, fault_mode = EXCLUDED.fault_mode,
                     fault_cause = EXCLUDED.fault_cause, mission_phase = EXCLUDED.mission_phase,
                     local_impact = EXCLUDED.local_impact, final_impact = EXCLUDED.final_impact,
-                    severity = EXCLUDED.severity, probability = EXCLUDED.probability,
+                    severity = EXCLUDED.severity, severity_raw = EXCLUDED.severity_raw,
+                    severity_normalized = EXCLUDED.severity_normalized,
+                    probability = EXCLUDED.probability, probability_raw = EXCLUDED.probability_raw,
+                    probability_level = EXCLUDED.probability_level,
                     detect_method = EXCLUDED.detect_method, design_improve = EXCLUDED.design_improve,
-                    compensate_action = EXCLUDED.compensate_action, updated_at = CURRENT_TIMESTAMP
+                    compensate_action = EXCLUDED.compensate_action,
+                    source_ref = EXCLUDED.source_ref, raw_data = EXCLUDED.raw_data,
+                    normalization_warnings = EXCLUDED.normalization_warnings,
+                    updated_at = CURRENT_TIMESTAMP
                 RETURNING id
             """, (doc_id, row.get("code"), row.get("product_flag"), row.get("func_management"),
                   row.get("fault_mode", ""), row.get("fault_cause"), row.get("mission_phase"),
                   row.get("local_impact"), row.get("final_impact"), row.get("severity"),
-                  row.get("probability"), row.get("detect_method"), row.get("design_improve"),
-                  row.get("compensate_action")))
+                  row.get("severity_raw"), row.get("severity_normalized", row.get("severity")),
+                  (row.get("probability_value")
+                   if row.get("probability_value") is not None else row.get("probability")),
+                  row.get("probability_raw", row.get("probability")),
+                  row.get("probability_level") or row.get("probability_class"),
+                  row.get("detect_method"), row.get("design_improve"), row.get("compensate_action"),
+                  row.get("source_ref"), json.dumps(row.get("raw_data") or {}, ensure_ascii=False),
+                  json.dumps(row.get("normalization_warnings") or [], ensure_ascii=False)))
             row_id = cur.fetchone()[0]
             self.conn.commit()
             return row_id
 
     def upsert_mfl(self, doc_id, row):
-        """插入/更新 MFL 行，返回行 id（供 ES pg_id_kwd 回链真源表）。"""
+        """插入/更新 MFL 行，返回行 id（供检索投影 pg_id_kwd 回链真源表）。"""
         with self.conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO mfl (doc_id, mfl_code, module_fault, sur_fault, subcircuit_fault,
-                                 api_reportable, api_name, api_method, api_usage, platform_test)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT (mfl_code) DO UPDATE SET
-                    doc_id = EXCLUDED.doc_id, module_fault = EXCLUDED.module_fault,
+                INSERT INTO mfl
+                    (doc_id, mfl_code, module_fault, sur_fault, subcircuit_fault,
+                     api_reportable, api_reportable_raw, api_name, api_method, api_usage,
+                     platform_test, platform_test_raw, platform_test_status,
+                     maintenance_action, source_ref, raw_data, normalization_warnings)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb)
+                ON CONFLICT (doc_id, mfl_code) DO UPDATE SET
+                    module_fault = EXCLUDED.module_fault,
                     sur_fault = EXCLUDED.sur_fault, subcircuit_fault = EXCLUDED.subcircuit_fault,
-                    api_reportable = EXCLUDED.api_reportable, api_name = EXCLUDED.api_name,
+                    api_reportable = EXCLUDED.api_reportable,
+                    api_reportable_raw = EXCLUDED.api_reportable_raw, api_name = EXCLUDED.api_name,
                     api_method = EXCLUDED.api_method, api_usage = EXCLUDED.api_usage,
-                    platform_test = EXCLUDED.platform_test, updated_at = CURRENT_TIMESTAMP
+                    platform_test = EXCLUDED.platform_test,
+                    platform_test_raw = EXCLUDED.platform_test_raw,
+                    platform_test_status = EXCLUDED.platform_test_status,
+                    maintenance_action = EXCLUDED.maintenance_action,
+                    source_ref = EXCLUDED.source_ref, raw_data = EXCLUDED.raw_data,
+                    normalization_warnings = EXCLUDED.normalization_warnings,
+                    updated_at = CURRENT_TIMESTAMP
                 RETURNING id
             """, (doc_id, row.get("mfl_code"), row.get("module_fault"), row.get("sur_fault"),
-                  row.get("subcircuit_fault"), row.get("api_reportable", False), row.get("api_name"),
-                  row.get("api_method"), row.get("api_usage"), row.get("platform_test", False)))
+                  row.get("subcircuit_fault"), row.get("api_reportable", False),
+                  row.get("api_reportable_raw"), row.get("api_name"), row.get("api_method"),
+                  row.get("api_usage"), row.get("platform_test", False),
+                  row.get("platform_test_raw"), row.get("platform_test_status"),
+                  row.get("maintenance_action") or row.get("repair_action"), row.get("source_ref"),
+                  json.dumps(row.get("raw_data") or {}, ensure_ascii=False),
+                  json.dumps(row.get("normalization_warnings") or [], ensure_ascii=False)))
             row_id = cur.fetchone()[0]
             self.conn.commit()
             return row_id
@@ -1631,10 +2056,12 @@ class PostgresClient:
     _ROW_SEARCH_COLS = {
         "fault_hmc": ["hmc_code", "lcn", "hamc", "hsc", "fault_desc", "repair_method"],
         "fmea": ["code", "product_flag", "func_management", "fault_mode", "fault_cause",
-                 "mission_phase", "local_impact", "final_impact", "detect_method",
+                 "mission_phase", "local_impact", "final_impact", "severity", "severity_raw",
+                 "probability_raw", "probability_level", "detect_method",
                  "design_improve", "compensate_action"],
         "mfl": ["mfl_code", "module_fault", "sur_fault", "subcircuit_fault",
-                "api_name", "api_method", "api_usage"],
+                "api_name", "api_method", "api_usage", "platform_test_status",
+                "maintenance_action"],
     }
 
     def _query_rows(self, table, doc_id, page, size, filters):
@@ -1682,6 +2109,26 @@ class PostgresClient:
             cur.execute("DELETE FROM document_chunks WHERE doc_id = %s", (doc_id,))
             self.conn.commit()
 
+    def clear_icp_authoritative_rows(self, doc_id, doc_type):
+        """Clear one table-backed document snapshot before a deterministic reparse.
+
+        The table name is selected from a closed mapping; callers cannot inject
+        SQL identifiers.  Raw artifacts remain untouched and can always rebuild
+        this snapshot if the following parse fails.
+        """
+        table = {
+            "hmc": "fault_hmc",
+            "fmeca": "fmea",
+            "mfl": "mfl",
+        }.get(str(doc_type))
+        if not table:
+            raise ValueError(f"不支持清理的表格文档类型: {doc_type}")
+        with self.conn.cursor() as cur:
+            cur.execute(f"DELETE FROM {table} WHERE doc_id = %s", (doc_id,))
+            deleted = cur.rowcount
+        self.conn.commit()
+        return deleted
+
 class MockPostgres:
     def __init__(self):
         self.knowledge_bases = []
@@ -1693,11 +2140,15 @@ class MockPostgres:
         self.kg_logs = []
         self.parse_logs = []
         self.deletion_logs = []
+        self.community_reports = []
     
     def cursor(self):
         return MockCursor(self)
     
     def commit(self):
+        pass
+
+    def rollback(self):
         pass
 
 class MockCursor:
@@ -1711,7 +2162,74 @@ class MockCursor:
         self.rowcount = 0
         self._result = []
         
-        if "INSERT INTO knowledge_bases" in query:
+        if "INSERT INTO community_reports" in query:
+            projection_id = params[0]
+            data = {
+                "projection_id": projection_id,
+                "report_id": params[1],
+                "community_id": params[2],
+                "kb_id": params[3],
+                "doc_id": params[4],
+                "doc_ids": json.loads(params[5]),
+                "entities": json.loads(params[6]),
+                "report": json.loads(params[7]),
+                "stale_kwd": params[8],
+                "stale_reason": params[9],
+                "stale_at": params[10],
+                "created_at": "2024-01-01 00:00:00",
+                "updated_at": "2024-01-01 00:00:00",
+            }
+            existing = next(
+                (item for item in self.db.community_reports if item["projection_id"] == projection_id),
+                None,
+            )
+            if existing:
+                existing.update(data)
+            else:
+                self.db.community_reports.append(data)
+            self.rowcount = 1
+
+        elif "SELECT projection_id, report_id, community_id" in query and "FROM community_reports" in query:
+            kb_id = params[0]
+            doc_id = json.loads(params[1])[0] if len(params) > 1 else None
+            for item in self.db.community_reports:
+                if item["kb_id"] != kb_id or (doc_id and doc_id not in item.get("doc_ids", [])):
+                    continue
+                self._result.append(tuple(item.get(field) for field in (
+                    "projection_id", "report_id", "community_id", "kb_id", "doc_id",
+                    "doc_ids", "entities", "report", "stale_kwd", "stale_reason",
+                    "stale_at", "created_at", "updated_at",
+                )))
+
+        elif "UPDATE community_reports" in query:
+            projection_id = params[5]
+            for item in self.db.community_reports:
+                if item["projection_id"] == projection_id:
+                    item.update({
+                        "doc_ids": json.loads(params[0]),
+                        "doc_id": params[1],
+                        "stale_kwd": params[2],
+                        "stale_reason": params[3],
+                        "stale_at": params[4],
+                    })
+                    self.rowcount = 1
+                    break
+
+        elif "DELETE FROM community_reports WHERE projection_id" in query:
+            original_count = len(self.db.community_reports)
+            self.db.community_reports = [
+                item for item in self.db.community_reports if item["projection_id"] != params[0]
+            ]
+            self.rowcount = original_count - len(self.db.community_reports)
+
+        elif "DELETE FROM community_reports WHERE kb_id" in query:
+            original_count = len(self.db.community_reports)
+            self.db.community_reports = [
+                item for item in self.db.community_reports if item["kb_id"] != params[0]
+            ]
+            self.rowcount = original_count - len(self.db.community_reports)
+
+        elif "INSERT INTO knowledge_bases" in query:
             self.db.knowledge_bases.append({
                 "kb_id": params[0],
                 "name": params[1],
@@ -1765,6 +2283,8 @@ class MockCursor:
                 "minio_path": params[5],
                 "image_type": params[6],
                 "image_url": params[7] if len(params) > 7 else None,
+                "mime_type": params[8] if len(params) > 8 else None,
+                "source_ref": params[9] if len(params) > 9 else None,
                 "created_at": "2024-01-01 00:00:00"
             })
             self.rowcount = 1
@@ -1986,13 +2506,14 @@ class MockCursor:
                         chunk["selected_for_kg"], chunk["created_at"]
                     ))
         
-        elif "SELECT * FROM document_images WHERE chunk_id" in query:
+        elif "FROM document_images WHERE chunk_id" in query:
             for img in self.db.images:
                 if img["chunk_id"] == params[0]:
                     self._result.append((
                         img["image_id"], img["doc_id"], img["chunk_id"], img["title"],
-                        img["description"], img["minio_path"], img["image_type"], img["created_at"],
-                        img.get("image_url")
+                        img["description"], img["minio_path"], img["image_type"],
+                        img.get("image_url"), img.get("mime_type"), img.get("source_ref"),
+                        img["created_at"],
                     ))
         
         elif "SELECT * FROM document_tables WHERE chunk_id" in query:
@@ -2035,13 +2556,14 @@ class MockCursor:
             self.db.parse_logs = [l for l in self.db.parse_logs if l.get("doc_id") != params[0]]
             self.rowcount = original_count - len(self.db.parse_logs)
         
-        elif "SELECT * FROM document_images WHERE doc_id" in query:
+        elif "FROM document_images WHERE doc_id" in query:
             for img in self.db.images:
                 if img["doc_id"] == params[0]:
                     self._result.append((
                         img["image_id"], img["doc_id"], img["chunk_id"], img["title"],
-                        img["description"], img["minio_path"], img["image_type"], img["created_at"],
-                        img.get("image_url")
+                        img["description"], img["minio_path"], img["image_type"],
+                        img.get("image_url"), img.get("mime_type"), img.get("source_ref"),
+                        img["created_at"],
                     ))
         
         elif "SELECT * FROM document_tables WHERE doc_id" in query:

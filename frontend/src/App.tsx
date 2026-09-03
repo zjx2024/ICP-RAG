@@ -7,8 +7,6 @@ import TypeHome from './pages/TypeHome';
 
 const TypeDocs = lazy(() => import('./pages/TypeDocs'));
 const TypeView = lazy(() => import('./pages/TypeView'));
-const TypeLogs = lazy(() => import('./pages/TypeLogs'));
-const TypeGraph = lazy(() => import('./pages/TypeGraph'));
 const TypeVisualize = lazy(() => import('./pages/TypeVisualize'));
 const DocDetail = lazy(() => import('./pages/DocDetail'));
 const Models = lazy(() => import('./pages/Models'));
@@ -29,14 +27,14 @@ export default function App() {
         <Route path="/" element={<MainLayout />}>
           <Route index element={<TypeHome />} />
 
-          {/* 上传统一在首页；类型页负责文档管理、解析、内容查看和图谱确认。 */}
+          {/* 首页与类型页复用统一上传窗口；兼容上传路由不恢复独立页面。 */}
           <Route path="type/:docType" element={<TypeLayout />}>
             <Route index element={<Navigate to="documents" replace />} />
             <Route path="documents" element={<TypeDocs />} />
             <Route path="upload" element={<Navigate to="../documents" replace />} />
             <Route path="view" element={<TypeView />} />
-            <Route path="logs" element={<TypeLogs />} />
-            <Route path="graph" element={<TypeGraph />} />
+            <Route path="logs" element={<Navigate to="../documents?records=1" replace />} />
+            <Route path="graph" element={<Navigate to="../visualize" replace />} />
             <Route path="visualize" element={<TypeVisualize />} />
             <Route path="doc/:docId" element={<DocDetail />} />
           </Route>

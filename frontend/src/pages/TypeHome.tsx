@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Row, Col, Card, Typography, Space, Tag, Spin, message, Button, Alert } from 'antd';
+import { Row, Col, Card, Typography, Space, Tag, Spin, message, Button } from 'antd';
 import {
   TableOutlined, ApartmentOutlined, FileTextOutlined, ArrowRightOutlined,
   RobotOutlined, ReloadOutlined, CloudUploadOutlined,
@@ -10,10 +10,20 @@ import { GlassEmpty, GlassStatCard } from '@/components/GlassUI';
 import UnifiedUploadModal from '@/components/UnifiedUploadModal';
 import type { DocTypeInfo } from '@/types';
 
-const FORM_META: Record<string, { icon: React.ReactNode; color: string; label: string }> = {
-  table: { icon: <TableOutlined />, color: '#1677ff', label: '表格类' },
-  image: { icon: <ApartmentOutlined />, color: '#722ed1', label: '图类' },
-  text: { icon: <FileTextOutlined />, color: '#52c41a', label: '图文/文本类' },
+const FORM_META: Record<string, { icon: React.ReactNode; color: string }> = {
+  table: { icon: <TableOutlined />, color: '#1677ff' },
+  image: { icon: <ApartmentOutlined />, color: '#722ed1' },
+  text: { icon: <FileTextOutlined />, color: '#52c41a' },
+};
+
+const TYPE_SUMMARY: Record<string, string> = {
+  function_locator: '系统、模块、功能与接口信息',
+  hmc: '故障代码、故障现象与维修方法',
+  fta: '故障事件及其逻辑关系',
+  rbd: '系统可靠性结构与计算参数',
+  fmeca: '故障模式、原因、影响与危害等级',
+  mfl: '维修故障清单、上报接口与定位信息',
+  fault_history: '历史故障、处理步骤与最终方案',
 };
 
 interface TypeCardInfo extends DocTypeInfo {
@@ -22,7 +32,6 @@ interface TypeCardInfo extends DocTypeInfo {
 }
 
 interface Readiness {
-  all_types_present: boolean;
   ready_type_count: number;
   total_records: number;
 }
@@ -31,7 +40,6 @@ export default function TypeHome() {
   const navigate = useNavigate();
   const [types, setTypes] = useState<TypeCardInfo[]>([]);
   const [readiness, setReadiness] = useState<Readiness>({
-    all_types_present: false,
     ready_type_count: 0,
     total_records: 0,
   });
@@ -58,12 +66,11 @@ export default function TypeHome() {
         };
       }));
       setReadiness({
-        all_types_present: ready.all_types_present,
         ready_type_count: ready.ready_type_count,
         total_records: ready.total_records,
       });
     } catch (error) {
-      message.error(`加载七类知识状态失败: ${(error as Error).message}`);
+      message.error(`文档状态加载失败：${(error as Error).message}`);
     } finally {
       setLoading(false);
     }
@@ -85,7 +92,7 @@ export default function TypeHome() {
         <div>
           <Typography.Title level={4} style={{ margin: 0, color: '#262626' }}>ICP 七类文档知识库</Typography.Title>
           <Typography.Text type="secondary">
-            通过统一入口选择文档类型并上传；入库后自动归入对应卡片，再按类型执行解析和查看。
+            集中管理故障诊断所需的工程文档。
           </Typography.Text>
         </div>
         <Space wrap>
@@ -99,42 +106,25 @@ export default function TypeHome() {
         </Space>
       </div>
 
-      {!readiness.all_types_present && readiness.ready_type_count > 0 ? (
-        <Alert
-          type="warning"
-          showIcon
-          style={{ marginBottom: 16 }}
-          message={`当前已有 ${readiness.ready_type_count}/7 类知识可用于诊断`}
-          description="缺失类型不会阻止系统运行，但候选定位、原因链、影响或维修证据可能不完整。"
-        />
-      ) : readiness.all_types_present ? (
-        <Alert
-          type="success"
-          showIcon
-          style={{ marginBottom: 16 }}
-          message="七类文档均已有可用解析结果，诊断闭环已就绪"
-        />
-      ) : null}
-
       <Row gutter={16} style={{ marginBottom: 20 }}>
         <Col xs={12} sm={6}>
           <GlassStatCard label="文档类型" value={types.length} suffix="类" />
         </Col>
         <Col xs={12} sm={6}>
-          <GlassStatCard label="诊断就绪" value={readiness.ready_type_count} suffix="/ 7" />
+          <GlassStatCard label="已有内容" value={readiness.ready_type_count} suffix="/ 7" />
         </Col>
         <Col xs={12} sm={6}>
           <GlassStatCard label="文档总数" value={totalDocs} suffix="份" />
         </Col>
         <Col xs={12} sm={6}>
-          <GlassStatCard label="结构化记录" value={readiness.total_records} suffix="条" />
+          <GlassStatCard label="提取结果" value={readiness.total_records} suffix="条" />
         </Col>
       </Row>
 
       {loading ? (
         <div style={{ textAlign: 'center', padding: 60 }}><Spin size="large" /></div>
       ) : types.length === 0 ? (
-        <GlassEmpty description="暂无七类文档配置，请检查后端 document_types 初始化" />
+        <GlassEmpty description="暂未获取到文档类型，请稍后刷新" />
       ) : (
         <Row gutter={[20, 20]}>
           {types.map((item) => {
@@ -157,6 +147,14 @@ export default function TypeHome() {
                     transition: 'all .25s ease',
                   }}
                   styles={{ body: { display: 'flex', flexDirection: 'column', height: '100%' } }}
+                  role="link"
+                  tabIndex={0}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      navigate(`/type/${item.doc_type}/documents`);
+                    }
+                  }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
                     <span style={{ fontSize: 26, color: meta.color }}>{meta.icon}</span>
@@ -165,24 +163,26 @@ export default function TypeHome() {
                     </Typography.Title>
                     <Tag color={ready ? 'success' : 'default'}>{ready ? '可用于诊断' : '待解析'}</Tag>
                   </div>
-                  <Typography.Text type="secondary" style={{ fontSize: 12, color: meta.color }}>
-                    {item.doc_type}
-                  </Typography.Text>
                   <Typography.Paragraph type="secondary" style={{ minHeight: 40, marginBottom: 12 }} ellipsis={{ rows: 2 }}>
-                    {item.description || '暂无描述'}
+                    {TYPE_SUMMARY[item.doc_type] || '管理和查看该类型的工程文档'}
                   </Typography.Paragraph>
-                  <Space size={[8, 8]} wrap style={{ marginBottom: 12 }}>
-                    <Tag color={meta.color}>{meta.label}</Tag>
-                    {item.input_formats ? <Tag>支持 {item.input_formats}</Tag> : null}
-                    <Tag>文档 {item.doc_count ?? 0}</Tag>
-                    <Tag>可用 {item.ready_count ?? 0}</Tag>
-                    <Tag>记录 {item.record_count ?? 0}</Tag>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap', marginBottom: 12 }}>
+                    {[
+                      { value: item.doc_count ?? 0, label: '份文档' },
+                      { value: item.ready_count ?? 0, label: '份可用' },
+                      { value: item.record_count ?? 0, label: '条记录' },
+                    ].map((metric) => (
+                      <span key={metric.label} style={{ display: 'inline-flex', alignItems: 'baseline', gap: 4 }}>
+                        <Typography.Text strong style={{ fontSize: 16 }}>{metric.value}</Typography.Text>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>{metric.label}</Typography.Text>
+                      </span>
+                    ))}
                     {(item.failed_count || 0) > 0 ? <Tag color="error">失败 {item.failed_count}</Tag> : null}
-                  </Space>
+                  </div>
                   <div style={{ flex: 1 }} />
                   <div style={{ borderTop: '1px solid rgba(0,0,0,0.06)', marginTop: 10, paddingTop: 10, textAlign: 'right' }}>
                     <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-                      管理、解析与查看 <ArrowRightOutlined />
+                      进入管理 <ArrowRightOutlined />
                     </Typography.Text>
                   </div>
                 </Card>

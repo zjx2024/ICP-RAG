@@ -1,0 +1,325 @@
+{
+  "name": "ICP 智能体新增多轮对话评测集",
+  "version": "2026-09-03",
+  "description": "在原有 19 组多轮用例之外新增的独立评测集。用例改用不同的表达方式，覆盖保持供电、支路保护、逻辑配置、显示合成、帧缓存、显示切换、BIT、自冷却、HMC 通配语义以及健康监测链路。",
+  "defaults": {
+    "assertions": {
+      "min_used_evidence": 1,
+      "min_citations": 1,
+      "required_event_types": ["plan", "tool_call", "answer", "done"],
+      "answer_not_contains": ["<内部推理>", "```json", "validated_relation"]
+    }
+  },
+  "cases": [
+    {
+      "id": "MT-HUM-01-holdover-boundary",
+      "metadata": {
+        "category": "输入瞬断与保持供电边界",
+        "coverage": ["function_locator", "fmeca_query", "mfl_query", "fault_history_query"],
+        "expected_records": ["FUNC-140", "MFL-SYN-013", "HIS-SYN-005"]
+      },
+      "turns": [
+        {
+          "id": "symptom",
+          "question": "外部供电只短暂塌了一下，整机却重新启动；如何判断是保持供电没有接住，而不是普通处理模块先失效？",
+          "assertions": {
+            "required_tools": ["function_locator", "fmeca_query"],
+            "required_used_doc_types": ["function_locator", "fmeca"],
+            "any_used_record_ids": ["FUNC-140", "FM-SYN-013"],
+            "answer_regex": ["HUM|保持供电", "瞬断|保持", "能量|复位"]
+          }
+        },
+        {
+          "id": "verification",
+          "question": "如果要复现并确认保持能力，试验时应观察什么时间窗口和电压门限？资料中的维修动作以及历史案例的验证结果是什么？",
+          "assertions": {
+            "required_tools": ["mfl_query", "fault_history_query"],
+            "required_used_doc_types": ["mfl", "fault_history"],
+            "any_used_record_ids": ["MFL-SYN-013", "HIS-SYN-005"],
+            "required_answer_facets": ["resolution", "history_time", "history_action", "history_result"],
+            "answer_regex": ["80|120", "保持|瞬断", "验证|复现"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-PDU-01-false-trip",
+      "metadata": {
+        "category": "支路保护误动作",
+        "coverage": ["function_locator", "fmeca_query", "mfl_query", "fault_history_query"],
+        "expected_records": ["FUNC-130", "MFL-SYN-011", "HIS-SYN-004"]
+      },
+      "turns": [
+        {
+          "id": "discriminate",
+          "question": "钳形表测到 DPM 支路电流只有约 3.4 A，PDU 却反复把这一路切掉；怎样判断是采样偏置或保护参数问题，而不是真实过流？",
+          "assertions": {
+            "required_tools": ["function_locator", "fmeca_query"],
+            "required_used_doc_types": ["function_locator", "fmeca"],
+            "any_used_record_ids": ["FUNC-130", "FM-SYN-011"],
+            "answer_regex": ["PDU|支路", "过流|保护", "采样|参数"]
+          }
+        },
+        {
+          "id": "repair",
+          "question": "更换部件或重新加载保护参数后，应该怎样复测阈值、确认支路恢复，并说明历史上采取过的处理和最终验证？",
+          "assertions": {
+            "required_tools": ["mfl_query", "fault_history_query"],
+            "required_used_doc_types": ["mfl", "fault_history"],
+            "any_used_record_ids": ["MFL-SYN-011", "HIS-SYN-004"],
+            "required_answer_facets": ["resolution", "history_action", "history_result"],
+            "answer_regex": ["阈值|电流", "支路|恢复", "复测|验证"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-FPA-01-logic-config",
+      "metadata": {
+        "category": "可编程逻辑配置失败",
+        "coverage": ["function_locator", "fmeca_query", "mfl_query", "fault_history_query"],
+        "expected_records": ["FUNC-240", "MFL-SYN-028", "HIS-SYN-010"]
+      },
+      "turns": [
+        {
+          "id": "locate",
+          "question": "系统上电进入逻辑加载阶段后，DONE 信号一直无效，高速预处理任务也没有起来；优先定位哪个模块和哪类接口？",
+          "assertions": {
+            "required_tools": ["function_locator", "fmeca_query"],
+            "required_used_doc_types": ["function_locator", "fmeca"],
+            "any_used_record_ids": ["FUNC-240", "FM-SYN-028"],
+            "answer_regex": ["FPA|可编程逻辑", "DONE|配置", "接口|加载"]
+          }
+        },
+        {
+          "id": "version_check",
+          "question": "如果板级检查发现配置接口位定义不对，维修步骤是什么？修复后还要怎样核对受控配置版本和启动结果？",
+          "assertions": {
+            "required_tools": ["mfl_query", "fault_history_query"],
+            "required_used_doc_types": ["mfl", "fault_history"],
+            "any_used_record_ids": ["MFL-SYN-028", "HIS-SYN-010"],
+            "required_answer_facets": ["resolution", "history_action", "history_result"],
+            "answer_regex": ["重新加载|配置", "版本|受控", "验证|启动"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-DPM-01-render-task",
+      "metadata": {
+        "category": "显示合成任务异常",
+        "coverage": ["function_locator", "fmeca_query", "mfl_query", "fault_history_query"],
+        "expected_records": ["FUNC-410", "MFL-SYN-043", "HIS-SYN-015"]
+      },
+      "turns": [
+        {
+          "id": "distinguish",
+          "question": "后台数据和告警计数仍在变化，但主画面像被冻结，切到备用安全画面却能继续显示；这和外部输出接口完全没信号有什么区别？",
+          "assertions": {
+            "required_tools": ["function_locator", "fmeca_query"],
+            "required_used_doc_types": ["function_locator", "fmeca"],
+            "any_used_record_ids": ["FUNC-410", "FM-SYN-043"],
+            "answer_regex": ["DPM|显示合成", "任务|资源", "备用|输出接口"]
+          }
+        },
+        {
+          "id": "history_fix",
+          "question": "怎样进一步排除帧缓存和 OIM，历史案例最后是如何处置的？请给出软件修复、受控复位和验证要点。",
+          "assertions": {
+            "required_tools": ["mfl_query", "fault_history_query"],
+            "required_used_doc_types": ["mfl", "fault_history"],
+            "any_used_record_ids": ["MFL-SYN-043", "HIS-SYN-015"],
+            "required_answer_facets": ["resolution", "history_action", "history_result"],
+            "answer_regex": ["DPM|帧缓存|OIM", "软件|复位", "验证|恢复"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-FBM-01-frame-integrity",
+      "metadata": {
+        "category": "显示帧缓存完整性",
+        "coverage": ["fmeca_query", "mfl_query", "fault_history_query"],
+        "expected_records": ["MFL-SYN-047", "HIS-SYN-016"]
+      },
+      "turns": [
+        {
+          "id": "isolate",
+          "question": "屏幕仍有内容，却出现随机方块和局部颜色跳变；换页面后缺陷位置也变了，重启只能暂时缓解。优先怀疑哪一层？",
+          "assertions": {
+            "required_tools": ["fmeca_query"],
+            "required_used_doc_types": ["fmeca"],
+            "any_used_record_ids": ["FM-SYN-047"],
+            "answer_regex": ["FBM|帧缓存", "帧|缓存", "完整性|校验"]
+          }
+        },
+        {
+          "id": "acceptance",
+          "question": "维修后怎样安排分辨率、颜色和帧校验复测？如果缺陷仍随页面变化，下一步应怎么处理？",
+          "assertions": {
+            "required_tools": ["mfl_query", "fault_history_query"],
+            "required_used_doc_types": ["mfl", "fault_history"],
+            "any_used_record_ids": ["MFL-SYN-047", "HIS-SYN-016"],
+            "required_answer_facets": ["resolution", "history_result"],
+            "answer_regex": ["分辨率|颜色|帧校验", "复测|验证", "更换|继续排查"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-DCS-01-switch-readback",
+      "metadata": {
+        "category": "显示通道切换回读不一致",
+        "coverage": ["function_locator", "fmeca_query", "mfl_query", "fault_history_query"],
+        "expected_records": ["FUNC-440", "MFL-SYN-052", "HIS-SYN-018"]
+      },
+      "turns": [
+        {
+          "id": "locate",
+          "question": "A 路画面源异常后，系统已经下发切到 B 的命令，但状态回读仍然显示 A；切换链路的哪一段最可疑？",
+          "assertions": {
+            "required_tools": ["function_locator", "fmeca_query"],
+            "required_used_doc_types": ["function_locator", "fmeca"],
+            "any_used_record_ids": ["FUNC-440", "FM-SYN-052"],
+            "answer_regex": ["DCS|切换", "回读|命令", "A|B"]
+          }
+        },
+        {
+          "id": "verify",
+          "question": "如何用命令—回读一致性确认修复有效？历史案例最后是否更换了切换模块，还做了哪些校准？",
+          "assertions": {
+            "required_tools": ["mfl_query", "fault_history_query"],
+            "required_used_doc_types": ["mfl", "fault_history"],
+            "any_used_record_ids": ["MFL-SYN-052", "HIS-SYN-018"],
+            "required_answer_facets": ["resolution", "history_action", "history_result"],
+            "answer_regex": ["命令|回读", "校准|一致", "更换|验证"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-BITC-01-selftest-trigger",
+      "metadata": {
+        "category": "BIT 触发与健康结论",
+        "coverage": ["function_locator", "fmeca_query", "mfl_query", "fault_history_query"],
+        "expected_records": ["FUNC-510", "MFL-SYN-055", "HIS-SYN-019"]
+      },
+      "turns": [
+        {
+          "id": "scope",
+          "question": "业务功能可以正常启动，但上电 BIT 完成标志始终无效，历史里也没有自检结论；这是业务处理链故障，还是健康监测链故障？",
+          "assertions": {
+            "required_tools": ["function_locator", "fmeca_query"],
+            "required_used_doc_types": ["function_locator", "fmeca"],
+            "any_used_record_ids": ["FUNC-510", "FM-SYN-055"],
+            "answer_regex": ["BIT|自检", "健康|监测", "业务链|处理链"]
+          }
+        },
+        {
+          "id": "trigger_check",
+          "question": "如果怀疑触发掩码没有加载，怎样和 BIT 控制器自身损坏区分？修复配置后应重复哪些测试并确认什么记录？",
+          "assertions": {
+            "required_tools": ["mfl_query", "fault_history_query"],
+            "required_used_doc_types": ["mfl", "fault_history"],
+            "any_used_record_ids": ["MFL-SYN-055", "HIS-SYN-019"],
+            "required_answer_facets": ["resolution", "history_action", "history_result"],
+            "answer_regex": ["触发|掩码|配置", "BIT|自检", "重复|记录|验证"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-FAN-01-stall-detection",
+      "metadata": {
+        "category": "强迫风冷失速",
+        "coverage": ["function_locator", "fmeca_query", "mfl_query", "fault_history_query"],
+        "expected_records": ["FUNC-630", "MFL-SYN-070", "HIS-SYN-024"]
+      },
+      "turns": [
+        {
+          "id": "triage",
+          "question": "风扇指令已经拉到 100%，转速反馈还是 0，温度大约每分钟上升 2.5 ℃；现场应先按什么方向处置？",
+          "assertions": {
+            "required_tools": ["function_locator", "fmeca_query"],
+            "required_used_doc_types": ["function_locator", "fmeca"],
+            "any_used_record_ids": ["FUNC-630", "FM-SYN-070"],
+            "answer_regex": ["FAN|风扇", "转速|测速", "堵转|冷却"]
+          }
+        },
+        {
+          "id": "acceptance",
+          "question": "更换风扇前后分别要记录哪些转速、温度和告警指标？历史案例采取了什么降载措施，最后怎样确认恢复？",
+          "assertions": {
+            "required_tools": ["mfl_query", "fault_history_query"],
+            "required_used_doc_types": ["mfl", "fault_history"],
+            "any_used_record_ids": ["MFL-SYN-070", "HIS-SYN-024"],
+            "required_answer_facets": ["resolution", "history_action", "history_result"],
+            "answer_regex": ["转速|温度|告警", "降载|限制", "验证|恢复"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-HMC-02-wildcard-semantics",
+      "metadata": {
+        "category": "HMC 通配字段与维修映射",
+        "coverage": ["hmc_query", "mfl_query"],
+        "expected_records": ["91850002**0001", "MFL-SYN-058"]
+      },
+      "turns": [
+        {
+          "id": "decode",
+          "question": "手册中 LCN 是 91850002、HAMC 写成 **、HSC 为 0001；这里的双星号表示什么？对应哪个模块和哪类现象？",
+          "assertions": {
+            "required_tools": ["hmc_query"],
+            "required_used_doc_types": ["hmc"],
+            "any_used_record_ids": ["91850002**0001"],
+            "answer_regex": ["HAMC|通配|任意", "SAM|传感器", "91850002|0001"]
+          }
+        },
+        {
+          "id": "maintenance_map",
+          "question": "这个报码在维修清单中怎样核查？请只围绕对应的传感器通道和连接器处理，不要混入其他满量程现象。",
+          "assertions": {
+            "required_tools": ["mfl_query"],
+            "required_used_doc_types": ["mfl"],
+            "any_used_record_ids": ["MFL-SYN-058"],
+            "required_answer_facets": ["resolution"],
+            "answer_regex": ["针脚|连接器|通道", "校准|复测"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "MT-CROSS-02-health-chain",
+      "metadata": {
+        "category": "健康监测跨模块链路",
+        "coverage": ["function_locator", "graph_traversal", "fmeca_query", "mfl_query"],
+        "expected_records": ["FUNC-510", "FUNC-520", "FUNC-530", "MFL-SYN-061"]
+      },
+      "turns": [
+        {
+          "id": "chain",
+          "question": "一次 BIT 发现模块异常后，哪个环节负责采集状态、哪个环节形成隔离结论、哪个环节把结果写进故障历史？请按健康监测链路说明。",
+          "assertions": {
+            "required_tools": ["function_locator", "graph_traversal"],
+            "required_used_doc_types": ["function_locator"],
+            "any_used_record_ids": ["FUNC-510", "FUNC-520", "FUNC-530"],
+            "answer_regex": ["BIT|SAM|FLS", "采集|隔离|记录", "链路|顺序"]
+          }
+        },
+        {
+          "id": "breakpoint",
+          "question": "如果状态量采集正常但历史里没有正文，故障更可能落在哪一段？有哪些证据可以区分采集失败、隔离失败和记录写入失败？",
+          "assertions": {
+            "required_tools": ["fmeca_query", "mfl_query", "graph_traversal"],
+            "required_used_doc_types": ["fmeca", "mfl"],
+            "any_used_record_ids": ["MFL-SYN-061"],
+            "required_answer_facets": ["cause", "impact", "resolution"],
+            "answer_regex": ["FLS|写入|正文", "采集|隔离|记录", "证据|区分"]
+          }
+        }
+      ]
+    }
+  ]
+}

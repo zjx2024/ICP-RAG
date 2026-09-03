@@ -23,6 +23,9 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install backend dependencies
+        run: pip install -r requirements.txt
+
       - name: Compile Python sources
         run: python -m compileall -q backend
 

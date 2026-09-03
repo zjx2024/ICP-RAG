@@ -4,6 +4,8 @@
 ICP 故障诊断和系统设置。图片能力仅作为 FTA/RBD/架构证据保留，不再提供独立画廊。
 """
 import os
+import requests
+import psycopg2
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
@@ -11,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.storage.postgres_client import postgres_client
+from backend.storage.search_store import search_store
 from backend.config import config
 from backend.api import router as business_router
 from backend.core.exceptions import BusinessError
@@ -35,6 +38,64 @@ from backend.agent.db import agent_db  # noqa: E402
 app.include_router(agent_router, prefix="/api")
 
 
+def _dependency_status():
+    """Return non-secret readiness details for the four local data services."""
+    checks = {}
+
+    try:
+        if postgres_client.conn.__class__.__name__ == "MockPostgres":
+            raise RuntimeError("connected to in-memory fallback")
+        # Do not ping through the application's long-lived shared connection:
+        # a plain SELECT starts a transaction in psycopg2 and readiness probes
+        # would leave it idle, retaining relation locks.  A short autocommit
+        # connection keeps health checks observational and self-contained.
+        health_conn = psycopg2.connect(
+            host=config.POSTGRES_HOST,
+            port=config.POSTGRES_PORT,
+            user=config.POSTGRES_USER,
+            password=config.POSTGRES_PASSWORD,
+            dbname=config.POSTGRES_DB,
+            connect_timeout=3,
+            application_name="icp-rag-readiness",
+        )
+        try:
+            health_conn.autocommit = True
+            with health_conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                row = cur.fetchone()
+        finally:
+            health_conn.close()
+        checks["postgresql"] = {"ok": bool(row and row[0] == 1)}
+    except Exception as exc:
+        checks["postgresql"] = {"ok": False, "error": str(exc)}
+        try:
+            postgres_client.conn.rollback()
+        except Exception:
+            pass
+
+    try:
+        search_store.ensure_ready()
+        checks["opensearch"] = {"ok": True}
+    except Exception as exc:
+        checks["opensearch"] = {"ok": False, "error": str(exc)}
+
+    try:
+        response = requests.get(
+            f"http://{config.HUGEGRAPH_HOST}:{config.HUGEGRAPH_PORT}/graphs",
+            timeout=3,
+        )
+        response.raise_for_status()
+        checks["hugegraph"] = {"ok": True}
+    except Exception as exc:
+        checks["hugegraph"] = {"ok": False, "error": str(exc)}
+
+    artifact_dir = config.ARTIFACT_STORAGE_DIR
+    checks["artifact_store"] = {
+        "ok": os.path.isdir(artifact_dir) and os.access(artifact_dir, os.R_OK | os.W_OK)
+    }
+    return checks
+
+
 @app.exception_handler(BusinessError)
 async def business_error_handler(request: Request, exc: BusinessError):
     return JSONResponse(status_code=exc.code, content=fail(exc.code, exc.message, exc.detail))
@@ -43,28 +104,61 @@ async def business_error_handler(request: Request, exc: BusinessError):
 @app.on_event("startup")
 def _startup():
     """初始化 ICP 专用数据表、七类类型注册、默认诊断 Agent，并恢复中断任务。"""
+    if config.STRICT_DEPENDENCIES:
+        checks = _dependency_status()
+        failed = [name for name, result in checks.items() if not result["ok"]]
+        if failed:
+            raise RuntimeError(f"required dependencies are not ready: {', '.join(failed)}")
+
     try:
         agent_db.init_tables()
     except Exception as exc:
         print(f"[Agent] 表初始化警告: {exc}")
+        if config.STRICT_DEPENDENCIES:
+            raise RuntimeError("Agent 数据表初始化失败") from exc
 
     try:
         from backend.icp.repository import icp_repository
         icp_repository.init_tables()
     except Exception as exc:
         print(f"[ICP] 领域表初始化警告: {exc}")
+        if config.STRICT_DEPENDENCIES:
+            raise RuntimeError("ICP 权威事实表初始化失败") from exc
+
+    try:
+        from backend.icp.diagram_repository import diagram_repository
+        diagram_repository.init_tables()
+    except Exception as exc:
+        print(f"[ICP] 图审核与投影表初始化警告: {exc}")
+        if config.STRICT_DEPENDENCIES:
+            raise RuntimeError("ICP 图审核与投影表初始化失败") from exc
+
+    try:
+        from backend.icp.entity_resolution import entity_resolution_repository
+
+        entity_resolution_repository.init_tables()
+    except Exception as exc:
+        print(f"[ICP] 实体归一与关系断言表初始化警告: {exc}")
+        if config.STRICT_DEPENDENCIES:
+            raise RuntimeError("ICP 实体归一与关系断言表初始化失败") from exc
 
     try:
         from backend.icp.document_types import normalize_document_types
         normalize_document_types()
     except Exception as exc:
         print(f"[ICP] 七类文档注册表规范化警告: {exc}")
+        if config.STRICT_DEPENDENCIES:
+            raise RuntimeError("ICP 七类文档注册表规范化失败") from exc
 
     try:
         from backend.agent.icp_defaults import ensure_icp_diagnosis_agent
-        ensure_icp_diagnosis_agent()
+        agent_id = ensure_icp_diagnosis_agent()
+        if config.STRICT_DEPENDENCIES and not agent_id:
+            raise RuntimeError("默认 ICP 故障诊断智能体未完成初始化")
     except Exception as exc:
         print(f"[ICP] 默认诊断智能体初始化警告: {exc}")
+        if config.STRICT_DEPENDENCIES:
+            raise
 
     # 恢复因容器重启而卡住的文档状态。
     try:
@@ -117,6 +211,9 @@ def _startup():
                     )
                 if orphans:
                     postgres_client.conn.commit()
+            # SELECT-only recovery passes also start a transaction.  Close it
+            # so startup never leaves an idle transaction holding table locks.
+            postgres_client.conn.commit()
     except Exception as exc:
         print(f"[Recovery] 文档状态恢复失败: {exc}")
         try:
@@ -135,6 +232,19 @@ os.makedirs(image_dir, exist_ok=True)
 app.mount(config.IMAGE_URL_PREFIX, StaticFiles(directory=image_dir), name="images")
 
 DIST_INDEX = os.path.join(static_dir, "dist", "index.html")
+
+
+@app.get("/livez", tags=["health"])
+async def liveness():
+    return {"status": "ok"}
+
+
+@app.get("/readyz", tags=["health"])
+async def readiness():
+    checks = _dependency_status()
+    ready = all(result["ok"] for result in checks.values())
+    payload = {"status": "ready" if ready else "not_ready", "checks": checks}
+    return JSONResponse(status_code=200 if ready else 503, content=payload)
 
 
 def _page_index() -> str:

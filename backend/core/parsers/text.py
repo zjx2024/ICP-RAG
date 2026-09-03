@@ -1,7 +1,7 @@
-"""文本类解析器（fault_history / function_locator）：按标题/编号分块 → 抽取业务标识 → embedding 写 ES。
+"""文本类解析器（fault_history / function_locator）：按标题/编号分块 → 抽取业务标识 → embedding 写检索投影。
 
 说明：ICP 文本类文档（icp_documents）不落入 documents 表，document_chunks 存在
-documents 外键约束，故文本分块以 ES 为主存储（原文结构由 /original 按文件重建）。
+documents 外键约束，故文本分块以检索投影保存（原文结构由 /original 按文件重建）。
 """
 import logging
 import os
@@ -12,7 +12,7 @@ from typing import Dict, List
 from backend.core.embedding import embedding_service
 from backend.core.parsers.base import Parser, ParseContext, ParseResult
 from backend.core.parsers.registry import ParserRegistry
-from backend.storage.es_client import es_client
+from backend.storage.search_store import search_store
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,6 @@ class TextParser(Parser):
         if not blocks:
             raise ValueError("未解析到任何文本分块")
 
-        index_name = es_client.get_main_index_name("default")
         chunks = 0
         vectors = 0
         total = len(blocks)
@@ -67,14 +66,13 @@ class TextParser(Parser):
 
             try:
                 vector = embedding_service.embed(text_content)
-                doc = {
+                doc = ctx.enrich({
                     "chunk_id": chunk_id,
                     "doc_id": ctx.doc_id,
                     "doc_name": ctx.file_name,
                     "title": title,
                     "section": block_key,
                     "content": text_content,
-                    "content_vector": vector,
                     "kb_id": ctx.kb_id or ctx.doc_type,
                     "content_type": "text",
                     "doc_type_kwd": ctx.doc_type,
@@ -83,8 +81,8 @@ class TextParser(Parser):
                     "available_int": 1,
                     "created_at": datetime.now().isoformat(),
                     "updated_at": datetime.now().isoformat(),
-                }
-                es_client.client.index(index=index_name, id=chunk_id, body=doc)
+                })
+                search_store.upsert(chunk_id, doc, vector=vector)
                 chunks += 1
                 vectors += 1
             except Exception as e:
@@ -105,7 +103,9 @@ class TextParser(Parser):
         ext = os.path.splitext(file_path)[1].lower()
         if ext == ".docx":
             from backend.core.docx_parser import DocumentParser
-            parser = DocumentParser(file_path, ctx.doc_id)
+            parser = DocumentParser(
+                file_path, ctx.doc_id, source_name=ctx.file_name
+            )
             result = parser.process()
             if "error" in result:
                 raise ValueError(result["error"])

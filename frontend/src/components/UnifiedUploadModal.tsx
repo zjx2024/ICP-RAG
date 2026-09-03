@@ -14,6 +14,8 @@ interface UnifiedUploadModalProps {
   open: boolean;
   types: DocTypeInfo[];
   initialDocType?: string;
+  /** 类型页复用上传窗口时固定当前类型，避免文档被归入其他知识域。 */
+  lockedDocType?: string;
   onClose: () => void;
   onUploaded: (docType: string, count: number) => void | Promise<void>;
 }
@@ -22,6 +24,7 @@ export default function UnifiedUploadModal({
   open,
   types,
   initialDocType,
+  lockedDocType,
   onClose,
   onUploaded,
 }: UnifiedUploadModalProps) {
@@ -31,12 +34,13 @@ export default function UnifiedUploadModal({
 
   useEffect(() => {
     if (!open) return;
-    const preferred = initialDocType && types.some((item) => item.doc_type === initialDocType)
-      ? initialDocType
-      : types[0]?.doc_type || '';
+    const preferred = lockedDocType
+      || (initialDocType && types.some((item) => item.doc_type === initialDocType)
+        ? initialDocType
+        : types[0]?.doc_type || '');
     setDocType(preferred);
     setFileList([]);
-  }, [open, initialDocType, types]);
+  }, [open, initialDocType, lockedDocType, types]);
 
   const selectedType = useMemo(
     () => types.find((item) => item.doc_type === docType),
@@ -81,7 +85,7 @@ export default function UnifiedUploadModal({
       title={
         <Space>
           <CloudUploadOutlined />
-          <span>统一上传七类文档</span>
+          <span>{lockedDocType ? `上传${selectedType?.name || '文档'}` : '统一上传七类文档'}</span>
         </Space>
       }
       open={open}
@@ -109,6 +113,7 @@ export default function UnifiedUploadModal({
           <Select
             value={docType || undefined}
             placeholder="请选择 HMC、FTA、RBD 等文档类型"
+            disabled={Boolean(lockedDocType)}
             style={{ width: '100%', marginTop: 8 }}
             options={types.map((item) => ({
               value: item.doc_type,

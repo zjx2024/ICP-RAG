@@ -1,19 +1,24 @@
 """会话管理 API。"""
 import logging
+import re
 from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from backend.agent.db import agent_db
+from backend.agent.session_titles import (
+    AUTO_TITLE_MAX_LENGTH,
+    DEFAULT_SESSION_TITLE,
+    make_session_title as _make_session_title,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-
 class SessionCreate(BaseModel):
     agent_id: str
     user_id: str = "default"
-    title: str = "新会话"
+    title: str = DEFAULT_SESSION_TITLE
 
 
 class SessionUpdate(BaseModel):
@@ -54,6 +59,13 @@ def update_session(session_id: str, body: SessionUpdate):
     data = body.dict(exclude_none=True)
     if not data:
         raise HTTPException(400, "无更新字段")
+    if "title" in data:
+        title = re.sub(r"\s+", " ", str(data["title"] or "")).strip()
+        if not title:
+            raise HTTPException(400, "会话名称不能为空")
+        if len(title) > 64:
+            raise HTTPException(400, "会话名称不能超过 64 个字符")
+        data["title"] = title
     session = agent_db.update_session(session_id, **data)
     if not session:
         raise HTTPException(404, "会话不存在")
@@ -71,12 +83,16 @@ def delete_session(session_id: str):
 
 @router.post("/session/{session_id}/title")
 def generate_title(session_id: str):
-    """根据首条消息生成会话标题"""
+    """根据首条用户消息生成一次性会话标题。"""
     session = agent_db.get_session(session_id)
     if not session:
         raise HTTPException(404, "会话不存在")
 
-    messages = agent_db.list_messages(session_id, limit=2)
+    # 已自动生成或手动修改的标题不再进入生成流程。
+    if session.get("title_origin") not in (None, "default"):
+        return session
+
+    messages = agent_db.list_messages(session_id, limit=10)
     if not messages:
         return session
 
@@ -84,7 +100,8 @@ def generate_title(session_id: str):
     if not first_user:
         return session
 
-    content = (first_user.get("content") or "")[:50]
-    title = content if content else "新会话"
-    updated = agent_db.update_session(session_id, title=title)
+    title = _make_session_title(first_user.get("content") or "")
+    if not title:
+        return session
+    updated = agent_db.generate_session_title_once(session_id, title)
     return updated or session

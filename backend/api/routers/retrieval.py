@@ -17,17 +17,17 @@ async def get_retrieval_modes():
             }, 
             {
                 "mode": RetrievalMode.ES_VECTOR,
-                "name": "Elasticsearch向量检索",
+                "name": "OpenSearch向量检索",
                 "description": "使用语义向量进行相似度匹配，适用于语义理解和模糊查询"
             },
             {
                 "mode": RetrievalMode.ES_KEYWORD,
-                "name": "Elasticsearch关键词检索",
+                "name": "OpenSearch关键词检索",
                 "description": "使用BM25算法进行关键词匹配，适用于精确匹配场景"
             },
             {
                 "mode": RetrievalMode.ES_HYBRID,
-                "name": "Elasticsearch混合检索",
+                "name": "OpenSearch混合检索",
                 "description": "结合关键词检索和向量检索，可调节权重比例"
             },
             {
@@ -53,7 +53,7 @@ async def get_retrieval_modes():
             {
                 "mode": RetrievalMode.HYBRID_ALL,
                 "name": "全源融合检索",
-                "description": "融合PostgreSQL、ES向量、ES关键词三种检索结果，使用RRF算法重新排序"
+                "description": "融合PostgreSQL、OpenSearch向量、OpenSearch关键词三种检索结果，使用RRF算法重新排序"
             },
             {
                 "mode": RetrievalMode.COMMUNITY_REPORT,

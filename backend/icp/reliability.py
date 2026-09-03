@@ -123,6 +123,55 @@ def calculate_fta(graph: Dict[str, Any], mission_time: Optional[float] = None) -
     cut_cache: Dict[str, List[frozenset[str]]] = {}
     missing: Set[str] = set()
 
+    def reachable_nodes() -> Set[str]:
+        reachable: Set[str] = set()
+        pending = [root]
+        while pending:
+            node_id = pending.pop()
+            if node_id in reachable:
+                continue
+            reachable.add(node_id)
+            pending.extend(
+                str(edge.get("target"))
+                for edge in children.get(node_id, [])
+                if str(edge.get("target") or "") in vertices
+            )
+        return reachable
+
+    def dependency_conflicts() -> List[str]:
+        """Detect shared events that make recursive subtree products invalid.
+
+        The recursive probability formula is exact only when sibling subtrees do
+        not share a basic/intermediate event.  Real FTA diagrams may reconverge on
+        the same vertex, or repeat the same named basic event as separate visual
+        nodes.  Until a bounded exact Boolean solver is available, those models
+        must fail closed for numeric probability while retaining their topology
+        and minimal cut sets.
+        """
+        reachable = reachable_nodes()
+        incoming: Dict[str, int] = {node_id: 0 for node_id in reachable}
+        leaves_by_name: Dict[str, List[str]] = {}
+        for source in reachable:
+            for edge in children.get(source, []):
+                target = str(edge.get("target") or "")
+                if target in reachable:
+                    incoming[target] = incoming.get(target, 0) + 1
+            if not child_ids(source):
+                event_name = (_name(vertices[source]) or source).strip().casefold()
+                leaves_by_name.setdefault(event_name, []).append(source)
+
+        conflicts = [
+            f"共享节点:{_name(vertices[node_id]) or node_id}"
+            for node_id, count in incoming.items()
+            if node_id != root and count > 1
+        ]
+        conflicts.extend(
+            f"重复基本事件:{_name(vertices[node_ids[0]]) or name}"
+            for name, node_ids in leaves_by_name.items()
+            if name and len(node_ids) > 1
+        )
+        return list(dict.fromkeys(conflicts))
+
     def child_ids(node_id: str) -> List[str]:
         return [str(edge.get("target")) for edge in children.get(node_id, [])]
 
@@ -190,7 +239,23 @@ def calculate_fta(graph: Dict[str, Any], mission_time: Optional[float] = None) -
         return probability_cache[node_id]
 
     minimal_cut_sets = [sorted(item) for item in cuts(root)]
-    top_probability = probability(root)
+    shared_dependencies = dependency_conflicts()
+    if shared_dependencies:
+        # Do not publish a numerically plausible but mathematically invalid value.
+        # Still inspect leaves so missing input parameters remain visible.
+        for node_id in reachable_nodes():
+            if child_ids(node_id):
+                continue
+            if _node_probability(vertices[node_id], mission_time) is None:
+                missing.add(_name(vertices[node_id]) or node_id)
+        top_probability = None
+        probability_block_reason = (
+            "FTA 存在共享/重复基本事件，递归子树独立公式不适用；"
+            "在精确布尔概率求解前禁止给出顶事件概率"
+        )
+    else:
+        top_probability = probability(root)
+        probability_block_reason = ""
     return {
         "model": "FTA",
         "root_id": root,
@@ -200,6 +265,8 @@ def calculate_fta(graph: Dict[str, Any], mission_time: Optional[float] = None) -
         "top_event_probability": top_probability,
         "mission_time": mission_time,
         "missing_probability_nodes": sorted(missing),
+        "shared_dependency_nodes": shared_dependencies,
+        "probability_block_reason": probability_block_reason,
         "assumption": "基本事件相互独立；AND/OR/XOR 按标准布尔逻辑计算",
     }
 
@@ -222,11 +289,17 @@ def _rbd_terminals(vertices: Dict[str, Dict[str, Any]], graph: Dict[str, Any]) -
     return start, end
 
 
-def _simple_paths(children: Dict[str, List[Dict[str, Any]]], start: str, end: str, max_paths: int = 12) -> List[List[str]]:
+def _simple_paths(
+    children: Dict[str, List[Dict[str, Any]]],
+    start: str,
+    end: str,
+    max_paths: int = 12,
+) -> Tuple[List[List[str]], bool]:
     paths: List[List[str]] = []
+    search_limit = max(max_paths, 1) + 1
 
     def walk(node_id: str, path: List[str], visited: Set[str]) -> None:
-        if len(paths) >= max_paths:
+        if len(paths) >= search_limit:
             return
         if node_id == end:
             paths.append(list(path))
@@ -238,14 +311,15 @@ def _simple_paths(children: Dict[str, List[Dict[str, Any]]], start: str, end: st
             walk(target, path + [target], visited | {target})
 
     walk(start, [start], {start})
-    return paths
+    truncated = len(paths) > max_paths
+    return paths[:max_paths], truncated
 
 
 def calculate_rbd(graph: Dict[str, Any], mission_time: Optional[float] = None, max_paths: int = 12) -> Dict[str, Any]:
     """枚举成功路径并使用容斥原理计算 RBD 系统可靠度。"""
     vertices, children = _graph(graph)
     start, end = _rbd_terminals(vertices, graph)
-    paths = _simple_paths(children, start, end, max_paths=max_paths)
+    paths, path_limit_reached = _simple_paths(children, start, end, max_paths=max_paths)
     if not paths:
         raise ReliabilityModelError("START 到 END 之间不存在成功路径")
 
@@ -269,7 +343,7 @@ def calculate_rbd(graph: Dict[str, Any], mission_time: Optional[float] = None, m
                 block_reliability[node_id] = value
 
     system_reliability = None
-    if not missing:
+    if not missing and not path_limit_reached:
         result = 0.0
         # 路径成功事件的并集：对路径集合做容斥，交集对应所有涉及块同时成功。
         for subset_size in range(1, len(path_blocks) + 1):
@@ -290,11 +364,17 @@ def calculate_rbd(graph: Dict[str, Any], mission_time: Optional[float] = None, m
         "end_id": end,
         "success_paths": named_paths,
         "success_path_count": len(paths),
+        "success_path_count_complete": not path_limit_reached,
         "system_reliability": system_reliability,
         "system_unreliability": None if system_reliability is None else 1.0 - system_reliability,
         "mission_time": mission_time,
         "missing_reliability_blocks": sorted(set(missing)),
         "path_limit": max_paths,
-        "path_limit_reached": len(paths) >= max_paths,
+        "path_limit_reached": path_limit_reached,
+        "calculation_limit_reason": (
+            f"成功路径超过安全枚举上限 {max_paths}，禁止基于截断路径给出系统可靠度"
+            if path_limit_reached
+            else ""
+        ),
         "assumption": "功能块相互独立；成功路径并集使用容斥原理计算",
     }

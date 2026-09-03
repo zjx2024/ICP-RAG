@@ -4,6 +4,7 @@ import type {
   ICPDocument,
   ICPParseResult,
   ICPOriginalResponse,
+  ICPEvidencePreview,
   ICPVectorResponse,
   ICPRowsResponse,
   ICPFaultTree,
@@ -48,6 +49,14 @@ export const fetchOriginal = (
   `/document-types/${docType}/documents/${docId}/original${buildQuery({ ...params })}`,
 );
 
+export const fetchEvidencePreview = (
+  docType: string,
+  docId: string,
+  params?: { source_ref?: string; record_id?: string; title?: string },
+) => request<ICPEvidencePreview>(
+  `/document-types/${docType}/documents/${docId}/evidence-preview${buildQuery({ ...(params || {}) })}`,
+);
+
 export const fetchVectors = (
   docType: string,
   docId: string,
@@ -89,6 +98,40 @@ export const fetchDomainRows = (
 export const fetchFaultTrees = (docType: string, docId: string) =>
   request<ICPFaultTree[]>(`/document-types/${docType}/documents/${docId}/fault-trees`);
 
+export const updateDiagramRevision = (
+  docType: string,
+  docId: string,
+  revisionId: string,
+  canonicalGraph: ICPFaultTree['graph'],
+  lockVersion: number,
+) => request<Record<string, unknown>>(
+  `/document-types/${docType}/documents/${docId}/diagram-revisions/${revisionId}`,
+  {
+    method: 'PATCH',
+    body: JSON.stringify({ canonical_graph: canonicalGraph, lock_version: lockVersion }),
+  },
+);
+
+export const confirmDiagramRevision = (
+  docType: string,
+  docId: string,
+  revisionId: string,
+  data: { reviewed_by: string; review_note?: string; lock_version?: number },
+) => request<Record<string, unknown>>(
+  `/document-types/${docType}/documents/${docId}/diagram-revisions/${revisionId}/confirm`,
+  { method: 'POST', body: JSON.stringify(data) },
+);
+
+export const rejectDiagramRevision = (
+  docType: string,
+  docId: string,
+  revisionId: string,
+  data: { reviewed_by: string; review_note: string; lock_version?: number },
+) => request<Record<string, unknown>>(
+  `/document-types/${docType}/documents/${docId}/diagram-revisions/${revisionId}/reject`,
+  { method: 'POST', body: JSON.stringify(data) },
+);
+
 export const fetchIcpGraphData = (docType: string, docId: string) =>
   request<{
     doc_id: string;
@@ -97,13 +140,25 @@ export const fetchIcpGraphData = (docType: string, docId: string) =>
     edges: Array<Record<string, unknown>>;
     total_vertices: number;
     total_edges: number;
+    structured_vertices?: number;
+    structured_edges?: number;
+    diagram_validation?: Array<{
+      revision_id?: string;
+      validation_status?: string;
+      validation_tier?: string;
+      validation_method?: string;
+    }>;
     error?: string;
   }>(`/document-types/${docType}/documents/${docId}/graph-data`);
 
-export const generateIcpKg = (docType: string, docId: string, modelId?: string | null) =>
-  request<{ task_id: string; doc_id: string; doc_type: string; status: string }>(
+export const generateIcpKg = (docType: string, docId: string, revisionIds?: string[]) =>
+  request<{ task_id: string; doc_id: string; doc_type: string; revision_ids?: string[]; status: string }>(
     `/document-types/${docType}/documents/${docId}/generate_kg`,
-    { method: 'POST', body: JSON.stringify({ model_id: modelId ?? null }) },
+    {
+      method: 'POST',
+      // 省略 revision_ids 表示由后端重试全部未完成项；显式空数组会被 API 视为错误输入。
+      body: JSON.stringify(revisionIds?.length ? { revision_ids: revisionIds } : {}),
+    },
   );
 
 export const fetchDiagnosisReadiness = () => request<{

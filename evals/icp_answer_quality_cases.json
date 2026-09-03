@@ -1,0 +1,144 @@
+{
+  "name": "ICP 智能体回答完整性回归集",
+  "version": "2026-08-28",
+  "description": "使用非原文同义表达，按最终实际引用而不是候选召回量，验证回答是否形成原因、影响、处置和历史闭环。",
+  "defaults": {
+    "assertions": {
+      "min_used_evidence": 1,
+      "min_citations": 1,
+      "required_event_types": ["plan", "tool_call", "answer", "done"],
+      "answer_not_contains": [
+        "待复核（未绑定已批准直接证据）",
+        "证据边界：部分说明未附可直接核验的来源",
+        "当前已批准证据不足以支持可直接陈述的事实结论",
+        "\"record_id\"",
+        "\"answer_fields\"",
+        "\"source_summary\"",
+        "occurred_at=",
+        "verification_result=",
+        "final_solution=",
+        "occurred_at",
+        "verification_result",
+        "final_solution",
+        "fault_cause",
+        "root_cause",
+        "local_impact",
+        "final_impact",
+        "compensation_action",
+        "detection_method",
+        "maintenance_action",
+        "diagnosis_method",
+        "**Cause",
+        "**Impact",
+        "故障历史证据｜记录"
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "short-external-data-cause",
+      "question": "信息没能送到外接设备，原因可能在哪？",
+      "assertions": {
+        "required_answer_facets": ["cause", "impact", "resolution"],
+        "any_used_doc_types": ["fta", "fmeca"],
+        "answer_not_contains": ["BCM", "启动时序超时", "外部显示器"]
+      }
+    },
+    {
+      "id": "detailed-external-data-cause",
+      "question": "内部已经产生业务报文，但接在外面的设备始终收不到有效内容，可能经过哪些环节出错？",
+      "assertions": {
+        "required_answer_facets": ["cause", "impact", "resolution"],
+        "any_used_doc_types": ["fta", "fmeca"],
+        "any_used_record_ids": ["FTA-SYN-003", "FM-SYN-040", "FM-SYN-041", "FM-SYN-042", "HIS-SYN-013"],
+        "forbidden_used_record_ids": ["HIS-SYN-011", "HIS-SYN-014", "FM-SYN-049", "MFL-SYN-049"],
+        "answer_not_contains": ["BCM", "启动时序超时", "外部显示器", "外部显示接口", "显示输出", "OIM", "### 故障模式的原因、影响与处理"],
+        "answer_regex": ["候选|排查方向|不表示.*同时发生"]
+      }
+    },
+    {
+      "id": "psua-hot-dropout-complete",
+      "question": "设备在高负荷下热起来以后，主供电分支突然离线，备用分支接管；冷却后主路又可工作。更像哪类故障？",
+      "assertions": {
+        "required_answer_facets": ["cause", "impact", "resolution", "history_time", "history_action", "history_result"],
+        "required_used_doc_types": ["fmeca", "fault_history"],
+        "required_used_record_ids": ["FM-SYN-006", "HIS-SYN-002"],
+        "forbidden_used_record_ids": ["FM-SYN-015"],
+        "answer_regex": ["热|焊|间歇"]
+      }
+    },
+    {
+      "id": "network-burst-loss-complete",
+      "question": "网络一忙就有成批报文到不了，业务量降下来又恢复，优先怀疑哪里？",
+      "assertions": {
+        "required_answer_facets": ["cause", "impact", "resolution", "history_time", "history_action", "history_result"],
+        "required_used_doc_types": ["fmeca", "fault_history"],
+        "required_used_record_ids": ["FM-SYN-038", "HIS-SYN-013"],
+        "forbidden_used_record_ids": ["FM-SYN-039", "MFL-SYN-039"],
+        "answer_not_contains": ["已经确认网关硬件损坏"],
+        "answer_regex": ["队列|缓存|拥塞", "验证结果|丢包率"]
+      }
+    },
+    {
+      "id": "filter-degradation-impact-complete",
+      "question": "输入端的滤波元件性能下降后，为什么可能不是某一块单独报错，而是多处零星异常？",
+      "assertions": {
+        "required_answer_facets": ["cause", "impact", "resolution"],
+        "required_used_doc_types": ["fmeca"],
+        "required_used_record_ids": ["FM-SYN-002"],
+        "forbidden_used_record_ids": ["FM-SYN-011", "FM-SYN-024"],
+        "answer_regex": ["纹波|干扰|滤波"],
+        "answer_not_contains": ["保护误跳闸", "存储校验错", "复位信号卡滞"]
+      }
+    },
+    {
+      "id": "temperature-fullscale-complete",
+      "question": "某个温度采集值固定成满量程码，其余测点合理，现场怎样区分采集输入异常和传感器线路问题？",
+      "assertions": {
+        "required_answer_facets": ["cause", "resolution", "history_time", "history_action", "history_result"],
+        "required_used_doc_types": ["fault_history"],
+        "required_used_record_ids": ["HIS-SYN-020", "FM-SYN-059", "MFL-SYN-059"],
+        "answer_regex": ["开路|满量程|4095|0xFFF"]
+      }
+    },
+    {
+      "id": "history-a-bus-complete",
+      "question": "以前有没有碰到A总线完全收不到、B总线照常的案例？最后是更换板卡还是处理线束？",
+      "assertions": {
+        "required_answer_facets": ["cause", "resolution", "history_time", "history_action", "history_result"],
+        "required_used_doc_types": ["fault_history"],
+        "required_used_record_ids": ["HIS-SYN-011"],
+        "answer_regex": ["连接|线束|接地"],
+        "answer_not_contains": ["更换 BCA 板卡"]
+      }
+    },
+    {
+      "id": "architecture-external-flow",
+      "question": "外部总线送入的信息由哪些单元接收，谁负责格式适配，之后交给哪个处理子系统？",
+      "assertions": {
+        "required_used_doc_types": ["function_locator"],
+        "required_used_record_ids": ["SUB-IFC", "MOD-IFC-BCA", "MOD-IFC-BCB"],
+        "any_used_record_ids": ["FUNC-330", "MOD-IFC-PCU"],
+        "answer_regex": ["IFC", "GPP", "协议|格式|标准化"]
+      }
+    },
+    {
+      "id": "fta-restart-cutsets",
+      "question": "把“工作期间机器自己反复重新开机”作为最终失效，最少哪些底层故障单独或组合出现就足以触发？",
+      "assertions": {
+        "required_tools": ["fta_analyzer"],
+        "required_used_doc_types": ["fta"],
+        "answer_regex": ["9|九", "最小割集", "温控闭环失效.*转速反馈丢失"]
+      }
+    },
+    {
+      "id": "rbd-ten-hour-comparison",
+      "question": "按文档中的失效率重新计算十小时任务：能源保障、计算业务、对外数据交换、屏显链路中，哪条成功概率最低？",
+      "assertions": {
+        "required_tools": ["rbd_calculator"],
+        "required_used_doc_types": ["rbd"],
+        "answer_regex": ["0\\.99951007", "0\\.99929014", "0\\.99910032", "0\\.99888052", "显示|屏显"]
+      }
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 """DeletionLogger: 文档删除过程的结构化日志记录器。
 
-把删除操作的每一步（删边、删顶点、媒体、PG 分块、日志、ES、MinIO 文件、PG 记录）
+把删除操作的每一步（删边、删顶点、媒体、PG 分块、日志、检索投影、ArtifactStore 文件、PG 记录）
 都以结构化的方式写入 PostgreSQL `deletion_logs` 表，供前端在"日志管理"中查看。
 """
 import uuid
@@ -25,6 +25,8 @@ class DeletionLogger:
     task_id 用于把同一个删除任务的所有日志关联起来。
     """
 
+    # ``es`` is retained only as a persisted legacy step identifier so old
+    # deletion logs and resumable tasks remain readable after OpenSearch migration.
     STEPS = [
         "edges",
         "vertices",

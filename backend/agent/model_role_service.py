@@ -45,29 +45,60 @@ class AgentModelRoleService:
         # 2. 回退到现有默认 LLM（只读调用，不改原方法）
         return model_config_service.get_llm_model()
 
-    def get_rerank_model(self, agent_id: str) -> Optional[Dict]:
-        """获取 Agent 绑定的 rerank 模型。
-
-        与 LLM 角色不同：rerank 是"可选项"，未配置时返回 None（不使用重排序），
-        不回退到默认模型。仅当 agent_models 表显式绑定了 rerank 模型时启用。
-        """
-        try:
-            model_id = agent_db.get_model_id_by_role(agent_id, "rerank")
-        except Exception as e:
-            logger.warning(f"查询 agent_models rerank 失败 (agent={agent_id}): {e}")
-            return None
-
-        if not model_id:
-            return None
-
-        try:
-            model = postgres_client.get_model(model_id)
-            if model and model.get("is_active", True) and model.get("model_type") == "rerank":
-                return model
-            logger.warning(f"agent_models 引用的 rerank 模型 {model_id} 不存在、未激活或非 rerank 类型")
-        except Exception as e:
-            logger.warning(f"只读引用 llm_models rerank 失败 (model_id={model_id}): {e}")
+    @staticmethod
+    def _valid_rerank_model(model: Optional[Dict]) -> Optional[Dict]:
+        if model and model.get("is_active", True) and model.get("model_type") == "rerank":
+            return model
         return None
+
+    def resolve_rerank_model(
+        self,
+        agent_id: str = "",
+        rerank_model_id: str = "",
+    ) -> tuple[Optional[Dict], str]:
+        """Resolve rerank model in a stable, auditable order.
+
+        Priority is an explicitly requested model, the Agent role binding, then
+        PostgreSQL's active default rerank model.  The source string is returned
+        with the model so retrieval diagnostics can show which fallback won.
+        """
+        if rerank_model_id:
+            try:
+                model = self._valid_rerank_model(postgres_client.get_model(rerank_model_id))
+                if model:
+                    return model, "explicit"
+                logger.warning("指定 rerank 模型 %s 不存在、未激活或类型错误", rerank_model_id)
+            except Exception as e:
+                logger.warning("读取指定 rerank 模型失败 (model_id=%s): %s", rerank_model_id, e)
+
+        model_id = None
+        if agent_id:
+            try:
+                model_id = agent_db.get_model_id_by_role(agent_id, "rerank")
+            except Exception as e:
+                logger.warning(f"查询 agent_models rerank 失败 (agent={agent_id}): {e}")
+
+        if model_id:
+            try:
+                model = self._valid_rerank_model(postgres_client.get_model(model_id))
+                if model:
+                    return model, "agent_binding"
+                logger.warning(f"agent_models 引用的 rerank 模型 {model_id} 不存在、未激活或非 rerank 类型")
+            except Exception as e:
+                logger.warning(f"只读引用 llm_models rerank 失败 (model_id={model_id}): {e}")
+
+        try:
+            model = self._valid_rerank_model(postgres_client.get_default_model_by_type("rerank"))
+            if model:
+                return model, "postgres_default"
+        except Exception as e:
+            logger.warning("读取 PostgreSQL 默认 rerank 模型失败: %s", e)
+        return None, ""
+
+    def get_rerank_model(self, agent_id: str = "") -> Optional[Dict]:
+        """获取 Agent 绑定模型；未绑定时回退 PostgreSQL 默认 rerank。"""
+        model, _source = self.resolve_rerank_model(agent_id=agent_id)
+        return model
 
     @staticmethod
     def apply_agent_llm_params(state: Dict, model: Optional[Dict]) -> Optional[Dict]:

@@ -4,16 +4,29 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class Config:
-    ES_HOST = os.getenv("ES_HOST", "localhost")
-    ES_PORT = int(os.getenv("ES_PORT", 9200))
-    ES_USERNAME = os.getenv("ES_USERNAME", "")
-    ES_PASSWORD = os.getenv("ES_PASSWORD", "")
-    ES_SCHEME = os.getenv("ES_SCHEME", "http")
+    # OpenSearch is the single search projection: BM25/full-text and the
+    # 1024-dimensional BGE-M3 vector live in the same versioned index.
+    OPENSEARCH_HOST = os.getenv("OPENSEARCH_HOST", "localhost")
+    OPENSEARCH_PORT = int(os.getenv("OPENSEARCH_PORT", 9200))
+    OPENSEARCH_USERNAME = os.getenv("OPENSEARCH_USERNAME", "")
+    OPENSEARCH_PASSWORD = os.getenv("OPENSEARCH_PASSWORD", "")
+    OPENSEARCH_SCHEME = os.getenv("OPENSEARCH_SCHEME", "http")
+    OPENSEARCH_VERIFY_CERTS = os.getenv("OPENSEARCH_VERIFY_CERTS", "false").lower() == "true"
+    OPENSEARCH_INDEX_ALIAS = os.getenv("OPENSEARCH_INDEX_ALIAS", "knowledge_graph_default")
+    OPENSEARCH_INDEX_VERSION = os.getenv("OPENSEARCH_INDEX_VERSION", "v1")
+    OPENSEARCH_REQUEST_TIMEOUT = int(os.getenv("OPENSEARCH_REQUEST_TIMEOUT", 60))
+    # Compose enables this so production never continues on the legacy in-memory
+    # PostgreSQL/HugeGraph fallbacks.  Unit tests may leave it disabled.
+    STRICT_DEPENDENCIES = os.getenv("STRICT_DEPENDENCIES", "false").lower() == "true"
     
-    MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
-    MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "admin")
-    MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "password")
-    MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"
+    # 原始文档、工程图和解析产物统一通过 ArtifactStore 访问。业务代码只保存
+    # storage_key，不依赖物理目录；当前实现使用本地持久化文件系统。
+    ARTIFACT_BACKEND = os.getenv("ARTIFACT_BACKEND", "local")
+    ARTIFACT_STORAGE_DIR = os.getenv("ARTIFACT_STORAGE_DIR", os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "volumes", "artifacts"
+    ))
+    ARTIFACT_TRASH_ENABLED = os.getenv("ARTIFACT_TRASH_ENABLED", "true").lower() == "true"
     
     POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
     POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", 5432))
@@ -45,9 +58,10 @@ class Config:
     SERVER_PORT = int(os.getenv("SERVER_PORT", 9999))
     SERVER_IP = os.getenv("SERVER_IP", "").strip()
     
-    IMAGE_STORAGE_DIR = os.getenv("IMAGE_STORAGE_DIR", os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "storage", "images"
-    ))
+    # 仅公开 ArtifactStore 的 images 命名空间，绝不暴露原始文档目录。
+    IMAGE_STORAGE_DIR = os.getenv(
+        "IMAGE_STORAGE_DIR", os.path.join(ARTIFACT_STORAGE_DIR, "images")
+    )
     IMAGE_URL_PREFIX = os.getenv("IMAGE_URL_PREFIX", "/images")
 
 config = Config()

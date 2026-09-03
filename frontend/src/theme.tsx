@@ -8,10 +8,13 @@ import zhCN from 'antd/locale/zh_CN';
 // 1. 语义 token：颜色、圆角、字体
 export const glassToken = {
   colorPrimary: '#1a1a1a',
-  colorInfo: '#1a1a1a',
+  // 信息提示使用独立的蓝色语义色；若沿用黑色主色，Ant Alert 会派生出
+  // 深灰信息背景，导致诊断状态与上传说明等阅读卡片看起来像异常遮罩。
+  colorInfo: '#1677ff',
   colorBgLayout: 'transparent', // 布局背景交给 body 渐变
   colorBgContainer: 'rgba(255,255,255,0.60)',
-  colorBgElevated: 'rgba(255,255,255,0.80)',
+  // 抽屉、弹窗等承载阅读内容的浮层必须完全不透明，避免底层页面文字穿透。
+  colorBgElevated: '#ffffff',
   colorBorder: 'rgba(255,255,255,0.65)',
   colorBorderSecondary: 'rgba(255,255,255,0.65)',
   borderRadius: 12,
@@ -32,8 +35,8 @@ export const glassComponents = {
     boxShadow: '0 8px 32px rgba(0,0,0,0.08)',
     borderRadiusLG: 16,
   },
-  Modal: { contentBg: 'rgba(255,255,255,0.72)', borderRadiusLG: 16, headerBg: 'transparent' },
-  Drawer: { colorBgElevated: 'rgba(255,255,255,0.72)' },
+  Modal: { contentBg: '#ffffff', borderRadiusLG: 16, headerBg: '#ffffff' },
+  Drawer: { colorBgElevated: '#ffffff' },
   Table: {
     headerBg: 'rgba(255,255,255,0.50)',
     rowHoverBg: 'rgba(0,0,0,0.04)',

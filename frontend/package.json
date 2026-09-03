@@ -4,15 +4,17 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "dev": "vite --config vite.config.ts",
+    "build": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json && vite --config vite.config.ts build",
+    "preview": "vite --config vite.config.ts preview"
   },
   "dependencies": {
     "@ant-design/icons": "^5.3.7",
     "@antv/g6": "^4.8.24",
     "antd": "^5.21.6",
     "dayjs": "^1.11.13",
+    "dompurify": "^3.4.14",
+    "marked": "^18.0.11",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.28.0",

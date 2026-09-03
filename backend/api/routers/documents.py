@@ -16,14 +16,20 @@ from backend.core.embedding import embedding_service
 from backend.core.llm_service import llm_service
 from backend.core.task_manager import task_manager
 from backend.graphrag.graph_extractor import GraphExtractor, doc_id_to_str
-from backend.storage.es_client import es_client
-from backend.storage.minio_client import minio_client
+from backend.storage.search_store import search_store
+from backend.storage.artifact_store import (
+    artifact_store,
+    safe_original_name,
+    source_artifact_key,
+    storage_key_from,
+)
 from backend.storage.postgres_client import postgres_client
 from backend.storage.hugegraph_client import hugegraph_client
 from backend.storage.deletion_logger import DeletionLogger
 from backend.api.routers._deletion_helpers import (
     step_index, parse_json_parts, handle_community_reports,
 )
+from backend.storage.registration import confirm_registration_or_compensate
 
 from backend.services.model_service import (
     resolve_llm_model_config, require_embedding_model_configured,
@@ -37,6 +43,50 @@ logger = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/knowledge-bases", tags=["knowledge-bases"])
+
+
+def _hit_document(hit):
+    """兼容 SearchHit 对象与测试 double 的投影文档取值。"""
+    if hasattr(hit, "document"):
+        return hit.document
+    if isinstance(hit, dict):
+        return hit.get("document") or hit.get("_source") or hit
+    return {}
+
+
+def _hit_id(hit):
+    if hasattr(hit, "id"):
+        return hit.id
+    if isinstance(hit, dict):
+        return hit.get("id") or hit.get("_id") or (_hit_document(hit).get("chunk_id"))
+    return None
+
+
+def _all_projection_hits(filters, batch_size=1000):
+    """分页读取检索投影，避免路由层依赖 OpenSearch 原始 DSL。"""
+    hits = []
+    offset = 0
+    while True:
+        batch = search_store.query(filters=filters, limit=batch_size, offset=offset)
+        hits.extend(batch)
+        if len(batch) < batch_size:
+            return hits
+        offset += len(batch)
+
+
+def _delete_non_report_projection(doc_id, kb_id=None):
+    filters = {"doc_id": doc_id}
+    if kb_id:
+        filters["kb_id"] = kb_id
+    projection_ids = []
+    for hit in _all_projection_hits(filters):
+        source = _hit_document(hit)
+        if source.get("knowledge_graph_kwd") == "community_report":
+            continue
+        projection_id = _hit_id(hit)
+        if projection_id:
+            projection_ids.append(projection_id)
+    return sum(1 for projection_id in projection_ids if search_store.delete_by_id(projection_id))
 
 
 
@@ -55,12 +105,15 @@ class UploadResponse(BaseModel):
     doc_id: str
     file_name: str
     status: str
+    storage_key: Optional[str] = None
 
 class DocumentStatusResponse(BaseModel):
     doc_id: str
     file_name: str
     kb_id: str
     status: str
+    storage_key: Optional[str] = None
+    minio_path: Optional[str] = None  # Deprecated compatibility field.
     total_chunks: int
     created_at: datetime
 
@@ -156,72 +209,80 @@ async def delete_knowledge_base(kb_id: str):
     kb = postgres_client.get_knowledge_base(kb_id)
     if not kb:
         raise HTTPException(status_code=404, detail="Knowledge base not found")
-    
+
+    documents = postgres_client.get_documents_by_kb(kb_id) or []
     try:
-        index_name = es_client.get_main_index_name("default")
-        if hasattr(es_client.client, 'indices') and es_client.client.indices.exists(index=index_name):
-            es_client.client.delete_by_query(index=index_name, body={"query": {"term": {"kb_id": kb_id}}})
-        
+        search_store.delete_by_filter({"kb_id": kb_id})
+
         hugegraph_client.delete_by_kb_id(kb_id)
-        
-        postgres_client.delete_knowledge_base(kb_id)
-        
-        return {"status": "success", "message": f"Knowledge base {kb_id} and all related data deleted"}
+
+        if not postgres_client.delete_knowledge_base_with_documents(kb_id):
+            raise RuntimeError("Knowledge base no longer exists")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+    # The PG truth is gone before file cleanup.  Failures here produce
+    # auditable orphans instead of visible rows pointing at missing originals.
+    cleanup_errors = []
+    for document in documents:
+        try:
+            if document.get("storage_key") or document.get("minio_path"):
+                artifact_store.delete_file(storage_key_from(document))
+        except Exception as exc:
+            cleanup_errors.append(f"{document.get('doc_id')}: 原件回收失败: {exc}")
+        try:
+            artifact_store.delete_prefix(f"images/{document['doc_id']}")
+        except Exception as exc:
+            cleanup_errors.append(f"{document.get('doc_id')}: 图片回收失败: {exc}")
+    try:
+        artifact_store.delete_prefix(f"documents/{kb_id}")
+    except Exception as exc:
+        cleanup_errors.append(f"知识库原件目录回收失败: {exc}")
+
+    return {
+        "status": "success_with_warnings" if cleanup_errors else "success",
+        "message": f"Knowledge base {kb_id} and all related data deleted",
+        "cleanup_errors": cleanup_errors,
+    }
+
 @router.post("/{kb_id}/documents/dedup-index")
 async def dedup_index(kb_id: str):
-    """清除向量库中重复解析产生的冗余索引块。
+    """清除检索投影中重复解析产生的冗余分块。
 
-    以 PG documents 表为有效依据，删除 ES 中该知识库下不属于任何有效文档的
+    以 PG documents 表为有效依据，删除 OpenSearch 中该知识库下不属于任何有效文档的
     doc_id 的全部分块（历史重复解析产生的多份索引）。
     社区报告（knowledge_graph_kwd=community_report）按字段排除，不会误删。
     """
     try:
-        index_name = es_client.get_main_index_name("default")
-
         # PG 有效 doc_id（数据唯一权威）
         docs = postgres_client.get_documents_by_kb(kb_id) or []
         valid_doc_ids = {d["doc_id"] for d in docs if d.get("doc_id")}
 
-        # ES 中该 kb 下所有 doc_id 及数量（排除社区报告）
-        agg_body = {
-            "size": 0,
-            "query": {
-                "bool": {
-                    "must": [{"term": {"kb_id": kb_id}}],
-                    "must_not": [{"exists": {"field": "knowledge_graph_kwd"}}],
-                }
-            },
-            "aggs": {"by_doc": {"terms": {"field": "doc_id", "size": 1000}}},
-        }
-        result = es_client.client.search(index=index_name, body=agg_body)
-        buckets = result.get("aggregations", {}).get("by_doc", {}).get("buckets", [])
+        # 通过门面分页扫描，不在 API 层拼接 OpenSearch DSL。
+        orphan_ids = {}
+        for hit in _all_projection_hits({"kb_id": kb_id}):
+            source = _hit_document(hit)
+            if source.get("knowledge_graph_kwd") == "community_report":
+                continue
+            doc_id = source.get("doc_id")
+            projection_id = _hit_id(hit)
+            if doc_id and doc_id not in valid_doc_ids and projection_id:
+                orphan_ids.setdefault(doc_id, []).append(projection_id)
 
-        orphans = [b for b in buckets if b["key"] not in valid_doc_ids]
         total = 0
         details = []
-        for b in orphans:
-            body = {
-                "query": {
-                    "bool": {
-                        "must": [{"term": {"kb_id": kb_id}}, {"term": {"doc_id": b["key"]}}]
-                    }
-                }
-            }
-            del_res = es_client.client.delete_by_query(
-                index=index_name, body=body, refresh=True, conflicts="proceed"
+        for orphan_doc_id, projection_ids in orphan_ids.items():
+            cnt = sum(
+                1 for projection_id in projection_ids if search_store.delete_by_id(projection_id)
             )
-            cnt = del_res.get("deleted", 0)
             total += cnt
-            details.append({"doc_id": b["key"], "deleted": cnt})
+            details.append({"doc_id": orphan_doc_id, "deleted": cnt})
 
         if total:
             return {"total_deleted": total, "details": details,
                     "message": f"已清除 {total} 条重复索引块"}
         return {"total_deleted": 0, "details": [],
-                "message": "没有发现重复索引块（向量库索引正常）"}
+                "message": "没有发现重复索引块（检索投影正常）"}
     except Exception as e:
         logger.error(f"清除重复索引失败: {e}")
         raise HTTPException(status_code=500, detail=f"清除重复索引失败: {str(e)}")
@@ -240,21 +301,38 @@ async def upload_documents(
     
     for file in files:
         doc_id = str(uuid.uuid4())
-        file_path = f"/tmp/{doc_id}_{file.filename}"
-        
-        with open(file_path, "wb") as f:
-            f.write(await file.read())
-        
-        minio_path = f"documents/{kb_id}/{doc_id}/{file.filename}"
-        with open(file_path, "rb") as f:
-            minio_client.upload_file(minio_path, f.read())
-        
-        postgres_client.insert_document(doc_id, file.filename, kb_id, minio_path)
-        
+        file_name = safe_original_name(file.filename)
+        storage_key = source_artifact_key(f"documents/{kb_id}", doc_id, file_name)
+        try:
+            metadata = await asyncio.to_thread(
+                artifact_store.upload_file,
+                storage_key,
+                file.file,
+                content_type=file.content_type,
+                original_name=file_name,
+            )
+            try:
+                # The legacy minio_path column is retained as a storage_key
+                # compatibility column during the LocalFS transition.
+                postgres_client.insert_document(doc_id, file_name, kb_id, storage_key)
+            except Exception as insert_error:
+                committed = confirm_registration_or_compensate(
+                    doc_id=doc_id,
+                    storage_key=storage_key,
+                    lookup=postgres_client.get_document,
+                    rollback=postgres_client.conn.rollback,
+                )
+                if not committed:
+                    raise insert_error
+        except Exception as exc:
+            logger.exception("文档写入 ArtifactStore 失败: %s", file_name)
+            raise HTTPException(status_code=500, detail=f"文件 {file_name} 保存失败: {exc}") from exc
+
         results.append({
             "doc_id": doc_id,
-            "file_name": file.filename,
-            "status": "uploaded"
+            "file_name": file_name,
+            "status": "uploaded",
+            "storage_key": metadata.storage_key,
         })
     
     return results
@@ -861,25 +939,22 @@ async def get_vector_store_content(kb_id: str, doc_id: str):
     if document["kb_id"] != kb_id:
         raise HTTPException(status_code=403, detail="Document does not belong to this knowledge base")
     
-    index_name = es_client.get_main_index_name("default")
     try:
-        query_body = {
-            "query": {"bool": {"must": [{"term": {"kb_id": kb_id}}, {"term": {"doc_id": doc_id}}]}},
-            "size": 1000
-        }
-        result = es_client.client.search(index=index_name, body=query_body)
-        if not result["hits"]["hits"]:
-            # 历史重复解析场景：ES 中该文件的 doc_id 与当前 PG 记录不一致（同一文件名多次上传/解析），
-            # 回退按 kb_id + 文档名匹配，仍可展示该文档在向量库中的分块
-            query_body = {
-                "query": {"bool": {"must": [{"term": {"kb_id": kb_id}}, {"match_phrase": {"doc_name": document["file_name"]}}]}},
-                "size": 1000
-            }
-            result = es_client.client.search(index=index_name, body=query_body)
+        hits = search_store.query(filters={"kb_id": kb_id, "doc_id": doc_id}, limit=1000)
+        if not hits:
+            # 历史重复解析场景：投影中该文件的 doc_id 与当前 PG 记录不一致，
+            # 回退按 kb_id + 文档名精确匹配。
+            hits = [
+                hit
+                for hit in search_store.keyword_search(
+                    document["file_name"], filters={"kb_id": kb_id}, top_k=1000
+                )
+                if _hit_document(hit).get("doc_name") == document["file_name"]
+            ]
         
         contents = []
-        for hit in result["hits"]["hits"]:
-            source = hit["_source"]
+        for hit in hits:
+            source = _hit_document(hit)
             contents.append({
                 "chunk_id": source.get("chunk_id"),
                 "content_type": source.get("content_type", "text"),
@@ -914,6 +989,7 @@ async def get_postgres_content(kb_id: str, doc_id: str):
             "title": img.get("title", ""),
             "description": img.get("description", ""),
             "image_type": img.get("image_type", "normal"),
+            "storage_key": img.get("storage_key") or img.get("minio_path", ""),
             "minio_path": img.get("minio_path", ""),
             "image_url": img.get("image_url", ""),
             "chunk_id": img.get("chunk_id", "")
@@ -1016,7 +1092,7 @@ async def delete_document_graph_data(kb_id: str, doc_id: str):
     """删除文档关联的图谱数据（实体/关系/社区报告），保留文档本身。
 
     用于图谱可视化页面：删除该文档关联的 HugeGraph 实体与关系、
-    Elasticsearch 中的社区报告。不删除 PG 文档记录、chunks、媒体文件。
+    PostgreSQL 社区报告真源及 OpenSearch 投影。不删除 PG 文档记录、chunks、媒体文件。
     多文档共享的实体/关系仅裁剪 doc_id 归属；社区报告按单/多文档分级处理。
     """
     kb = postgres_client.get_knowledge_base(kb_id)
@@ -1052,27 +1128,15 @@ async def delete_document_graph_data(kb_id: str, doc_id: str):
     except Exception as e:
         errors.append(f"Failed to delete KG vertices: {str(e)}")
 
-    # Step 3: 处理 ES 社区报告（单文档删除 / 多文档标记 stale）
+    # Step 3: 处理社区报告（单文档删除 / 多文档标记 stale）
     report_deleted = 0
     report_updated = 0
     try:
-        index_name = es_client.get_main_index_name("default")
-        community_reports = es_client.search_community_reports(index_name, kb_id=kb_id, doc_id=doc_id)
-        for report in community_reports:
-            rdoc_ids = report.get("doc_ids", [])
-            if isinstance(rdoc_ids, str):
-                rdoc_ids = [rdoc_ids]
-            if len(rdoc_ids) <= 1:
-                es_doc_id = report.get("es_doc_id", "")
-                if es_doc_id:
-                    try:
-                        es_client.client.delete(index=index_name, id=es_doc_id)
-                        report_deleted += 1
-                    except Exception:
-                        pass  # 文档可能已被删除，忽略 404
-            else:
-                report_updated += 1
-        handle_community_reports(es_client, index_name, doc_id, kb_id, fully_removed_entities)
+        report_result = handle_community_reports(
+            search_store, postgres_client, doc_id, kb_id, fully_removed_entities
+        )
+        report_deleted = report_result["deleted"]
+        report_updated = report_result["updated"]
     except Exception as e:
         errors.append(f"Failed to handle community reports: {str(e)}")
 
@@ -1216,7 +1280,7 @@ async def delete_document(kb_id: str, doc_id: str):
         postgres_client.set_delete_step(doc_id, "vertices_done")
         current_step = "vertices_done"
 
-    # Step 3: 媒体文件（MinIO 图片/表格）
+    # Step 3: 媒体文件（ArtifactStore 图片/表格）
     if step_index(current_step) < step_index("media_done"):
         deletion_logger.log_step_start("media", "删除媒体文件（图片/表格）...")
         image_count = 0
@@ -1225,45 +1289,63 @@ async def delete_document(kb_id: str, doc_id: str):
         try:
             images = postgres_client.get_images_by_doc(doc_id)
             for image in images:
-                if image.get("minio_path"):
+                storage_key = image.get("storage_key") or image.get("minio_path")
+                if storage_key:
                     try:
-                        minio_client.delete_file(image["minio_path"])
+                        artifact_store.delete_file(storage_key)
                         image_count += 1
                         deletion_logger.log_item("media", "image", image.get("image_id", ""),
                                        status="deleted",
-                                       details={"minio_path": image.get("minio_path")})
+                                       details={"storage_key": storage_key})
                     except Exception as e:
                         media_errors += 1
-                        errors.append(f"删除图片文件失败 {image.get('minio_path')}: {str(e)}")
+                        errors.append(f"删除图片文件失败 {storage_key}: {str(e)}")
                         deletion_logger.log_item("media", "image", image.get("image_id", ""),
                                        status="error",
                                        message=f"失败: {str(e)}",
-                                       details={"minio_path": image.get("minio_path")})
+                                       details={"storage_key": storage_key})
         except Exception as e:
             media_errors += 1
             errors.append(f"获取图片列表失败: {str(e)}")
         try:
             tables = postgres_client.get_tables_by_doc(doc_id)
             for table in tables:
-                if table.get("minio_path"):
+                storage_key = table.get("storage_key") or table.get("minio_path")
+                if storage_key:
                     try:
-                        minio_client.delete_file(table["minio_path"])
+                        artifact_store.delete_file(storage_key)
                         table_count += 1
                         deletion_logger.log_item("media", "table", table.get("table_id", ""),
                                        status="deleted",
-                                       details={"minio_path": table.get("minio_path")})
+                                       details={"storage_key": storage_key})
                     except Exception as e:
                         media_errors += 1
-                        errors.append(f"删除表格文件失败 {table.get('minio_path')}: {str(e)}")
+                        errors.append(f"删除表格文件失败 {storage_key}: {str(e)}")
                         deletion_logger.log_item("media", "table", table.get("table_id", ""),
                                        status="error",
                                        message=f"失败: {str(e)}",
-                                       details={"minio_path": table.get("minio_path")})
+                                       details={"storage_key": storage_key})
         except Exception as e:
             media_errors += 1
             errors.append(f"获取表格列表失败: {str(e)}")
+        try:
+            # Also remove derived files that predate DB image rows or whose
+            # rows were never inserted successfully.
+            image_count += artifact_store.delete_prefix(f"images/{doc_id}")
+        except Exception as e:
+            media_errors += 1
+            errors.append(f"删除派生图片目录失败: {str(e)}")
         deletion_logger.log_step_complete("media", count=image_count + table_count, errors=media_errors,
                                  message=f"媒体删除完成: {image_count} 张图片，{table_count} 个表格")
+        if media_errors:
+            postgres_client.update_document_status(doc_id, "delete_failed")
+            return {
+                "status": "partial_success",
+                "message": "媒体文件回收失败，文档记录已保留，可重试删除",
+                "errors": errors,
+                "delete_step": current_step,
+                "task_id": deletion_logger.task_id,
+            }
         postgres_client.set_delete_step(doc_id, "media_done")
         current_step = "media_done"
 
@@ -1302,91 +1384,79 @@ async def delete_document(kb_id: str, doc_id: str):
         postgres_client.set_delete_step(doc_id, "logs_done")
         current_step = "logs_done"
 
-    # Step 6: ES 分块 + 社区报告分级
+    # Step 6: 检索投影分块 + 社区报告分级。数据库的步骤名
+    # 仍保留 es_done，以兼容已在执行的旧删除任务。
     if step_index(current_step) < step_index("es_done"):
-        deletion_logger.log_step_start("es", "删除 Elasticsearch（ES）数据...")
-        es_errors = 0
+        deletion_logger.log_step_start("search", "删除 OpenSearch 检索投影...")
+        search_errors = 0
         chunk_deleted = 0
         report_deleted = 0
         report_updated = 0
         try:
-            index_name = es_client.get_main_index_name("default")
-            if hasattr(es_client.client, 'indices') and es_client.client.indices.exists(index=index_name):
-                # 记录将要删除的 chunk 数量（只统计 chunk 类型，不含社区报告）
-                count_resp = es_client.client.count(index=index_name, body={"query": {"bool": {"must": [
-                    {"term": {"doc_id": doc_id}},
-                    {"must_not": [{"term": {"knowledge_graph_kwd": "community_report"}}]}
-                ]}}})
-                chunk_deleted = count_resp.get("count", 0)
-                # 只删除 chunk 类型（普通分块可能不带 knowledge_graph_kwd 字段），避免误删社区报告
-                es_client.client.delete_by_query(index=index_name, query={"bool": {"must": [
-                    {"term": {"doc_id": doc_id}},
-                    {"must_not": [{"term": {"knowledge_graph_kwd": "community_report"}}]}
-                ]}})
-                deletion_logger.log_item("es", "chunks", doc_id,
-                               status="deleted",
-                               details={"chunks_deleted": chunk_deleted})
+            # 先逐条删除非社区报告投影，避免将多文档共享报告误删。
+            chunk_deleted = _delete_non_report_projection(doc_id, kb_id)
+            deletion_logger.log_item(
+                "search", "chunks", doc_id, status="deleted",
+                details={"chunks_deleted": chunk_deleted},
+            )
 
-                # 社区报告处理
-                try:
-                    community_reports = es_client.search_community_reports(index_name, kb_id=kb_id, doc_id=doc_id)
-                    for report in community_reports:
-                        rdoc_ids = report.get("doc_ids", [])
-                        if isinstance(rdoc_ids, str):
-                            rdoc_ids = [rdoc_ids]
-                        if len(rdoc_ids) <= 1:
-                            es_doc_id = report.get("es_doc_id", "")
-                            if es_doc_id:
-                                try:
-                                    es_client.client.delete(index=index_name, id=es_doc_id)
-                                    report_deleted += 1
-                                    deletion_logger.log_item("es", "community_report", es_doc_id,
-                                                   status="deleted",
-                                                   details={"community_id": report.get("community_id"),
-                                                            "entities": report.get("entities", [])})
-                                except Exception:
-                                    pass  # 文档可能已被删除，忽略 404
-                        else:
-                            report_updated += 1
-                    handle_community_reports(es_client, index_name, doc_id, kb_id, fully_removed_entities)
-                except Exception as e:
-                    es_errors += 1
-                    deletion_logger.log_item("es", "community_reports", doc_id,
-                                   status="error",
-                                   message=f"社区报告处理失败: {str(e)}")
-            else:
-                deletion_logger.log_item("es", "index", index_name,
-                               status="skipped",
-                               message=f"索引 {index_name} 不存在")
+            report_result = handle_community_reports(
+                search_store, postgres_client, doc_id, kb_id, fully_removed_entities
+            )
+            report_deleted = report_result["deleted"]
+            report_updated = report_result["updated"]
         except Exception as e:
-            es_errors += 1
-            errors.append(f"删除 ES 数据失败: {str(e)}")
-            deletion_logger.log_item("es", "chunks", doc_id,
+            search_errors += 1
+            errors.append(f"删除检索投影失败: {str(e)}")
+            deletion_logger.log_item("search", "chunks", doc_id,
                            status="error",
                            message=f"失败: {str(e)}")
-        deletion_logger.log_step_complete("es", count=chunk_deleted + report_deleted, errors=es_errors,
-                                 message=f"ES 清理完成: 删除 {chunk_deleted} 个分块，{report_deleted} 个社区报告，更新 {report_updated} 个社区报告")
+        deletion_logger.log_step_complete(
+            "search", count=chunk_deleted + report_deleted, errors=search_errors,
+            message=(
+                f"检索投影清理完成: 删除 {chunk_deleted} 个分块，"
+                f"{report_deleted} 个社区报告，更新 {report_updated} 个社区报告"
+            ),
+        )
+        if search_errors:
+            postgres_client.update_document_status(doc_id, "delete_failed")
+            return {
+                "status": "partial_success",
+                "message": "检索投影清理失败，原始文件和文档记录已保留，可重试删除",
+                "errors": errors,
+                "delete_step": current_step,
+                "task_id": deletion_logger.task_id,
+            }
         postgres_client.set_delete_step(doc_id, "es_done")
         current_step = "es_done"
 
-    # Step 7: MinIO 文档文件
+    # Step 7: ArtifactStore 原始文档
     if step_index(current_step) < step_index("file_done"):
-        deletion_logger.log_step_start("file", "删除 MinIO 中的文档文件...")
-        if document.get("minio_path"):
+        deletion_logger.log_step_start("file", "回收 ArtifactStore 中的原始文档...")
+        storage_key = document.get("storage_key") or document.get("minio_path")
+        if storage_key:
             try:
-                minio_client.delete_file(document["minio_path"])
+                artifact_store.delete_file(storage_key)
                 deletion_logger.log_item("file", "document", doc_id,
                                status="deleted",
-                               details={"minio_path": document.get("minio_path")})
+                               details={"storage_key": storage_key})
                 deletion_logger.log_step_complete("file", count=1, errors=0,
-                                         message=f"已删除文档文件: {document.get('minio_path')}")
+                                         message=f"已回收文档文件: {storage_key}")
             except Exception as e:
                 errors.append(f"删除文档文件失败: {str(e)}")
                 deletion_logger.log_step_complete("file", count=0, errors=1,
                                          message=f"删除文档文件失败: {str(e)}")
+                postgres_client.update_document_status(doc_id, "delete_failed")
+                return {
+                    "status": "partial_success",
+                    "message": "原始文件回收失败，文档记录已保留，可重试删除",
+                    "errors": errors,
+                    "delete_step": current_step,
+                    "task_id": deletion_logger.task_id,
+                }
         else:
             deletion_logger.log_step_complete("file", count=0, errors=0,
-                                     message="MinIO 中无文档文件（minio_path 为空）")
+                                     message="文档无 ArtifactStore storage_key")
         postgres_client.set_delete_step(doc_id, "file_done")
         current_step = "file_done"
 
@@ -1590,10 +1660,9 @@ async def get_community_reports(kb_id: str, doc_id: str = None):
     if not kb:
         raise HTTPException(status_code=404, detail="Knowledge base not found")
     
-    index_name = es_client.get_main_index_name("default")
-    
     try:
-        reports = es_client.search_community_reports(index_name, kb_id, doc_id)
+        # 用户可见的报告详情始终从 PostgreSQL 权威源读取。
+        reports = postgres_client.get_community_reports(kb_id, doc_id)
         
         formatted_reports = []
         for report in reports:

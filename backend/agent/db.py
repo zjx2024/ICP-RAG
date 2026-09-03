@@ -9,12 +9,100 @@
 import json
 import uuid
 import logging
+from contextlib import contextmanager
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
+from backend.agent.session_titles import (
+    DEFAULT_SESSION_TITLE,
+    DEFAULT_SESSION_TITLES,
+    make_session_title,
+)
 from backend.storage.postgres_client import postgres_client
 
 logger = logging.getLogger(__name__)
+
+
+_CONVERSATION_ANCHOR_FIELD_NAMES = {
+    "record_code", "hmc_code", "lcn", "hamc", "hsc", "mfl_code",
+    "case_id", "component_id", "component_type", "component_name",
+    "abbreviation", "parent_component_id", "function_id", "function_name",
+    "system_name", "subsystem_name", "module_id", "module_name",
+    "interface_id", "source_component_id", "target_component_id",
+    "failure_mode", "fault_mode", "product_flag", "diagram_id",
+    "diagram_key", "event_id", "title", "fault_symptom",
+    "fault_description",
+    # Closed-collection identity is part of the public citation contract.  It
+    # lets a later question such as "is that the only one?" retain the scope
+    # that was actually cited, without reusing the previous answer text as a
+    # fact or asking the language model to reconstruct the parent collection.
+    "collection_parent_id", "collection_parent_name",
+    "collection_member_kind", "collection_member_count",
+    "collection_member_id", "collection_member_name", "collection_closed",
+}
+
+
+def _conversation_anchor_value(value: Any) -> Any:
+    """Bound public citation identity fields before reusing them as turn anchors."""
+
+    if isinstance(value, str):
+        return value.strip()[:300]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if isinstance(value, (list, tuple)):
+        return [
+            item
+            for item in (_conversation_anchor_value(item) for item in value[:12])
+            if item not in (None, "", [])
+        ]
+    return None
+
+
+def _conversation_anchors(citations: Any, *, limit: int = 8) -> List[Dict[str, Any]]:
+    """Keep only answer-used evidence identities for the next turn.
+
+    The full previous answer and evidence catalog remain available to the UI,
+    but only citations that actually appeared in that answer may become
+    conversational anchors. Their old prose is never reused as current truth;
+    selected anchors must be re-read from PostgreSQL in the new turn.
+    """
+
+    if not isinstance(citations, list):
+        return []
+    anchors: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for citation in citations:
+        if not isinstance(citation, dict):
+            continue
+        evidence_id = str(citation.get("evidence_id") or "").strip()
+        if not evidence_id or evidence_id in seen:
+            continue
+        metadata = citation.get("document_metadata")
+        answer_fields = metadata.get("answer_fields") if isinstance(metadata, dict) else {}
+        bounded_fields: Dict[str, Any] = {}
+        if isinstance(answer_fields, dict):
+            for key, raw_value in answer_fields.items():
+                normalized_key = str(key or "").strip()
+                if normalized_key not in _CONVERSATION_ANCHOR_FIELD_NAMES:
+                    continue
+                value = _conversation_anchor_value(raw_value)
+                if value not in (None, "", []):
+                    bounded_fields[normalized_key] = value
+        anchor = {
+            "anchor_id": evidence_id,
+            "evidence_id": evidence_id,
+            "doc_type": str(citation.get("doc_type") or "").strip()[:80],
+            "doc_id": str(citation.get("doc_id") or "").strip()[:240],
+            "record_id": str(citation.get("record_id") or "").strip()[:240],
+            "title": str(citation.get("title") or "").strip()[:300],
+            "source_ref": str(citation.get("source_ref") or "").strip()[:500],
+            "answer_fields": bounded_fields,
+        }
+        seen.add(evidence_id)
+        anchors.append(anchor)
+        if len(anchors) >= max(int(limit), 0):
+            break
+    return anchors
 
 
 class AgentDB:
@@ -22,6 +110,26 @@ class AgentDB:
 
     def __init__(self):
         self._initialized = False
+
+    @contextmanager
+    def _read_cursor(self):
+        """为只读查询提供明确的事务收口。
+
+        psycopg2 默认会为 SELECT 开启事务；仅关闭 cursor 不会结束事务。
+        Agent 会话接口调用频繁，如果遗漏 commit，连接会长期停留在
+        ``idle in transaction``，进而阻碍表结构维护和回收旧版本。这里在
+        结果完成物化后提交只读事务，异常时回滚，让共享连接恢复到可用状态。
+        """
+        try:
+            with postgres_client.conn.cursor() as cur:
+                yield cur
+            postgres_client.conn.commit()
+        except Exception:
+            try:
+                postgres_client.conn.rollback()
+            except Exception:
+                pass
+            raise
 
     def init_tables(self):
         """建表（幂等）。复用现有 PG 连接，新建 4 张表，不动现有表。"""
@@ -106,7 +214,8 @@ class AgentDB:
                         id            VARCHAR(36) PRIMARY KEY,
                         agent_id      VARCHAR(36) NOT NULL,
                         user_id       VARCHAR(64) DEFAULT 'default',
-                        title         VARCHAR(64) DEFAULT '新会话',
+                        title         VARCHAR(64) DEFAULT '新诊断会话',
+                        title_origin  VARCHAR(16) NOT NULL DEFAULT 'default',
                         pinned        BOOLEAN DEFAULT FALSE,
                         archived      BOOLEAN DEFAULT FALSE,
                         message_count INTEGER DEFAULT 0,
@@ -115,6 +224,34 @@ class AgentDB:
                         updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         FOREIGN KEY (agent_id) REFERENCES agent_configs(agent_id) ON DELETE CASCADE
                     )
+                """)
+                # 标题来源用于保证“首问自动命名”只执行一次，且不会在
+                # 模型运行期间覆盖用户手动修改的标题。旧会话只有真正的
+                # 空白占位标题时才继续被视为待自动命名。
+                cur.execute("""
+                    ALTER TABLE agent_sessions
+                    ADD COLUMN IF NOT EXISTS title_origin VARCHAR(16)
+                """)
+                cur.execute("""
+                    UPDATE agent_sessions
+                    SET title_origin = CASE
+                        WHEN title IN ('新会话', '新诊断会话')
+                        THEN 'default'
+                        ELSE 'manual'
+                    END
+                    WHERE title_origin IS NULL
+                """)
+                cur.execute("""
+                    ALTER TABLE agent_sessions
+                    ALTER COLUMN title_origin SET DEFAULT 'default'
+                """)
+                cur.execute("""
+                    ALTER TABLE agent_sessions
+                    ALTER COLUMN title SET DEFAULT '新诊断会话'
+                """)
+                cur.execute("""
+                    ALTER TABLE agent_sessions
+                    ALTER COLUMN title_origin SET NOT NULL
                 """)
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_agent_sessions_agent ON agent_sessions(agent_id)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_agent_sessions_user ON agent_sessions(user_id)")
@@ -128,6 +265,7 @@ class AgentDB:
                         content         TEXT,
                         tool_calls      JSONB,
                         citations       JSONB,
+                        evidence_catalog JSONB,
                         thinking_events JSONB,
                         feedback        VARCHAR(8),
                         created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -136,17 +274,14 @@ class AgentDB:
                 """)
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_agent_messages_session ON agent_messages(session_id)")
 
-                # 迁移：已有表加 thinking_events 列（幂等）
-                try:
-                    cur.execute("""
-                        ALTER TABLE agent_messages ADD COLUMN IF NOT EXISTS thinking_events JSONB
-                    """)
-                    postgres_client.conn.commit()
-                except Exception as _e:
-                    try:
-                        postgres_client.conn.rollback()
-                    except Exception:
-                        pass
+                # 迁移必须与初始化同成败。若 ALTER 失败，外层回滚并抛错，
+                # 不能继续把实例标记为 initialized 后再让历史查询缺列。
+                cur.execute("""
+                    ALTER TABLE agent_messages ADD COLUMN IF NOT EXISTS thinking_events JSONB
+                """)
+                cur.execute("""
+                    ALTER TABLE agent_messages ADD COLUMN IF NOT EXISTS evidence_catalog JSONB
+                """)
 
                 postgres_client.conn.commit()
                 self._initialized = True
@@ -157,6 +292,8 @@ class AgentDB:
                 postgres_client.conn.rollback()
             except Exception:
                 pass
+            self._initialized = False
+            raise
 
     # ═════════════════════════════════════════════
     # Agent 配置 CRUD
@@ -382,7 +519,7 @@ class AgentDB:
                 pass
 
     def get_agent(self, agent_id: str) -> Optional[Dict]:
-        with postgres_client.conn.cursor() as cur:
+        with self._read_cursor() as cur:
             cur.execute("SELECT * FROM agent_configs WHERE agent_id = %s", (agent_id,))
             row = cur.fetchone()
             if not row:
@@ -403,7 +540,7 @@ class AgentDB:
         return agent
 
     def list_agents(self, active_only: bool = False) -> List[Dict]:
-        with postgres_client.conn.cursor() as cur:
+        with self._read_cursor() as cur:
             if active_only:
                 cur.execute("SELECT * FROM agent_configs WHERE is_active = TRUE ORDER BY created_at DESC")
             else:
@@ -527,12 +664,12 @@ class AgentDB:
         return {"agent_id": agent_id, "role": role, "model_id": model_id, "is_default": is_default}
 
     def list_agent_models(self, agent_id: str) -> List[Dict]:
-        with postgres_client.conn.cursor() as cur:
+        with self._read_cursor() as cur:
             cur.execute("SELECT id, agent_id, role, model_id, is_default, created_at FROM agent_models WHERE agent_id = %s", (agent_id,))
             return [self._row_to_model(cur, r) for r in cur.fetchall()]
 
     def get_model_id_by_role(self, agent_id: str, role: str) -> Optional[str]:
-        with postgres_client.conn.cursor() as cur:
+        with self._read_cursor() as cur:
             cur.execute("SELECT model_id FROM agent_models WHERE agent_id = %s AND role = %s", (agent_id, role))
             row = cur.fetchone()
             return row[0] if row else None
@@ -549,18 +686,20 @@ class AgentDB:
     # ═════════════════════════════════════════════
     # 会话 CRUD
     # ═════════════════════════════════════════════
-    def create_session(self, agent_id: str, user_id: str = "default", title: str = "新会话") -> Dict:
+    def create_session(self, agent_id: str, user_id: str = "default", title: str = DEFAULT_SESSION_TITLE) -> Dict:
         session_id = str(uuid.uuid4())
+        clean_title = str(title or DEFAULT_SESSION_TITLE).strip()[:64] or DEFAULT_SESSION_TITLE
+        title_origin = "default" if clean_title in DEFAULT_SESSION_TITLES else "manual"
         with postgres_client.conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO agent_sessions (id, agent_id, user_id, title)
-                VALUES (%s, %s, %s, %s)
-            """, (session_id, agent_id, user_id, title))
+                INSERT INTO agent_sessions (id, agent_id, user_id, title, title_origin)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (session_id, agent_id, user_id, clean_title, title_origin))
             postgres_client.conn.commit()
         return self.get_session(session_id)
 
     def get_session(self, session_id: str) -> Optional[Dict]:
-        with postgres_client.conn.cursor() as cur:
+        with self._read_cursor() as cur:
             cur.execute("SELECT * FROM agent_sessions WHERE id = %s", (session_id,))
             row = cur.fetchone()
             if not row:
@@ -582,7 +721,7 @@ class AgentDB:
             vals.append(f"%{search}%")
         sql += " ORDER BY pinned DESC, updated_at DESC LIMIT %s"
         vals.append(limit)
-        with postgres_client.conn.cursor() as cur:
+        with self._read_cursor() as cur:
             cur.execute(sql, vals)
             return [{desc[0]: v for desc, v in zip(cur.description, r)} for r in cur.fetchall()]
 
@@ -594,12 +733,34 @@ class AgentDB:
                 continue
             sets.append(f"{k} = %s")
             vals.append(v)
+            if k == "title":
+                # 所有通用更新入口的标题变更都视为用户/调用方显式命名。
+                sets.append("title_origin = %s")
+                vals.append("manual")
         if not sets:
             return self.get_session(session_id)
         sets.append("updated_at = CURRENT_TIMESTAMP")
         vals.append(session_id)
         with postgres_client.conn.cursor() as cur:
             cur.execute(f"UPDATE agent_sessions SET {', '.join(sets)} WHERE id = %s", vals)
+            postgres_client.conn.commit()
+        return self.get_session(session_id)
+
+    def generate_session_title_once(self, session_id: str, title: str) -> Optional[Dict]:
+        """仅当会话仍处于默认占位状态时写入首问标题。
+
+        WHERE 条件是竞态保护：如果用户在诊断生成期间已经手动
+        重命名，本次自动更新不会覆盖用户标题。
+        """
+
+        with postgres_client.conn.cursor() as cur:
+            cur.execute("""
+                UPDATE agent_sessions
+                SET title = %s,
+                    title_origin = 'auto',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s AND title_origin = 'default'
+            """, (title, session_id))
             postgres_client.conn.commit()
         return self.get_session(session_id)
 
@@ -641,34 +802,64 @@ class AgentDB:
     # ═════════════════════════════════════════════
     def add_message(self, session_id: str, role: str, content: str = "",
                     tool_calls: List = None, citations: List = None,
-                    thinking_events: List = None) -> Dict:
+                    thinking_events: List = None,
+                    evidence_catalog: List = None) -> Dict:
         msg_id = str(uuid.uuid4())
         tc_json = json.dumps(tool_calls, ensure_ascii=False) if tool_calls else None
         ci_json = json.dumps(citations, ensure_ascii=False) if citations else None
         te_json = json.dumps(thinking_events, ensure_ascii=False) if thinking_events else None
+        ec_json = json.dumps(evidence_catalog, ensure_ascii=False) if evidence_catalog else None
         with postgres_client.conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO agent_messages (id, session_id, role, content, tool_calls, citations, thinking_events)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """, (msg_id, session_id, role, content, tc_json, ci_json, te_json))
+                INSERT INTO agent_messages (
+                    id, session_id, role, content, tool_calls, citations,
+                    thinking_events, evidence_catalog
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                msg_id, session_id, role, content, tc_json, ci_json, te_json, ec_json,
+            ))
             postgres_client.conn.commit()
         # 更新会话计数
         preview = content[:200] if content else ""
         self.touch_session(session_id, preview, 1)
-        return {"id": msg_id, "session_id": session_id, "role": role, "content": content,
-                "thinking_events": thinking_events}
+        if role == "user":
+            title = make_session_title(content)
+            if title:
+                try:
+                    # 服务端在首条用户消息持久化后立即命名，不依赖
+                    # 浏览器继续保持 SSE 连接。WHERE 条件保证只写一次。
+                    self.generate_session_title_once(session_id, title)
+                except Exception as exc:
+                    # 消息已经安全入库，命名失败不应让诊断请求失败；
+                    # 前端和标题接口可以在之后幂等补偿。
+                    logger.warning("Automatic session title failed for %s: %s", session_id, exc)
+        return {
+            "id": msg_id,
+            "session_id": session_id,
+            "role": role,
+            "content": content,
+            "citations": citations,
+            "thinking_events": thinking_events,
+            "evidence_catalog": evidence_catalog,
+        }
 
     def list_messages(self, session_id: str, limit: int = 100) -> List[Dict]:
-        with postgres_client.conn.cursor() as cur:
+        with self._read_cursor() as cur:
             cur.execute("""
-                SELECT id, session_id, role, content, tool_calls, citations, thinking_events, feedback, created_at
-                FROM agent_messages WHERE session_id = %s ORDER BY created_at ASC LIMIT %s
+                SELECT id, session_id, role, content, tool_calls, citations,
+                       thinking_events, evidence_catalog, feedback, created_at
+                FROM agent_messages
+                WHERE session_id = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
             """, (session_id, limit))
-            rows = cur.fetchall()
+            # SQL 先截取最近 N 条，再恢复为对话阅读所需的时间正序。
+            rows = list(reversed(cur.fetchall()))
             result = []
             for r in rows:
                 d = {desc[0]: v for desc, v in zip(cur.description, r)}
-                for k in ("tool_calls", "citations", "thinking_events"):
+                for k in ("tool_calls", "citations", "thinking_events", "evidence_catalog"):
                     if isinstance(d.get(k), str):
                         try:
                             d[k] = json.loads(d[k])
@@ -686,9 +877,22 @@ class AgentDB:
             return cur.rowcount > 0
 
     def list_messages_for_state(self, session_id: str, limit: int = 20) -> List[Dict]:
-        """取消息用于 Agent 状态上下文（简化格式）"""
+        """取消息用于 Agent 状态上下文（文本 + 有界已引用锚点）。"""
         msgs = self.list_messages(session_id, limit)
-        return [{"role": m["role"], "content": m.get("content", "")} for m in msgs if m.get("content")]
+        result: List[Dict[str, Any]] = []
+        for message in msgs:
+            if not message.get("content"):
+                continue
+            item: Dict[str, Any] = {
+                "role": message["role"],
+                "content": message.get("content", ""),
+            }
+            if message.get("role") == "assistant":
+                anchors = _conversation_anchors(message.get("citations"), limit=8)
+                if anchors:
+                    item["conversation_anchors"] = anchors
+            result.append(item)
+        return result
 
 
 # 全局单例

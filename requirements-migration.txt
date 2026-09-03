@@ -1,0 +1,3 @@
+# One-time MinIO -> ArtifactStore migration dependency.
+# The running application intentionally does not install or import this SDK.
+minio==7.2.20

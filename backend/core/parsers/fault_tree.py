@@ -1,4 +1,4 @@
-"""图类解析器（fta / rbd）：提取图片 → 复用 vision 分析（analyze_image）→ 三元组存 document_fault_trees → 整图描述 + 节点/边逐条向量化写 ES。
+"""图类解析器（fta / rbd）：提取图片 → 复用 vision 分析（analyze_image）→ 三元组存 document_fault_trees → 整图描述 + 节点/边逐条向量化写检索投影。
 
 参照现有故障树处理链路（document_service 内 insert_document_fault_tree），
 升级为：fault_tree_graph 的 vertices/edges 逐条展平向量化，使顶事件/中间事件/底事件均可被语义召回。
@@ -14,8 +14,8 @@ from backend.core.embedding import embedding_service
 from backend.core.llm_service import llm_service
 from backend.core.parsers.base import Parser, ParseContext, ParseResult
 from backend.core.parsers.registry import ParserRegistry
-from backend.storage.es_client import es_client
 from backend.storage.postgres_client import postgres_client
+from backend.storage.search_store import search_store
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,6 @@ class FaultTreeParser(Parser):
         if not images:
             raise ValueError("未在文档中找到图片内容")
 
-        index_name = es_client.get_main_index_name("default")
         graph_count = 0
         nodes_total = 0
         edges_total = 0
@@ -56,14 +55,13 @@ class FaultTreeParser(Parser):
             whole_content = f"图片: {img_title}\n{description}"
             try:
                 vector = embedding_service.embed(whole_content)
-                doc = {
+                doc = ctx.enrich({
                     "chunk_id": image_id,
                     "doc_id": ctx.doc_id,
                     "doc_name": ctx.file_name,
                     "title": img_title,
                     "section": ctx.doc_type,
                     "content": whole_content,
-                    "content_vector": vector,
                     "kb_id": ctx.kb_id or ctx.doc_type,
                     "content_type": "fault_tree_image",
                     "doc_type_kwd": ctx.doc_type,
@@ -71,8 +69,8 @@ class FaultTreeParser(Parser):
                     "available_int": 1,
                     "created_at": datetime.now().isoformat(),
                     "updated_at": datetime.now().isoformat(),
-                }
-                es_client.client.index(index=index_name, id=image_id, body=doc)
+                })
+                search_store.upsert(image_id, doc, vector=vector)
                 vectors += 1
             except Exception as e:
                 ctx.progress(f"[图片 {i}] 整图向量化失败: {str(e)[:100]}")
@@ -116,7 +114,7 @@ class FaultTreeParser(Parser):
                                f"逻辑门: {gate or '无'}")
                     try:
                         vector = embedding_service.embed(content)
-                        doc = {
+                        doc = ctx.enrich({
                             "chunk_id": f"{image_id}_node_{idx}",
                             "doc_id": ctx.doc_id,
                             "doc_name": ctx.file_name,
@@ -124,7 +122,6 @@ class FaultTreeParser(Parser):
                             "chapter": chapter,
                             "section": ctx.doc_type,
                             "content": content,
-                            "content_vector": vector,
                             "kb_id": ctx.kb_id or ctx.doc_type,
                             "content_type": "fault_tree_node",
                             "doc_type_kwd": ctx.doc_type,
@@ -135,8 +132,8 @@ class FaultTreeParser(Parser):
                             "available_int": 1,
                             "created_at": datetime.now().isoformat(),
                             "updated_at": datetime.now().isoformat(),
-                        }
-                        es_client.client.index(index=index_name, id=doc["chunk_id"], body=doc)
+                        })
+                        search_store.upsert(doc["chunk_id"], doc, vector=vector)
                         vectors += 1
                     except Exception as e:
                         ctx.progress(f"[节点 {vname}] 向量化失败: {str(e)[:100]}")
@@ -149,14 +146,13 @@ class FaultTreeParser(Parser):
                     content = f"故障关系: {name_of.get(src, src)} → {name_of.get(tgt, tgt)}（{elabel}，门类型: {gate or '直接原因'}）"
                     try:
                         vector = embedding_service.embed(content)
-                        doc = {
+                        doc = ctx.enrich({
                             "chunk_id": f"{image_id}_edge_{idx}",
                             "doc_id": ctx.doc_id,
                             "doc_name": ctx.file_name,
                             "title": name_of.get(graph.get("root_fault_id", ""), name_of.get(src, "")) or name_of.get(src, ""),
                             "section": ctx.doc_type,
                             "content": content,
-                            "content_vector": vector,
                             "kb_id": ctx.kb_id or ctx.doc_type,
                             "content_type": "fault_tree_edge",
                             "doc_type_kwd": ctx.doc_type,
@@ -166,8 +162,8 @@ class FaultTreeParser(Parser):
                             "available_int": 1,
                             "created_at": datetime.now().isoformat(),
                             "updated_at": datetime.now().isoformat(),
-                        }
-                        es_client.client.index(index=index_name, id=doc["chunk_id"], body=doc)
+                        })
+                        search_store.upsert(doc["chunk_id"], doc, vector=vector)
                         vectors += 1
                     except Exception as e:
                         ctx.progress(f"[关系 {idx}] 向量化失败: {str(e)[:100]}")

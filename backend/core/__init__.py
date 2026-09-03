@@ -1,27 +1,49 @@
-"""核心层：re-export app.core 现有实现 + 新增通用工具。
+"""Core package with dependency-safe lazy compatibility exports.
 
-- app.core 中的业务实现（config/task_manager/llm_service/model_config/embedding/rerank/retrieval/parser）
-  继续作为单一实现来源，backend 仅做引用，避免复制逻辑导致行为漂移。
-- exceptions/response/db 为新增通用骨架，供未来新代码使用，不影响存量。
+Importing a focused module such as :mod:`backend.core.embedding` must not open a
+PostgreSQL connection or load every parser.  The project historically re-exported
+the names below from this package, so they remain available through PEP 562 lazy
+attribute loading without introducing import-time infrastructure side effects.
 """
-from backend.config.config import config  # noqa: F401
-from backend.core.task_manager import TaskManager, task_manager  # noqa: F401
-from backend.core.llm_service import llm_service  # noqa: F401
-from backend.core.model_config import model_config_service  # noqa: F401
-from backend.core.embedding import embedding_service  # noqa: F401
-from backend.core.rerank import rerank_service  # noqa: F401
-from backend.core.retrieval import knowledge_retriever, RetrievalMode  # noqa: F401
-from backend.core.document_parser import DocumentParser  # noqa: F401
-from backend.core.unified_parser import (  # noqa: F401
-    TxtParser,
-    MarkdownParser,
-    MarkdownElementExtractor,
-    ExcelParser,
-    PptParser,
-    HtmlParser,
-    JsonParser,
-    PdfParser,
-)
 
-from backend.core.exceptions import BusinessError  # noqa: F401
-from backend.core.response import ok, fail  # noqa: F401
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Dict, Tuple
+
+
+_EXPORTS: Dict[str, Tuple[str, str]] = {
+    "config": ("backend.config.config", "config"),
+    "TaskManager": ("backend.core.task_manager", "TaskManager"),
+    "task_manager": ("backend.core.task_manager", "task_manager"),
+    "llm_service": ("backend.core.llm_service", "llm_service"),
+    "model_config_service": ("backend.core.model_config", "model_config_service"),
+    "embedding_service": ("backend.core.embedding", "embedding_service"),
+    "rerank_service": ("backend.core.rerank", "rerank_service"),
+    "knowledge_retriever": ("backend.core.retrieval", "knowledge_retriever"),
+    "RetrievalMode": ("backend.core.retrieval", "RetrievalMode"),
+    "DocumentParser": ("backend.core.document_parser", "DocumentParser"),
+    "TxtParser": ("backend.core.unified_parser", "TxtParser"),
+    "MarkdownParser": ("backend.core.unified_parser", "MarkdownParser"),
+    "MarkdownElementExtractor": ("backend.core.unified_parser", "MarkdownElementExtractor"),
+    "ExcelParser": ("backend.core.unified_parser", "ExcelParser"),
+    "PptParser": ("backend.core.unified_parser", "PptParser"),
+    "HtmlParser": ("backend.core.unified_parser", "HtmlParser"),
+    "JsonParser": ("backend.core.unified_parser", "JsonParser"),
+    "PdfParser": ("backend.core.unified_parser", "PdfParser"),
+    "BusinessError": ("backend.core.exceptions", "BusinessError"),
+    "ok": ("backend.core.response", "ok"),
+    "fail": ("backend.core.response", "fail"),
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str):
+    target = _EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attribute_name = target
+    value = getattr(import_module(module_name), attribute_name)
+    globals()[name] = value
+    return value

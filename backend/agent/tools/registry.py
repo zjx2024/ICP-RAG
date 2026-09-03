@@ -17,6 +17,11 @@ ICP_TOOL_DEFS = [
     {"name": "rbd_calculator", "label": "RBD 可靠度计算", "description": "基于成功路径和参数确定性计算系统可靠度"},
     {"name": "mfl_query", "label": "MFL 查询", "description": "查询维修故障清单、功能电路和 API 信息"},
     {"name": "fault_history_query", "label": "故障历史", "description": "检索历史排故案例、根因、步骤和最终处置"},
+    {
+        "name": "graph_traversal",
+        "label": "跨文档关系查询",
+        "description": "从明确业务ID出发查询经 PostgreSQL 逐边再授权的受限多跳关系",
+    },
     {"name": "fault_reasoning", "label": "故障推理", "description": "融合多源证据、排序候选并决定是否需要追问"},
 ]
 
