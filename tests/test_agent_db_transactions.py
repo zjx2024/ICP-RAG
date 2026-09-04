@@ -99,7 +99,10 @@ class AgentDBReadTransactionTests(unittest.TestCase):
             if "INSERT INTO agent_messages" in sql
         )
         self.assertIn("evidence_catalog", insert[0])
-        self.assertEqual(evidence_catalog, json.loads(insert[1][-1]))
+        self.assertIn("delivered_answer_fields", insert[0])
+        # 新增的 delivered_answer_fields 位于参数末尾；evidence_catalog 是倒数第二列
+        self.assertEqual(evidence_catalog, json.loads(insert[1][-2]))
+        self.assertIsNone(insert[1][-1])
         self.assertEqual(citations, result["citations"])
         self.assertEqual(evidence_catalog, result["evidence_catalog"])
 

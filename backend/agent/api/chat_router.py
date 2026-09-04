@@ -398,12 +398,14 @@ async def chat(body: ChatRequest, request: Request):
         citations: list = None,
         thinking_events: list = None,
         evidence_catalog: list = None,
+        delivered_answer_fields: list = None,
     ):
         return agent_db.add_message(
             body.session_id, "assistant", final_answer,
             citations=citations,
             thinking_events=thinking_events,
             evidence_catalog=evidence_catalog,
+            delivered_answer_fields=delivered_answer_fields,
         )
 
     # 只持久化面向用户的可审计步骤。thinking_delta 等模型原始输出不落库、
@@ -416,6 +418,7 @@ async def chat(body: ChatRequest, request: Request):
         citations = []
         evidence_catalog = []
         used_evidence_ids = []
+        delivered_answer_fields = []
         pending_answer_event = None
         pending_answer_delta = ""
         thinking_events = []
@@ -467,6 +470,7 @@ async def chat(body: ChatRequest, request: Request):
                     citations = item.get("citations", []) or []
                     evidence_catalog = item.get("evidence_catalog", []) or []
                     used_evidence_ids = item.get("used_evidence_ids", []) or []
+                    delivered_answer_fields = item.get("delivered_answer_fields", []) or []
                     pending_answer_event = item
                     continue
                 elif evt_type == "answer_delta":
@@ -499,6 +503,9 @@ async def chat(body: ChatRequest, request: Request):
                         citations=citations if citations else None,
                         thinking_events=thinking_events if thinking_events else None,
                         evidence_catalog=evidence_catalog if evidence_catalog else None,
+                        delivered_answer_fields=(
+                            delivered_answer_fields if delivered_answer_fields else None
+                        ),
                     )
                     if not isinstance(saved_msg, dict) or not saved_msg.get("id"):
                         raise RuntimeError("assistant message insert returned no message id")

@@ -1311,6 +1311,87 @@ def _prior_answer_anchor_subjects(messages: Any) -> List[str]:
     return _anchor_subjects(anchors)
 
 
+def _prior_delivered_fields(messages: Any) -> List[str]:
+    """Answer fields the immediately preceding assistant answer actually
+    delivered (required − remaining).  The chat router persists this list on
+    the assistant message; the values are stable answer-contract field names
+    only, never prose, so they can be subtracted from the next turn's
+    obligation set without reusing old conclusions as current facts.
+    """
+
+    if not isinstance(messages, list):
+        return []
+    for message in reversed(messages):
+        if not isinstance(message, Mapping) or str(message.get("role") or "") != "assistant":
+            continue
+        delivered = message.get("delivered_answer_fields")
+        if not isinstance(delivered, list):
+            return []
+        fields: List[str] = []
+        seen: set[str] = set()
+        for value in delivered:
+            normalized = str(value or "").strip()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                fields.append(normalized)
+        return fields
+    return []
+
+
+# 追问/独立问题的问题语义形态，只影响答案组织方式（叙述/排序/对比/确认/
+# 处置），不改变工具授权与义务字段集合。它在 answer prompt 中用于规避
+# “字段驱动平铺”：同一字段域下的“为什么重要/最先影响哪个/验证方法”不再被
+# 当作“再枚举一遍字段”处理。判定是确定性关键词，先命中更明确的操作性
+# 语义（排序、确认、对比、处置），再退到解释；未命中时不注入任何提示。
+_SEMANTICS_PATTERNS: Sequence[tuple] = (
+    (
+        "rank",
+        re.compile(
+            r"最先|优先|优先级|按.*顺序|先后|哪个先|最先影响|次序|重要性排序|先看|首当其冲",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "verify",
+        re.compile(
+            r"确认|对不对|对吗|是不是|能否证明|能不能证明|能证明|已证明|证实|核实|复核|验证一下",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "compare",
+        re.compile(
+            r"区别|对比|差异|相同|一样吗|是不是一样|相比|谁更|更能|替代|代替|换成|换个|不能代替",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "act",
+        re.compile(
+            r"怎么处理|怎么办|如何处置|怎么处置|怎么查|怎么修|怎么验证|如何验证|复测|更换|测量|排除|处置办法|处理办法|处理步骤",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "explain",
+        re.compile(
+            r"为什么|为何|什么原因|原理|机制|怎么解释|如何理解|怎么会|导致|根因",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+
+def _detect_question_semantics(query: Any) -> str:
+    text = " ".join(str(query or "").split())
+    if not text:
+        return ""
+    for semantics, pattern in _SEMANTICS_PATTERNS:
+        if pattern.search(text):
+            return semantics
+    return ""
+
+
 def _continuation_source_tools(
     *,
     query: str,
@@ -2048,6 +2129,18 @@ async def plan_node(state, config=None) -> Dict:
             *source_coverage_fields,
         ])
     query_frame["requested_source_tools"] = source_coverage_tools
+    # 追问轮已交付消融：上一轮真正交付的必答字段随消息落库，本轮仅在
+    # query_frame 透传（供 answer 生成“不重复上轮已交付内容”的提示），
+    # 不删除义务字段本身——删除会让 focused 契约退化，也会把“为什么重要/
+    # 最先影响哪个/验证方法”这类同一字段域的新维度误当成已交付维度。
+    # 问题的语义形态（解释/排序/确认/对比/处置）同样只影响答案组织方式，
+    # 不改变工具授权与义务字段集合。
+    prior_delivered_fields = _prior_delivered_fields(messages)
+    if prior_delivered_fields:
+        query_frame["prior_delivered_fields"] = prior_delivered_fields
+    question_semantics = _detect_question_semantics(query)
+    if question_semantics:
+        query_frame["question_semantics"] = question_semantics
     topology_dependency = dialogue_context.get("topology_dependency")
     if isinstance(topology_dependency, dict) and topology_dependency.get("required"):
         # ``build_query_frame`` intentionally exposes a closed set of generic

@@ -7575,6 +7575,46 @@ def _target_preflight_instruction(state: Dict[str, Any]) -> str:
     )
 
 
+# 追问轮答案形态由“本轮语义维度”驱动，不由轮次编号驱动。上轮已交付
+# 的必答字段（query_frame.prior_delivered_fields）与问题语义
+# （query_frame.question_semantics）都来自确定性提取/计划层，这里只把
+# 约束转成回答模型的形态提示：不重复上轮已交付内容，并按追问形态组织
+# 叙述（解释机制/给出顺序/对比差异/明确确认/给出处置），而不是再次平铺
+# 字段清单。该提示只在确实存在上一轮已交付维度时注入，不影响首轮回答。
+_SEMANTICS_SHAPE_INSTRUCTIONS = {
+    "explain": "本轮要求解释机制或原因，请用连贯叙述说明内在逻辑与依据，不要逐条罗列证据字段清单。",
+    "rank": "本轮要求给出先后/优先级/顺序，请明确排出次序并逐项说明排序依据，不要平铺没有顺序的字段清单。",
+    "compare": "本轮要求对比或区分，请以差异点为结构组织回答（对象甲 vs 对象乙），不要把两者的内容各自平铺。",
+    "verify": "本轮要求确认/验证/证明，请先明确回答“能/不能、是/否”，再给出可核对的依据，不要重放完整清单。",
+    "act": "本轮要求处置/验证方法，请给出方法、步骤与判据，不要重复上一轮已列的候选或清单。",
+}
+
+
+def _followup_convergence_instruction(state: Mapping[str, Any]) -> str:
+    frame = (
+        state.get("query_frame")
+        if isinstance(state.get("query_frame"), Mapping)
+        else {}
+    )
+    prior_delivered = frame.get("prior_delivered_fields")
+    if not isinstance(prior_delivered, list) or not prior_delivered:
+        return ""
+    labels = "、".join(
+        _TARGET_COMPLETENESS_LABELS.get(str(field), str(field))
+        for field in prior_delivered
+        if str(field or "").strip()
+    )
+    parts = [
+        f"上一轮回答已交付以下维度：{labels}。"
+        "除非用户本轮明确要求重述、重列或核对完整清单，不要把这些内容原样再讲一遍，"
+        "只回答本轮新增的具体问题。"
+    ]
+    semantics = str(frame.get("question_semantics") or "").strip()
+    if semantics in _SEMANTICS_SHAPE_INSTRUCTIONS:
+        parts.append(_SEMANTICS_SHAPE_INSTRUCTIONS[semantics])
+    return "\n".join(parts)
+
+
 def _source_coverage_preflight_instruction(state: Mapping[str, Any]) -> str:
     """Add source-specific answer boundaries for an explicit document request."""
 
@@ -14465,6 +14505,12 @@ async def answer_node(state, config=None) -> Dict:
     ]
     if preflight_instructions:
         prompt = f"{prompt}\n\n" + "\n\n".join(preflight_instructions)
+    # 追问轮收敛提示：只在上轮确有已交付维度时注入（plan 已把
+    # prior_delivered_fields 放进 query_frame）。它不改变义务字段集合，
+    # 只约束回答形态，避免把追问当成首轮字段平铺重答。
+    convergence_instruction = _followup_convergence_instruction(state)
+    if convergence_instruction:
+        prompt = f"{prompt}\n\n{convergence_instruction}"
 
     stream_queue = None
     if config and isinstance(config, dict):
@@ -14777,6 +14823,14 @@ async def answer_node(state, config=None) -> Dict:
     else:
         answer_completion_status = "full"
         answer_unconfirmed_fields = []
+    # 本轮答案实际交付的必答字段（required − remaining）。随消息落库后，
+    # 下一轮 plan 用它做“已交付消融”：追问轮不再把已交付维度当作全新义务
+    # 重答一遍。只保留字段名，不含答案文本。
+    delivered_answer_fields = [
+        field
+        for field in required_answer_fields(state)
+        if field not in final_remaining
+    ]
     if restricted_stream and stream_queue is not None:
         try:
             await stream_queue.put({"type": "answer_delta", "content": final_answer})
@@ -14793,4 +14847,5 @@ async def answer_node(state, config=None) -> Dict:
         ],
         "answer_completion_status": answer_completion_status,
         "answer_unconfirmed_fields": answer_unconfirmed_fields,
+        "delivered_answer_fields": delivered_answer_fields,
     }

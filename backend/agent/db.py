@@ -282,6 +282,13 @@ class AgentDB:
                 cur.execute("""
                     ALTER TABLE agent_messages ADD COLUMN IF NOT EXISTS evidence_catalog JSONB
                 """)
+                # 上一轮答案实际交付的必答字段（required − remaining）。追问轮
+                # 用它做“已交付消融”：不再重答已明确交付的维度。仅存字段名，
+                # 不存答案文本，避免把旧结论当本轮事实复用。
+                cur.execute("""
+                    ALTER TABLE agent_messages
+                    ADD COLUMN IF NOT EXISTS delivered_answer_fields JSONB
+                """)
 
                 postgres_client.conn.commit()
                 self._initialized = True
@@ -803,21 +810,27 @@ class AgentDB:
     def add_message(self, session_id: str, role: str, content: str = "",
                     tool_calls: List = None, citations: List = None,
                     thinking_events: List = None,
-                    evidence_catalog: List = None) -> Dict:
+                    evidence_catalog: List = None,
+                    delivered_answer_fields: List = None) -> Dict:
         msg_id = str(uuid.uuid4())
         tc_json = json.dumps(tool_calls, ensure_ascii=False) if tool_calls else None
         ci_json = json.dumps(citations, ensure_ascii=False) if citations else None
         te_json = json.dumps(thinking_events, ensure_ascii=False) if thinking_events else None
         ec_json = json.dumps(evidence_catalog, ensure_ascii=False) if evidence_catalog else None
+        daf_json = (
+            json.dumps(delivered_answer_fields, ensure_ascii=False)
+            if delivered_answer_fields else None
+        )
         with postgres_client.conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO agent_messages (
                     id, session_id, role, content, tool_calls, citations,
-                    thinking_events, evidence_catalog
+                    thinking_events, evidence_catalog, delivered_answer_fields
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (
                 msg_id, session_id, role, content, tc_json, ci_json, te_json, ec_json,
+                daf_json,
             ))
             postgres_client.conn.commit()
         # 更新会话计数
@@ -842,13 +855,15 @@ class AgentDB:
             "citations": citations,
             "thinking_events": thinking_events,
             "evidence_catalog": evidence_catalog,
+            "delivered_answer_fields": delivered_answer_fields,
         }
 
     def list_messages(self, session_id: str, limit: int = 100) -> List[Dict]:
         with self._read_cursor() as cur:
             cur.execute("""
                 SELECT id, session_id, role, content, tool_calls, citations,
-                       thinking_events, evidence_catalog, feedback, created_at
+                       thinking_events, evidence_catalog, delivered_answer_fields,
+                       feedback, created_at
                 FROM agent_messages
                 WHERE session_id = %s
                 ORDER BY created_at DESC, id DESC
@@ -859,7 +874,7 @@ class AgentDB:
             result = []
             for r in rows:
                 d = {desc[0]: v for desc, v in zip(cur.description, r)}
-                for k in ("tool_calls", "citations", "thinking_events", "evidence_catalog"):
+                for k in ("tool_calls", "citations", "thinking_events", "evidence_catalog", "delivered_answer_fields"):
                     if isinstance(d.get(k), str):
                         try:
                             d[k] = json.loads(d[k])
@@ -891,6 +906,14 @@ class AgentDB:
                 anchors = _conversation_anchors(message.get("citations"), limit=8)
                 if anchors:
                     item["conversation_anchors"] = anchors
+                # 只携带上一轮答案真正交付的必答字段名，供追问轮“已交付消融”。
+                delivered = message.get("delivered_answer_fields")
+                if isinstance(delivered, list):
+                    item["delivered_answer_fields"] = [
+                        str(value).strip()
+                        for value in delivered
+                        if str(value or "").strip()
+                    ]
             result.append(item)
         return result
 
