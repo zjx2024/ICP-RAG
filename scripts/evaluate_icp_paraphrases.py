@@ -80,6 +80,7 @@ ASSERTION_LIST_FIELDS = {
     "answer_contains",
     "answer_not_contains",
     "answer_regex",
+    "answer_not_repeat_prior",
     "required_event_types",
     "required_scope_routes",
     "forbidden_scope_routes",
@@ -832,6 +833,7 @@ def _evaluate_assertions(
     assertions: Mapping[str, Any],
     *,
     answer: str,
+    prior_answer: str = "",
     tools: Sequence[str],
     doc_types: Sequence[str],
     used_doc_types: Sequence[str],
@@ -846,6 +848,25 @@ def _evaluate_assertions(
     done_received: bool,
     answer_received: bool,
 ) -> List[Dict[str, Any]]:
+    # 追问轮“不得原样重述”检查：answer_not_repeat_prior 给出上轮答案中的
+    # 关键短语；脚本在上轮中找到含该短语的完整句子，若同一句（去空白/换行
+    # 后子串命中）在本轮再原样出现，视为重述失败。命中短语但上轮句子被本轮
+    # 改写（补充新维度）时不受影响。仅在追问轮用例显式声明时启用。
+    repeat_prior: List[str] = []
+    if prior_answer and assertions.get("answer_not_repeat_prior"):
+        prior_flat = re.sub(r"\s+", "", str(prior_answer))
+        answer_flat = re.sub(r"\s+", "", str(answer))
+        for phrase in assertions.get("answer_not_repeat_prior", []):
+            phrase = str(phrase or "").strip()
+            if not phrase or phrase not in prior_flat:
+                continue
+            for sentence in re.split(r"[。！？!?；;\n]", prior_flat):
+                if (
+                    phrase in sentence
+                    and len(sentence) >= 8
+                    and sentence in answer_flat
+                ):
+                    repeat_prior.append(sentence)
     tool_set = set(tools)
     doc_type_set = set(doc_types)
     used_doc_type_set = set(used_doc_types)
@@ -860,6 +881,12 @@ def _evaluate_assertions(
         _assertion_result("runtime.done_received", done_received, True, done_received),
         _assertion_result("runtime.answer_received", answer_received, True, answer_received),
     ]
+    for _sentence in repeat_prior:
+        results.append(
+            _assertion_result(
+                "answer_not_repeat_prior", False, _sentence, answer
+            )
+        )
 
     required_tools = set(assertions.get("required_tools", []))
     if "required_tools" in assertions:
@@ -1062,6 +1089,7 @@ def _build_turn_result(
     turn: EvaluationTurn,
     *,
     include_raw_events: bool,
+    prior_answer: str = "",
     events: Sequence[Mapping[str, Any]],
     runtime_errors: Sequence[Mapping[str, Any]],
     answer: str,
