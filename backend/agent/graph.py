@@ -96,7 +96,11 @@ def _route_by_intent(state: AgentState) -> str:
 def _decide_next(state: AgentState) -> str:
     next_action = state.get("next_action", "done")
     iteration = state.get("iteration", 0)
-    if iteration >= 4:
+    # 迭代上限与 reflect_node 共用 state.max_reflections（默认 3），不再各自
+    # 硬编码常量：legacy 路由在最后一次循环之后进入 answer，因此阈值取
+    # max_reflections + 1（默认 3+1=4，与历史行为一致）。
+    max_reflections = int(state.get("max_reflections", 3) or 3)
+    if iteration >= max_reflections + 1:
         return "answer"
     return {
         "retry_document": "vector_search",

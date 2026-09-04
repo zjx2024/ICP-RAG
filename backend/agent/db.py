@@ -7,6 +7,7 @@
 - 复用现有 postgres_client 连接（同一个 PG 实例，不同表）
 """
 import json
+import re
 import uuid
 import logging
 from contextlib import contextmanager
@@ -606,6 +607,10 @@ class AgentDB:
         for k, v in kwargs.items():
             if k not in allowed:
                 continue
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k):
+                # 列名参与 SQL 拼接；即使已由 allowed 白名单过滤，仍保留
+                # 标识符形态校验作为第二道防线（防御白名单被意外放大）。
+                raise ValueError(f"非法配置列名: {k!r}")
             if k == "enabled_tools" and isinstance(v, list):
                 v = json.dumps(v, ensure_ascii=False)
             sets.append(f"{k} = %s")
@@ -738,6 +743,8 @@ class AgentDB:
         for k, v in kwargs.items():
             if k not in allowed:
                 continue
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k):
+                raise ValueError(f"非法会话列名: {k!r}")
             sets.append(f"{k} = %s")
             vals.append(v)
             if k == "title":

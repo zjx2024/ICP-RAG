@@ -2067,6 +2067,10 @@ class PostgresClient:
     def _query_rows(self, table, doc_id, page, size, filters):
         """真源表行查询（doc_id 过滤 + 列过滤 + keyword 全列检索 + 分页）。
         filters 为 {列名: 值}，列名须在表结构内；keyword 按文本列 ILIKE。"""
+        if table not in self._ROW_SEARCH_COLS:
+            # table 目前只由本类三个方法以硬编码调用，但 SQL 中表名直接
+            # 拼接，必须先经白名单校验，防止未来暴露给外部输入时成为注入面。
+            raise ValueError(f"非法真源表名: {table!r}")
         where = []
         params = []
         if doc_id:
