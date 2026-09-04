@@ -318,19 +318,19 @@ class BoundedEnumerationTests(unittest.TestCase):
         ]
         return {"vertices": vertices, "edges": []}
 
-    def test_events_within_limit_render_without_excerpt_marker(self):
+    def test_events_render_as_bounded_count_without_details(self):
         summary = evidence_display.summarize_graph_structure(
             self._fta_graph(8), diagram_type="fta", title="示例树"
         )
-        self.assertNotIn("节选", summary)
-        self.assertIn("事件7", summary)
+        self.assertIn("基本事件共 8 项", summary)
+        self.assertNotIn("事件1", summary)
 
-    def test_large_event_sets_keep_the_bounded_excerpt(self):
+    def test_large_event_sets_still_report_only_count(self):
         summary = evidence_display.summarize_graph_structure(
             self._fta_graph(15), diagram_type="fta", title="示例树"
         )
-        self.assertIn("节选", summary)
-        self.assertIn("共 15 项", summary)
+        self.assertIn("基本事件共 15 项", summary)
+        self.assertNotIn("事件1", summary)
 
 
 class NarrativeFacetGuaranteeTests(unittest.TestCase):

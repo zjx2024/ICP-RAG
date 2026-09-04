@@ -39,7 +39,7 @@ class StructuredEvidenceDisplayTests(unittest.TestCase):
         self.assertNotIn("串联", summary)
         self.assertNotIn("并联", summary)
 
-    def test_fta_basic_event_excerpt_includes_bounded_descriptions_and_model_note(self):
+    def test_fta_basic_event_summary_reports_count_without_details(self):
         graph = {
             "root_fault_id": "top",
             "metadata": {
@@ -67,12 +67,11 @@ class StructuredEvidenceDisplayTests(unittest.TestCase):
             title="通信中断",
         )
 
-        # 15 个事件超过有界完整呈现上限，保持节选语义。
-        self.assertIn("基本事件（节选）：", summary)
-        self.assertNotIn("关键基本事件", summary)
-        self.assertIn("事件 1（明确原因说明 1", summary)
-        self.assertIn("（共 15 项）", summary)
-        self.assertNotIn("事件 6（", summary)
+        # 摘要只报数量，不把 name（description）明细列给回答模型；明细由
+        # answer 的确定性补全（_ensure_fta_structure_only_completeness）给出。
+        self.assertIn("基本事件共 15 项", summary)
+        self.assertNotIn("基本事件（节选）", summary)
+        self.assertNotIn("事件 1（", summary)
         self.assertIn("建模说明：A、B 总线作为冗余通道；网关为串联单点。", summary)
 
     def test_rbd_summary_displays_only_explicit_success_and_structure_notes(self):

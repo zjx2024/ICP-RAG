@@ -932,6 +932,36 @@ def _exact_identity_rows(
     return result
 
 
+def _hmc_from_terms(terms: Sequence[str]) -> Dict[str, str]:
+    """Extract an LCN/HSC component pair from planner-produced search terms.
+
+    The planner's ``terms`` are explicit tokens, not free-form prose.  When a
+    rewrite dropped the ``LCN/HSC`` labels from the query text, this fallback
+    rebuilds the exact-component match from unambiguous digit shapes: the
+    longest 5-8 digit run is treated as LCN, the following 1-4 digit run as
+    HSC (zero-padded to four).  Only digit combinations are accepted; any other
+    occurrence leaves the query in keyword/fallback mode (fail-closed).
+    """
+
+    numbers: List[str] = []
+    for term in terms:
+        for match in re.finditer(r"(?<!\d)(\d{1,8})(?!\d)", str(term or "")):
+            value = match.group(1)
+            if value and (not numbers or value != numbers[0]):
+                numbers.append(value)
+    if len(numbers) < 2:
+        return {}
+    # 最长数字串视为 LCN，其余取第一个作为 HSC
+    lcn = max(numbers, key=len)
+    hsc_candidates = [value for value in numbers if value != lcn]
+    if not lcn or not hsc_candidates:
+        return {}
+    hsc = hsc_candidates[0]
+    if hsc.isdigit() and len(hsc) < 4:
+        hsc = hsc.zfill(4)
+    return {"lcn": lcn, "hsc": hsc, "hamc": ""}
+
+
 def _query_hmc(
     query: str,
     terms: Sequence[str],
@@ -941,6 +971,13 @@ def _query_hmc(
     include_repair_method: bool = True,
 ) -> List[Dict[str, Any]]:
     exact = _extract_hmc(query)
+    if not exact:
+        # 用户原文可能被规划器改写/归一化而丢失 LCN/HSC 标签，导致上面的
+        # 标签解析失败。terms 由规划器显式拆出、不含自然语言噪音；当其中
+        # 同时出现明确的 LCN（≥5 位数字）与 HSC（≤4 位数字）时，按字段等价
+        # 匹配走组件精确查询，而不是退化成关键词/语义检索。没有明确数字
+        # 组合时不猜代码，保持 fail-closed。
+        exact = _hmc_from_terms(terms)
     try:
         with postgres_client.conn.cursor() as cur:
             if exact:

@@ -109,11 +109,11 @@ class ToolCallEvidenceMappingTests(unittest.TestCase):
 
         self.assertTrue(evidence["content"].startswith("{"))
         self.assertIn("顶事件：系统无法与外设交换数据", evidence["display_summary"])
-        self.assertIn("A 通道接收超时", evidence["display_summary"])
-        self.assertIn("接收器件失效、线路异常或时序配置错误", evidence["display_summary"])
-        # 两个基本事件属于有界小集合：完整呈现，不再标“节选”。
-        self.assertIn("基本事件：", evidence["display_summary"])
+        # 摘要只报基本事件数量，明细由 answer 确定性补全，避免向回答模型暴露
+        # name（description）对导致复述/JSON 字面量回归。
+        self.assertIn("基本事件共 2 项", evidence["display_summary"])
         self.assertNotIn("基本事件（节选）", evidence["display_summary"])
+        self.assertNotIn("A 通道接收超时", evidence["display_summary"])
         self.assertNotIn("关键基本事件", evidence["display_summary"])
         self.assertIn("建模说明：A/B 总线作为冗余通道。", evidence["display_summary"])
         self.assertIn("4 个节点、3 条关系", evidence["display_summary"])

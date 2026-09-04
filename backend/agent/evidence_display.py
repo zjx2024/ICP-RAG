@@ -221,13 +221,10 @@ def summarize_graph_structure(
         if gate_types:
             parts.append(f"逻辑门：{_with_total(gate_types, gate_total)}")
         if event_excerpts:
-            # “节选”只在真的截断了条目时出现；有界小集合的完整列举不是节选。
-            label = (
-                "基本事件（节选）"
-                if event_total > len(event_excerpts)
-                else "基本事件"
-            )
-            parts.append(f"{label}：{_with_total(event_excerpts, event_total)}")
+            # 摘要只报基本事件数量，不把 name（description）明细列给回答模型：
+            # 明细交由 _ensure_fta_structure_only_completeness 从图确定性补全，
+            # 否则模型会把同一列举复述成重复段落（或把 {‘name’: …} 抄成字面量）。
+            parts.append(f"基本事件共 {event_total} 项")
         if modeling_assumption:
             parts.append(f"建模说明：{modeling_assumption}")
         return "；".join(parts) + "。"

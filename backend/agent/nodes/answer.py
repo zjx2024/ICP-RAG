@@ -2307,8 +2307,15 @@ def _format_context(state) -> str:
             )
             document = item.get("doc_name") or item.get("doc_id") or "未标注文档"
             scope_text = json.dumps(item.get("scope") or {}, ensure_ascii=False, default=str)
+            metadata = dict(item.get("metadata") or {})
+            # answer_fields 是给确定性后处理（FTA 叶子过滤、历史 manifest、
+            # 字段回填等）使用的内部结构化字段：无论原始 JSON 还是清洗后的
+            # 自然语言都不注入回答提示。其内容与证据 content/display_summary
+            # 重叠会让模型把同一列举重复两遍，原始形态还会泄漏 {'name': ...}
+            # 字面量。其它业务元数据（验证状态、修订版本等）仍保留展示。
+            metadata.pop("answer_fields", None)
             metadata_text = json.dumps(
-                item.get("metadata") or {},
+                metadata,
                 ensure_ascii=False,
                 default=str,
             )[:2400]
@@ -3441,6 +3448,57 @@ def _strip_visible_markdown_emphasis(answer: str) -> str:
     return "\n".join(output)
 
 
+_PYTHON_NAME_DESCRIPTION_LITERAL = re.compile(
+    r"\{\s*['\"]?name['\"]?\s*:\s*['\"]([^'\"]+)['\"]\s*,"
+    r"\s*['\"]?description['\"]?\s*:\s*['\"]([^'\"]*)['\"]\s*\}"
+)
+
+
+def _sanitize_prompt_echo_literals(answer: str) -> str:
+    """Turn Python dict literals leaked into the answer back into prose.
+
+    The answer prompt used to expose metadata ``answer_fields`` as raw JSON;
+    local models occasionally echoed ``{'name': 'X', 'description': 'Y'}``
+    verbatim into the user-facing answer.  This deterministic fallback rewrites
+    the known name/description shape to ``X（Y）``.  The real fix is prompt-side
+    (``_format_context`` now projects answer_fields as natural language), so
+    this stage is a belt-and-suspenders guard for any other model pathway such
+    as citation repair.
+    """
+
+    def _replace(match: "re.Match[str]") -> str:
+        name, description = match.group(1).strip(), match.group(2).strip()
+        return f"{name}（{description}）" if description else name
+
+    return _PYTHON_NAME_DESCRIPTION_LITERAL.sub(_replace, str(answer or ""))
+
+
+def _deduplicate_repeated_answer_lines(answer: str) -> str:
+    """Drop exactly repeated bullet rows, keeping the first occurrence.
+
+    Follow-up rounds can re-list the same maintenance measure with a new
+    citation id (for example MFL BCA/BCB channel entries appearing twice with
+    nearly identical wording).  Rows are compared after removing citation
+    markers and whitespace, so ``X [^1]`` and ``X [^10]`` collapse to one row.
+    The dropped row's marker disappears with it, and public citation compaction
+    later removes the now-unreferenced ledger entries.  Only byte-equal rows
+    are removed so distinct records with different fields stay untouched.
+    """
+
+    seen: set[str] = set()
+    kept: List[str] = []
+    for line in str(answer or "").splitlines():
+        stripped = line.strip()
+        if re.match(r"^[-*]\s+", stripped):
+            normalized = re.sub(r"\[\^\d+\]", "", stripped)
+            normalized = re.sub(r"\s+", "", normalized)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def _strip_diagnostic_followup_for_calculation(
     answer: str,
     state: Mapping[str, Any],
@@ -3638,6 +3696,89 @@ def _ensure_explicit_rbd_scope_boundary(
         f"[^{citation}]"
     )
     return f"{current}\n\n{boundary}".strip()
+
+
+def _ensure_approved_rbd_structure_cited(
+    answer: str,
+    state: Dict[str, Any],
+    *,
+    citations: Sequence[Mapping[str, Any]] = (),
+) -> str:
+    """Guarantee at least one citation binds an approved RBD structure row.
+
+    When rbd_query was authorized and gate-approved RBD structure evidence
+    exists, the answer must keep the redundancy/success-criterion view bound
+    to that row.  A local model answering an impact question from FMECA only
+    may skip the approved RBD record entirely; this deterministic closure
+    re-attaches the RBD source before public citation compaction so the
+    reference survives.  Runs after the model/citation editors so their
+    removal of an unused candidate cannot silently drop the row again.
+    """
+
+    current = str(answer or "").strip()
+    if not current:
+        return current
+    frame = state.get("query_frame") if isinstance(state.get("query_frame"), Mapping) else {}
+    requested = {
+        str(value or "").strip()
+        for value in (
+            state.get("requested_source_tools")
+            or frame.get("requested_source_tools")
+            or []
+        )
+        if str(value or "").strip()
+    }
+    rbd_executed = "rbd_query" in requested or any(
+        str(result.get("tool") or "").strip() == "rbd_query"
+        for result in (state.get("tool_results") or [])
+        if isinstance(result, Mapping)
+    )
+    if not rbd_executed:
+        return current
+    # 已引用任一 RBD 结构记录 → 无需补引
+    prompt_markers = {
+        int(item.get("id") or 0)
+        for item in (citations or [])
+        if str(item.get("doc_type") or "") == "rbd"
+        and str(item.get("type") or item.get("claim_type") or "") == "rbd_structure"
+    } if citations else {
+        number
+        for number, item in _citation_ledger(state).items()
+        if str(item.get("doc_type") or "") == "rbd"
+        and str(item.get("claim_type") or "") == "rbd_structure"
+    }
+    if any(f"[^{number}]" in current for number in prompt_markers):
+        return current
+    # 找一条已批准 RBD 结构证据追加
+    approved_numbers = _approved_citation_numbers(state)
+    ledger = _citation_ledger(state)
+    selected = next(
+        (
+            (number, ledger[number])
+            for number in prompt_markers
+            if number in approved_numbers and number in ledger
+        ),
+        None,
+    )
+    if not selected:
+        return current
+    number, item = selected
+    summary = str(item.get("display_summary") or item.get("content") or "")
+    criterion = ""
+    if summary:
+        match = re.search(r"成功判据\s*[:：]\s*([^。；]*)", summary)
+        if match:
+            criterion = match.group(1).strip()
+    appended = [
+        "- **RBD 可靠性结构**："
+        + (
+            f"成功判据：{criterion}。"
+            if criterion
+            else "该资料说明目标系统的冗余依赖与成功路径。"
+        )
+        + f"[^{number}]"
+    ]
+    return f"{current}\n\n" + "\n".join(appended)
 
 
 def _downgrade_unapproved_assertions(answer: str, state: Dict[str, Any]) -> str:
@@ -3953,12 +4094,52 @@ def _editor_output_leaks_internal_manifest(value: Any) -> bool:
         return True
     if re.search(r"(?m)^\s*-\s*故障历史证据\s*\[\^\d+\]\s*｜\s*记录", text):
         return True
+    # 完成度清单外壳：fault/target completion manifest 的
+    # “证据 [^n]｜类型｜记录…｜可补/可支持…” 行是机器指令输入，回显即泄漏。
+    if re.search(r"(?m)^\s*-\s*证据\s*\[\^\d+\]\s*｜\s*[^｜\n]+｜\s*记录", text):
+        return True
+    if re.search(r"｜\s*(?:可补|可支持)\s+", text):
+        return True
     return bool(
         re.search(
             r'(?s)(?:^|\n)\s*[\[{]\s*[\[{]?\s*["\'](?:record_id|answer_fields|source_summary)["\']\s*:',
             text,
         )
     )
+
+
+def _strip_manifest_echo_lines(answer: str) -> str:
+    """Drop manifest-shell rows that leaked into the final answer.
+
+    The completion editors may echo their machine-only ledger
+    (“证据 [^n]｜类型｜记录…｜可补 …”) despite the leak detector; this
+    deterministic stage removes such shell rows and their indented field
+    children.  Dropped citation markers disappear with the rows, and public
+    citation compaction later clears the now-unreferenced ledger entries.
+    Normal narrative lines are never touched.
+    """
+
+    lines = str(answer or "").splitlines()
+    kept: List[str] = []
+    skip = False
+    for line in lines:
+        stripped = line.strip()
+        is_shell = bool(
+            re.match(r"^-\s*证据\s*\[\^\d+\]\s*｜", stripped)
+            or re.match(r"^-\s*证据\s*｜", stripped)
+        )
+        if is_shell:
+            skip = True
+            continue
+        if skip:
+            if stripped.startswith("-") and not stripped.startswith("- "):
+                # 未尽小心：仅跳过显式缩进的子字段行
+                pass
+            if line.startswith(("  ", "\t")):
+                continue
+            skip = False
+        kept.append(line)
+    return "\n".join(kept)
 
 
 _TARGET_COMPLETENESS_FACET_ORDER = (
@@ -14814,6 +14995,18 @@ async def answer_node(state, config=None) -> Dict:
         process_evidence_ids = list(
             config.get("configurable", {}).get("process_evidence_ids") or []
         )
+    # 提示侧已清洗 answer_fields（见 _format_context），这里对模型通路（含
+    # 引用修复）可能残留的 Python dict 字面量做确定性兜底，随后按整行去重
+    # 追问轮重复列举的同一条目。两者都必须在 public citation compaction
+    # 之前运行：被删行的引用 marker 会随之消失，compaction 再移除未引用条目。
+    final_answer = _sanitize_prompt_echo_literals(final_answer)
+    final_answer = _strip_manifest_echo_lines(final_answer)
+    final_answer = _deduplicate_repeated_answer_lines(final_answer)
+    # 已批准 RBD 结构证据若模型完全未引用，则在压缩前确定性补引成功判据，
+    # 保证“可靠性结构”视角可溯源（引用会随 compaction 保留）。
+    final_answer = _ensure_approved_rbd_structure_cited(
+        final_answer, state, citations=prompt_citations
+    )
     final_answer, citations, evidence_catalog = _compact_answer_citations(
         final_answer,
         prompt_citations,
