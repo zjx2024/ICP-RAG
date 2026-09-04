@@ -2,6 +2,7 @@ import os
 import re
 import json
 import base64
+import time
 import logging
 import requests
 from typing import Dict, List, Optional, Tuple, Any, AsyncGenerator
@@ -157,6 +158,30 @@ class LLMClient:
                 return self._call_qwen(messages)
             else:
                 return "[LLM未配置] 请在模型管理页面添加对话模型后重试"
+
+    def call_model(
+        self,
+        messages: List[Dict],
+        model_config: Optional[Dict] = None,
+        *,
+        template_name: str = "",
+    ) -> str:
+        """对外公开的 LLM 同步调用入口（tracing 统一挂钩点）。
+
+        外部模块一律通过本入口调用，不再直接访问私有 ``_call_model``。模板名
+        供 B1 全链路 tracing 记录“哪个提示模板产生了这次调用”；当前先完成
+        耗时与模板名的留痕占位，语义与 _call_model 完全一致。
+        """
+        started = time.time()
+        try:
+            return self._call_model(messages, model_config)
+        finally:
+            elapsed_ms = (time.time() - started) * 1000
+            logger.debug(
+                "call_model finished template=%s elapsed_ms=%.1f",
+                template_name or "<default>",
+                elapsed_ms,
+            )
 
     async def stream_model(self, messages: List[Dict], model_config: Optional[Dict] = None) -> AsyncGenerator[str, None]:
         """流式调用 LLM，逐 token yield 输出内容。

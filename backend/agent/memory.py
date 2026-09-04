@@ -67,7 +67,7 @@ async def maybe_summarize(state, summary_threshold: int = 12, keep_recent: int =
     if agent_id:
         model = agent_model_role_service.get_model_by_role(agent_id, "reflect")
     try:
-        summary = llm_service._call_model(
+        summary = llm_service.call_model(
             [{"role": "user", "content": SUMMARY_PROMPT.format(history=history_text)}],
             model
         )
@@ -118,7 +118,7 @@ async def extract_and_save_memory(state, config, user_id: str = "default") -> No
         model = agent_model_role_service.get_model_by_role(agent_id, "reflect")
 
     try:
-        response = llm_service._call_model(
+        response = llm_service.call_model(
             [{"role": "user", "content": EXTRACT_MEMORY_PROMPT.format(query=query, answer=answer)}],
             model
         )

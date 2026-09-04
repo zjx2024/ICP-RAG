@@ -213,7 +213,7 @@ async def reflect_node(state, config=None) -> Dict:
                 except Exception:
                     pass
         else:
-            response = llm_service._call_model(
+            response = llm_service.call_model(
                 [{"role": "user", "content": prompt}], model
             )
         parsed = _parse_json_response(response)

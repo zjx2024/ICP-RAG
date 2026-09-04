@@ -165,7 +165,7 @@ def analyze_icp_diagram(
             "timeout": min(float(vision_model_config.get("timeout") or 120), 120.0),
         }
     )
-    response = llm_service._call_model(
+    response = llm_service.call_model(
         [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": content},

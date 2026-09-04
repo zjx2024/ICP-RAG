@@ -652,7 +652,7 @@ def compress_session(session_id: str):
     try:
         from backend.core.llm_service import llm_service
         summary_prompt = f"请用中文简洁总结以下对话的关键信息（实体、结论、上下文），不超过300字：\n\n{summary_text}"
-        summary = llm_service._call_model(
+        summary = llm_service.call_model(
             [{"role": "user", "content": summary_prompt}], None
         )
     except Exception as e:
