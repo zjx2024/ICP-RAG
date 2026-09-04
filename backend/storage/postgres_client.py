@@ -10,8 +10,19 @@ logger = logging.getLogger(__name__)
 class PostgresClient:
     def __init__(self):
         self.conn = None
+        self.is_mock = False
         self._name_cache = {}  # (kb_id, doc_id) -> (kb_name, doc_name) 快照缓存，避免每次插日志都查库
         self._connect()
+
+    def conn_is_mock(self) -> bool:
+        """显式查询是否为内存 Mock 连接（替代按类名字符串判断）。
+
+        STRICT_DEPENDENCIES=false 且真实连接失败时回退到 MockPostgres，调用方
+        需要区分“真实库”与“内存替身”来决定就绪状态与降级策略。
+        """
+        return bool(self.is_mock) or (
+            self.conn is not None and self.conn.__class__.__name__ == "MockPostgres"
+        )
 
     @contextmanager
     def read_cursor(self):
@@ -89,6 +100,7 @@ class PostgresClient:
             if config.STRICT_DEPENDENCIES:
                 raise
             self.conn = MockPostgres()
+            self.is_mock = True
     
     def _create_tables(self):
         with self.conn.cursor() as cur:

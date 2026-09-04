@@ -72,7 +72,7 @@ def _dependency_status():
     checks = {}
 
     try:
-        if postgres_client.conn.__class__.__name__ == "MockPostgres":
+        if postgres_client.conn_is_mock():
             raise RuntimeError("connected to in-memory fallback")
         # Do not ping through the application's long-lived shared connection:
         # a plain SELECT starts a transaction in psycopg2 and readiness probes
