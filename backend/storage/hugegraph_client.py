@@ -5,6 +5,9 @@ import subprocess
 import requests
 from typing import Dict, List, Optional, Any, Tuple
 from backend.config.config import config
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 PROPERTY_KEY_DEFINITIONS = (
@@ -92,32 +95,32 @@ class HugeGraphClient:
         return f"{self.base_url}/graphs/{self.graph_name}/graph{endpoint}"
     
     def _ensure_schema_exists(self):
-        print("Initializing HugeGraph schema...")
+        logger.info("Initializing HugeGraph schema...")
         try:
             self._create_property_keys()
-            print("PropertyKeys created successfully")
+            logger.info("PropertyKeys created successfully")
         except Exception as e:
-            print(f"Warning: Failed to create some property keys: {e}")
+            logger.error(f"Warning: Failed to create some property keys: {e}")
         
         try:
             self._create_vertex_labels()
-            print("VertexLabels created successfully")
+            logger.info("VertexLabels created successfully")
         except Exception as e:
-            print(f"Warning: Failed to create some vertex labels: {e}")
+            logger.error(f"Warning: Failed to create some vertex labels: {e}")
         
         try:
             self._create_edge_labels()
-            print("EdgeLabels created successfully")
+            logger.info("EdgeLabels created successfully")
         except Exception as e:
-            print(f"Warning: Failed to create some edge labels: {e}")
+            logger.error(f"Warning: Failed to create some edge labels: {e}")
         
         try:
             self._create_indexes()
-            print("Indexes created successfully")
+            logger.info("Indexes created successfully")
         except Exception as e:
-            print(f"Warning: Failed to create some indexes: {e}")
+            logger.error(f"Warning: Failed to create some indexes: {e}")
         
-        print("Schema initialization completed (existing items skipped)")
+        logger.info("Schema initialization completed (existing items skipped)")
     
     def _create_property_keys(self):
         for name, data_type, cardinality in PROPERTY_KEY_DEFINITIONS:
@@ -132,7 +135,7 @@ class HugeGraphClient:
                     self.session.post(self._get_schema_url("/schema/propertykeys"), json=data)
                     time.sleep(0.1)
             except Exception as e:
-                print(f"Failed to create property key {name}: {e}")
+                logger.error(f"Failed to create property key {name}: {e}")
                 pass
     
     def _create_vertex_labels(self):
@@ -219,7 +222,7 @@ class HugeGraphClient:
                 missing_props = new_props - existing_props
                 
                 if missing_props:
-                    print(f"Updating vertex label '{label}' - adding missing properties: {missing_props}")
+                    logger.info(f"Updating vertex label '{label}' - adding missing properties: {missing_props}")
                     
                     append_data = {
                         "name": label,
@@ -231,11 +234,11 @@ class HugeGraphClient:
                         json=append_data
                     )
                     if append_response.status_code == 200:
-                        print(f"Successfully appended properties to vertex label '{label}'")
+                        logger.info(f"Successfully appended properties to vertex label '{label}'")
                     else:
-                        print(f"Failed to append properties to vertex label '{label}': {append_response.text}")
+                        logger.error(f"Failed to append properties to vertex label '{label}': {append_response.text}")
         except Exception as e:
-            print(f"Failed to create vertex label {label}: {e}")
+            logger.error(f"Failed to create vertex label {label}: {e}")
             pass
     
     def _create_edge_label_if_not_exists(self, label: str, source_label: List[str], 
@@ -254,7 +257,7 @@ class HugeGraphClient:
                 }
                 response = self.session.post(self._get_schema_url("/schema/edgelabels"), json=data)
                 if response.status_code != 201:
-                    print(f"Failed to create edge label {label}: {response.text}")
+                    logger.error(f"Failed to create edge label {label}: {response.text}")
                 time.sleep(0.1)
             else:
                 existing_label = response.json()
@@ -262,16 +265,16 @@ class HugeGraphClient:
                 has_target_label = existing_label.get("target_label") is not None
 
                 if not has_source_label or not has_target_label:
-                    print(f"Warning: Edge label '{label}' exists but missing source/target label configuration.")
-                    print(f"         This may cause edge insertion failures. Consider deleting and recreating.")
-                    print(f"         Current config: source_label={existing_label.get('source_label')}, target_label={existing_label.get('target_label')}")
+                    logger.warning(f"Warning: Edge label '{label}' exists but missing source/target label configuration.")
+                    logger.info(f"         This may cause edge insertion failures. Consider deleting and recreating.")
+                    logger.info(f"         Current config: source_label={existing_label.get('source_label')}, target_label={existing_label.get('target_label')}")
 
                 # 已存在的边标签追加缺失的 properties（镜像 vertex label 的 append 逻辑）
                 existing_props = set(existing_label.get("properties", []))
                 new_props = set(properties)
                 missing_props = new_props - existing_props
                 if missing_props:
-                    print(f"Updating edge label '{label}' - adding missing properties: {missing_props}")
+                    logger.info(f"Updating edge label '{label}' - adding missing properties: {missing_props}")
                     append_data = {
                         "name": label,
                         "properties": list(missing_props),
@@ -282,11 +285,11 @@ class HugeGraphClient:
                         json=append_data
                     )
                     if append_response.status_code == 200:
-                        print(f"Successfully appended properties to edge label '{label}'")
+                        logger.info(f"Successfully appended properties to edge label '{label}'")
                     else:
-                        print(f"Failed to append properties to edge label '{label}': {append_response.text}")
+                        logger.error(f"Failed to append properties to edge label '{label}': {append_response.text}")
         except Exception as e:
-            print(f"Failed to create edge label {label}: {e}")
+            logger.error(f"Failed to create edge label {label}: {e}")
             pass
     
     def _update_edge_label_if_needed(self, label: str, source_label: List[str], 
@@ -305,14 +308,14 @@ class HugeGraphClient:
                     # that destructive repair.  Property additions are handled
                     # independently by the append-only path below; endpoint
                     # metadata requires an explicit offline migration.
-                    print(
+                    logger.info(
                         f"Warning: Edge label '{label}' lacks source/target "
                         "metadata; refusing destructive automatic recreation"
                     )
                     return False
                 return True
         except Exception as e:
-            print(f"Failed to update edge label {label}: {e}")
+            logger.error(f"Failed to update edge label {label}: {e}")
             return False
         return True
     
@@ -419,10 +422,10 @@ class HugeGraphClient:
                 }
                 response = self.session.post(self._get_schema_url("/schema/edgelabels"), json=data)
                 if response.status_code == 201:
-                    print(f"Created dynamic edge label '{label}'")
+                    logger.info(f"Created dynamic edge label '{label}'")
                     return True
                 else:
-                    print(f"Failed to create dynamic edge label '{label}': {response.text}")
+                    logger.error(f"Failed to create dynamic edge label '{label}': {response.text}")
                     return False
             else:
                 existing_label = response.json()
@@ -430,7 +433,7 @@ class HugeGraphClient:
                 missing_props = set(default_props) - existing_props
                 
                 if missing_props:
-                    print(f"Updating edge label '{label}' - adding missing properties: {missing_props}")
+                    logger.info(f"Updating edge label '{label}' - adding missing properties: {missing_props}")
                     
                     append_data = {
                         "name": label,
@@ -442,16 +445,16 @@ class HugeGraphClient:
                         json=append_data
                     )
                     if append_response.status_code == 200:
-                        print(f"Successfully appended properties to edge label '{label}'")
+                        logger.info(f"Successfully appended properties to edge label '{label}'")
                         return True
                     else:
-                        print(f"Failed to append properties to edge label '{label}': {append_response.text}")
+                        logger.error(f"Failed to append properties to edge label '{label}': {append_response.text}")
                         return False
                 else:
-                    print(f"Edge label '{label}' already exists with all required properties")
+                    logger.info(f"Edge label '{label}' already exists with all required properties")
                     return True
         except Exception as e:
-            print(f"Failed to create dynamic edge label '{label}': {e}")
+            logger.error(f"Failed to create dynamic edge label '{label}': {e}")
             return False
     
     def validate_vertices(self, vertices: List[Dict]) -> Tuple[List[Dict], List[str]]:
@@ -544,7 +547,7 @@ class HugeGraphClient:
                     self.session.post(self._get_schema_url("/schema/indexlabels"), json=index_def)
                     time.sleep(1)
             except Exception as e:
-                print(f"Failed to create index {index_def['name']}: {e}")
+                logger.error(f"Failed to create index {index_def['name']}: {e}")
                 pass
     
     def batch_insert(self, vertices: List[Dict], edges: List[Dict], max_retries: int = 3):
@@ -552,21 +555,21 @@ class HugeGraphClient:
             return self._mock_client.batch_insert(vertices, edges)
         
         try:
-            print("=== Data Validation ===")
+            logger.info("=== Data Validation ===")
             vertices, vertex_errors = self.validate_vertices(vertices)
             edges, edge_errors = self.validate_edges(edges)
             
             if vertex_errors:
-                print(f"Vertex validation errors: {len(vertex_errors)}")
+                logger.error(f"Vertex validation errors: {len(vertex_errors)}")
                 for err in vertex_errors[:5]:
-                    print(f"  - {err}")
+                    logger.warning(f"  - {err}")
             
             if edge_errors:
-                print(f"Edge validation errors: {len(edge_errors)}")
+                logger.error(f"Edge validation errors: {len(edge_errors)}")
                 for err in edge_errors[:5]:
-                    print(f"  - {err}")
+                    logger.warning(f"  - {err}")
             
-            print("=== Ensuring Edge Labels ===")
+            logger.info("=== Ensuring Edge Labels ===")
             self.ensure_edge_labels_for_edges(edges)
             
             batch_size = 100
@@ -591,16 +594,16 @@ class HugeGraphClient:
                                 inserted_vertices += len(result)
                             else:
                                 inserted_vertices += result.get("success", 0)
-                            print(f"Inserted {len(result) if isinstance(result, list) else result.get('success', 0)}/{len(batch)} vertices in batch")
+                            logger.info(f"Inserted {len(result) if isinstance(result, list) else result.get('success', 0)}/{len(batch)} vertices in batch")
                             success = True
                         else:
                             error_msg = response.text[:500] if len(response.text) > 500 else response.text
-                            print(f"Insert vertices batch failed (attempt {retries+1}): {error_msg}")
+                            logger.error(f"Insert vertices batch failed (attempt {retries+1}): {error_msg}")
                             retries += 1
                             if retries < max_retries:
                                 time.sleep(2 ** retries)
                     except Exception as ve:
-                        print(f"Vertex batch insert exception (attempt {retries+1}): {ve}")
+                        logger.info(f"Vertex batch insert exception (attempt {retries+1}): {ve}")
                         retries += 1
                         if retries < max_retries:
                             time.sleep(2 ** retries)
@@ -629,28 +632,28 @@ class HugeGraphClient:
                                 inserted_edges += len(result)
                             else:
                                 inserted_edges += result.get("success", 0)
-                            print(f"Inserted {len(result) if isinstance(result, list) else result.get('success', 0)}/{len(batch)} edges in batch")
+                            logger.info(f"Inserted {len(result) if isinstance(result, list) else result.get('success', 0)}/{len(batch)} edges in batch")
                             success = True
                         else:
                             error_msg = response.text[:500] if len(response.text) > 500 else response.text
-                            print(f"Insert edges batch failed (attempt {retries+1}): HTTP {response.status_code} - {error_msg}")
+                            logger.error(f"Insert edges batch failed (attempt {retries+1}): HTTP {response.status_code} - {error_msg}")
                             retries += 1
                             if retries < max_retries:
                                 time.sleep(2 ** retries)
                     except Exception as ee:
-                        print(f"Edge batch insert exception (attempt {retries+1}): {ee}")
+                        logger.info(f"Edge batch insert exception (attempt {retries+1}): {ee}")
                         retries += 1
                         if retries < max_retries:
                             time.sleep(2 ** retries)
             
-            print(f"Batch insert complete: {inserted_vertices}/{len(vertices)} vertices, {inserted_edges}/{len(edges)} edges")
+            logger.info(f"Batch insert complete: {inserted_vertices}/{len(vertices)} vertices, {inserted_edges}/{len(edges)} edges")
             
             if inserted_vertices != len(vertices) or inserted_edges != len(edges):
-                print(f"Warning: Not all data was inserted successfully")
+                logger.warning(f"Warning: Not all data was inserted successfully")
             
             return inserted_vertices == len(vertices) and inserted_edges == len(edges)
         except Exception as e:
-            print(f"Batch insert exception: {e}")
+            logger.info(f"Batch insert exception: {e}")
             return False
     
     def get_vertices_by_kb(self, kb_id: str, label: str = None, limit: int = 10000) -> List[Dict]:
@@ -679,7 +682,7 @@ class HugeGraphClient:
                     break
             return all_vertices
         except Exception as e:
-            print(f"Get vertices by kb failed: {e}")
+            logger.error(f"Get vertices by kb failed: {e}")
             return []
 
     def get_vertex_by_id(self, vertex_id: str) -> Optional[Dict]:
@@ -705,7 +708,7 @@ class HugeGraphClient:
             value = response.json()
             return value if isinstance(value, dict) else None
         except Exception as exc:
-            print(f"Get vertex by id failed: {exc}")
+            logger.error(f"Get vertex by id failed: {exc}")
             return None
     
     def get_edges_by_kb(self, kb_id: str, label: str = None, limit: int = 10000) -> List[Dict]:
@@ -742,7 +745,7 @@ class HugeGraphClient:
                 if (edge.get("properties") or {}).get("kb_id") == kb_id
             ]
         except Exception as e:
-            print(f"Get edges by kb failed: {e}")
+            logger.error(f"Get edges by kb failed: {e}")
             return []
     
     def get_graph_data(self) -> Dict:
@@ -785,7 +788,7 @@ class HugeGraphClient:
             
             return {"vertices": all_vertices, "edges": all_edges}
         except Exception as e:
-            print(f"Get graph data failed: {e}")
+            logger.error(f"Get graph data failed: {e}")
             return {"vertices": [], "edges": []}
     
     def delete_by_kb_id(self, kb_id: str):
@@ -813,10 +816,10 @@ class HugeGraphClient:
                         self._get_graph_url(f"/vertices/{encoded_vid}")
                     )
             
-            print(f"Deleted all data for kb_id: {kb_id}")
+            logger.info(f"Deleted all data for kb_id: {kb_id}")
             return True
         except Exception as e:
-            print(f"Delete by kb_id failed: {e}")
+            logger.error(f"Delete by kb_id failed: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -848,7 +851,7 @@ class HugeGraphClient:
                     pass
                 return json.loads(content)
         except Exception as e:
-            print(f"Failed to parse response: {e}")
+            logger.error(f"Failed to parse response: {e}")
         return {}
 
     @staticmethod
@@ -988,7 +991,7 @@ class HugeGraphClient:
                     break
                 offset += limit
         except Exception as e:
-            print(f"[KG-DELETE] Load edges failed: {e}")
+            logger.error(f"[KG-DELETE] Load edges failed: {e}")
             return False
 
         for edge in all_edges:
@@ -1014,7 +1017,7 @@ class HugeGraphClient:
                 branch = "DELETE" if not is_shared else (
                     "DELETE_EMPTY" if not doc_id_list else "UPDATE"
                 )
-                print(f"[KG-DELETE] Edge {eid}: matched via {'doc_id' if was_in_doc_id_field else 'source_id'}, "
+                logger.info(f"[KG-DELETE] Edge {eid}: matched via {'doc_id' if was_in_doc_id_field else 'source_id'}, "
                       f"remaining_docs={doc_id_list}, branch={branch}")
 
                 if branch in ("DELETE", "DELETE_EMPTY"):
@@ -1022,10 +1025,10 @@ class HugeGraphClient:
                     delete_response = self.session.delete(
                         self._get_graph_url(f"/edges/{encoded_eid}")
                     )
-                    print(f"[KG-DELETE] Edge {eid} DELETE response: status={delete_response.status_code}, body={delete_response.text[:200]}")
+                    logger.info(f"[KG-DELETE] Edge {eid} DELETE response: status={delete_response.status_code}, body={delete_response.text[:200]}")
                     if delete_response.status_code == 204:
                         deleted_count += 1
-                        print(f"[KG-DELETE] Deleted edge: {eid}")
+                        logger.info(f"[KG-DELETE] Deleted edge: {eid}")
                     else:
                         errors += 1
                 else:
@@ -1036,13 +1039,13 @@ class HugeGraphClient:
                     trimmed = self._trim_parts_by_doc(props, doc_id)
                     if trimmed:
                         updated_props.update(trimmed)
-                        print(f"[KG-DELETE] Edge {eid} PUT payload: keys={list(updated_props.keys())}, doc_id={updated_props.get('doc_id')}, source_id={updated_props.get('source_id','<not_set>')}")
+                        logger.info(f"[KG-DELETE] Edge {eid} PUT payload: keys={list(updated_props.keys())}, doc_id={updated_props.get('doc_id')}, source_id={updated_props.get('source_id','<not_set>')}")
                     else:
-                        print(f"[KG-DELETE] Edge {eid} PUT (no parts): doc_id={updated_props.get('doc_id')}")
+                        logger.info(f"[KG-DELETE] Edge {eid} PUT (no parts): doc_id={updated_props.get('doc_id')}")
                     replacement = dict(props)
                     replacement.update(updated_props)
                     update_ok = self.replace_edge_properties(eid, replacement)
-                    print(f"[KG-DELETE] Edge {eid} exact batch UPDATE: success={update_ok}")
+                    logger.info(f"[KG-DELETE] Edge {eid} exact batch UPDATE: success={update_ok}")
                     if update_ok:
                         updated_count += 1
                     else:
@@ -1051,9 +1054,9 @@ class HugeGraphClient:
                 errors += 1
                 import traceback
                 traceback.print_exc()
-                print(f"[KG-DELETE] Edge iteration error for {eid if 'eid' in locals() else '?'}: {e}")
+                logger.error(f"[KG-DELETE] Edge iteration error for {eid if 'eid' in locals() else '?'}: {e}")
 
-        print(f"[KG-DELETE] Delete edges result: matched={matched_count}, deleted={deleted_count}, updated={updated_count}, errors={errors} for doc_id: {doc_id}")
+        logger.error(f"[KG-DELETE] Delete edges result: matched={matched_count}, deleted={deleted_count}, updated={updated_count}, errors={errors} for doc_id: {doc_id}")
         return errors == 0
     
     def _get_all_edges_for_vertex(self, vertex_id: str, vertex_label: str) -> List[Dict]:
@@ -1082,7 +1085,7 @@ class HugeGraphClient:
                 offset += limit
             return all_edges
         except Exception as e:
-            print(f"Get edges for vertex {vertex_id} failed: {e}")
+            logger.error(f"Get edges for vertex {vertex_id} failed: {e}")
             return []
 
     def _delete_all_edges_for_vertex(self, vertex_id: str, vertex_label: str) -> int:
@@ -1100,9 +1103,9 @@ class HugeGraphClient:
                     if resp.status_code == 204:
                         deleted += 1
                     else:
-                        print(f"Failed to delete edge {eid} for vertex {vertex_id}, status={resp.status_code}")
+                        logger.error(f"Failed to delete edge {eid} for vertex {vertex_id}, status={resp.status_code}")
         except Exception as e:
-            print(f"Delete edges for vertex {vertex_id} failed: {e}")
+            logger.error(f"Delete edges for vertex {vertex_id} failed: {e}")
         return deleted
 
     def delete_vertices_by_doc_id(self, doc_id: str):
@@ -1117,7 +1120,7 @@ class HugeGraphClient:
         removed_names = []  # 被物理删除的实体名，供社区报告分级使用
         error_details = []  # 前 10 条错误详情，供删除日志展示
 
-        print(f"[KG-DELETE] === Delete vertices by doc_id={doc_id} ===")
+        logger.info(f"[KG-DELETE] === Delete vertices by doc_id={doc_id} ===")
 
         all_vertices = []
         offset = 0
@@ -1140,10 +1143,10 @@ class HugeGraphClient:
                     break
                 offset += limit
         except Exception as e:
-            print(f"[KG-DELETE] Load vertices failed: {e}")
+            logger.error(f"[KG-DELETE] Load vertices failed: {e}")
             return {"success": False, "deleted": 0, "updated": 0, "matched": 0, "removed_names": []}
 
-        print(f"[KG-DELETE] Loaded {len(all_vertices)} vertices total, scanning for doc_id={doc_id}")
+        logger.info(f"[KG-DELETE] Loaded {len(all_vertices)} vertices total, scanning for doc_id={doc_id}")
 
         for vertex in all_vertices:
             try:
@@ -1173,27 +1176,27 @@ class HugeGraphClient:
                     "DELETE_EMPTY" if not remaining_docs else "UPDATE"
                 )
                 matched_via = "doc_id" if was_in_doc_id_field else "source_id"
-                print(f"[KG-DELETE] Vertex {vid} (name={vname}) matched via {matched_via}, "
+                logger.info(f"[KG-DELETE] Vertex {vid} (name={vname}) matched via {matched_via}, "
                       f"branch={branch}, remaining_docs={remaining_docs}")
 
                 if branch in ("DELETE", "DELETE_EMPTY"):
                     edges_deleted = self._delete_all_edges_for_vertex(vid, vertex_label)
-                    print(f"[KG-DELETE] Vertex {vid}: deleted {edges_deleted} edges before vertex deletion")
+                    logger.info(f"[KG-DELETE] Vertex {vid}: deleted {edges_deleted} edges before vertex deletion")
 
                     encoded_vid = urllib.parse.quote(self._quote_vid(vid), safe='')
                     delete_response = self.session.delete(
                         self._get_graph_url(f"/vertices/{encoded_vid}")
                     )
-                    print(f"[KG-DELETE] Vertex {vid} DELETE response: status={delete_response.status_code}, "
+                    logger.info(f"[KG-DELETE] Vertex {vid} DELETE response: status={delete_response.status_code}, "
                           f"body={delete_response.text[:300]}")
                     if delete_response.status_code == 204:
                         deleted_count += 1
                         removed_names.append(vname)
-                        print(f"[KG-DELETE] DELETED vertex: {vid} (name={vname})")
+                        logger.info(f"[KG-DELETE] DELETED vertex: {vid} (name={vname})")
                     else:
                         errors += 1
                         err_msg = f"DELETE vertex {vid} (name={vname}) failed: HTTP {delete_response.status_code}, body={delete_response.text[:200]}"
-                        print(f"[KG-DELETE] {err_msg}")
+                        logger.warning(f"[KG-DELETE] {err_msg}")
                         if len(error_details) < 10:
                             error_details.append(err_msg)
                 else:
@@ -1202,20 +1205,20 @@ class HugeGraphClient:
                     trimmed = self._trim_parts_by_doc(props, doc_id)
                     if trimmed:
                         if "description" in trimmed and not trimmed["description"]:
-                            print(f"[KG-DELETE] Vertex {vid}: description_parts all removed, "
+                            logger.info(f"[KG-DELETE] Vertex {vid}: description_parts all removed, "
                                   f"keeping original description={props.get('description','')!r}")
                             trimmed.pop("description", None)
                         if "keywords" in trimmed and not trimmed["keywords"]:
                             trimmed.pop("keywords", None)
                         replacement.update(trimmed)
                     vertex_updated = self.replace_vertex_properties(vid, replacement)
-                    print(f"[KG-DELETE] Vertex {vid} exact batch UPDATE: success={vertex_updated}")
+                    logger.info(f"[KG-DELETE] Vertex {vid} exact batch UPDATE: success={vertex_updated}")
                     if vertex_updated:
                         updated_count += 1
                     else:
                         errors += 1
                         err_msg = f"UPDATE shared vertex {vid} (name={vname}) failed"
-                        print(f"[KG-DELETE] {err_msg}")
+                        logger.warning(f"[KG-DELETE] {err_msg}")
                         if len(error_details) < 10:
                             error_details.append(err_msg)
             except Exception as e:
@@ -1223,17 +1226,17 @@ class HugeGraphClient:
                 import traceback
                 traceback.print_exc()
                 err_msg = f"Vertex iteration error for {vid if 'vid' in locals() else '?'}: {e}"
-                print(f"[KG-DELETE] {err_msg}")
+                logger.warning(f"[KG-DELETE] {err_msg}")
                 if len(error_details) < 10:
                     error_details.append(err_msg)
 
-        print(f"[KG-DELETE] Delete vertices result for doc_id={doc_id}: "
+        logger.info(f"[KG-DELETE] Delete vertices result for doc_id={doc_id}: "
               f"matched={matched_count}, deleted={deleted_count}, "
               f"updated={updated_count}, errors={errors}")
         if error_details:
-            print(f"[KG-DELETE] First {len(error_details)} error details:")
+            logger.error(f"[KG-DELETE] First {len(error_details)} error details:")
             for i, e in enumerate(error_details):
-                print(f"[KG-DELETE]   error[{i}]: {e}")
+                logger.error(f"[KG-DELETE]   error[{i}]: {e}")
         return {
             "success": errors == 0,
             "deleted": deleted_count,
@@ -1254,7 +1257,7 @@ class HugeGraphClient:
                 return response.json()
             return {"vertices": 0, "edges": 0}
         except Exception as e:
-            print(f"Get graph stats failed: {e}")
+            logger.error(f"Get graph stats failed: {e}")
             return {"vertices": 0, "edges": 0}
     
     def get_vertices_by_kb_with_details(self, kb_id: str) -> List[Dict]:
@@ -1316,7 +1319,7 @@ class HugeGraphClient:
             )
             return updated.status_code == 200
         except Exception as exc:
-            print(f"Replace vertex properties failed: {exc}")
+            logger.error(f"Replace vertex properties failed: {exc}")
             return False
 
     def replace_edge_properties(self, edge_id: str, properties: Dict) -> bool:
@@ -1358,7 +1361,7 @@ class HugeGraphClient:
             )
             return updated.status_code == 200
         except Exception as exc:
-            print(f"Replace edge properties failed: {exc}")
+            logger.error(f"Replace edge properties failed: {exc}")
             return False
     
     def update_vertex_properties(self, vertex_id: str, properties: Dict) -> bool:
@@ -1416,7 +1419,7 @@ class HugeGraphClient:
 
             return self.replace_vertex_properties(vertex_id, existing_props)
         except Exception as e:
-            print(f"Update vertex properties failed: {e}")
+            logger.error(f"Update vertex properties failed: {e}")
             return False
     
     def update_edge_properties(self, edge_id: str, properties: Dict) -> bool:
@@ -1490,7 +1493,7 @@ class HugeGraphClient:
 
             return self.replace_edge_properties(edge_id, existing_props)
         except Exception as e:
-            print(f"Update edge properties failed: {e}")
+            logger.error(f"Update edge properties failed: {e}")
             return False
     
     def delete_vertex(self, vertex_id: str) -> bool:
@@ -1503,7 +1506,7 @@ class HugeGraphClient:
             response = self.session.delete(self._get_graph_url(f"/vertices/{encoded_vid}"))
             return response.status_code == 204
         except Exception as e:
-            print(f"Delete vertex failed: {e}")
+            logger.error(f"Delete vertex failed: {e}")
             return False
     
     def delete_edge(self, edge_id: str) -> bool:
@@ -1514,7 +1517,7 @@ class HugeGraphClient:
             response = self.session.delete(self._get_graph_url(f"/edges/{edge_id}"))
             return response.status_code == 204
         except Exception as e:
-            print(f"Delete edge failed: {e}")
+            logger.error(f"Delete edge failed: {e}")
             return False
     
     def execute_gremlin(self, gremlin_query: str) -> List[Dict]:
@@ -1540,7 +1543,7 @@ class HugeGraphClient:
                     return data
             return []
         except Exception as e:
-            print(f"Gremlin query failed: {e}")
+            logger.error(f"Gremlin query failed: {e}")
             return []
     
     def search_vertices_by_name(self, kb_id: str, name: str, limit: int = 20) -> List[Dict]:
@@ -1558,7 +1561,7 @@ class HugeGraphClient:
                     break
             return filtered
         except Exception as e:
-            print(f"Search vertices by name failed: {e}")
+            logger.error(f"Search vertices by name failed: {e}")
             return []
     
     def search_vertices_by_keyword(self, kb_id: str, keyword: str, limit: int = 20) -> List[Dict]:
@@ -1581,7 +1584,7 @@ class HugeGraphClient:
                     break
             return filtered
         except Exception as e:
-            print(f"Search vertices by keyword failed: {e}")
+            logger.error(f"Search vertices by keyword failed: {e}")
             return []
     
     def get_neighbors(self, vertex_id: str, depth: int = 1, limit: int = 50) -> Dict:
@@ -1668,7 +1671,7 @@ class HugeGraphClient:
             result["neighbors"] = result["neighbors"][:limit]
             return result
         except Exception as e:
-            print(f"Get neighbors failed: {e}")
+            logger.error(f"Get neighbors failed: {e}")
             return {"vertex_id": vertex_id, "neighbors": [], "paths": []}
     
     def get_entity_relations(self, kb_id: str, entity_name: str, limit: int = 50) -> List[Dict]:
@@ -1715,7 +1718,7 @@ class HugeGraphClient:
             
             return relations
         except Exception as e:
-            print(f"Get entity relations failed: {e}")
+            logger.error(f"Get entity relations failed: {e}")
             return []
     
     def get_related_chunks_by_entities(self, kb_id: str, entity_names: List[str]) -> List[str]:
@@ -1741,7 +1744,7 @@ class HugeGraphClient:
             
             return list(source_ids)
         except Exception as e:
-            print(f"Get related chunks by entities failed: {e}")
+            logger.error(f"Get related chunks by entities failed: {e}")
             return []
     
     def search_by_entity_type(self, kb_id: str, entity_type: str, limit: int = 100) -> List[Dict]:
@@ -1767,7 +1770,7 @@ class HugeGraphClient:
                     break
             return entities
         except Exception as e:
-            print(f"Search by entity type failed: {e}")
+            logger.error(f"Search by entity type failed: {e}")
             return []
     
     def get_top_entities_by_pagerank(self, kb_id: str, limit: int = 20) -> List[Dict]:
@@ -1792,7 +1795,7 @@ class HugeGraphClient:
             entities.sort(key=lambda x: x.get("pagerank", 0) or 0, reverse=True)
             return entities[:limit]
         except Exception as e:
-            print(f"Get top entities by pagerank failed: {e}")
+            logger.error(f"Get top entities by pagerank failed: {e}")
             return []
     
     def get_shortest_path(self, kb_id: str, source_name: str, target_name: str) -> List[Dict]:
