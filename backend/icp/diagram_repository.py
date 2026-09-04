@@ -140,8 +140,10 @@ class DiagramRepository:
     def _rollback(self) -> None:
         try:
             self.connection.rollback()
-        except Exception:
-            pass
+        except Exception as exc:
+            # 回滚失败不会污染已提交数据，但必须留痕：否则上层诊断链路在
+            # 事务异常时会以为回滚成功而继续执行。
+            logger.warning("图修订仓储回滚失败: %s", exc)
 
     def init_tables(self) -> None:
         """Create the graph-review schema idempotently.

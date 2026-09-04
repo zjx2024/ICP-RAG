@@ -124,8 +124,8 @@ def normalize_document_types() -> None:
     except Exception as exc:
         try:
             postgres_client.conn.rollback()
-        except Exception:
-            pass
+        except Exception as rollback_exc:
+            logger.warning("回滚七类文档类型归一化事务失败: %s", rollback_exc)
         logger.warning("Failed to normalize ICP document types: %s", exc)
         # The startup layer decides whether this is a warning (developer mode)
         # or a fatal dependency error (strict/container mode). Swallowing it
