@@ -69,6 +69,16 @@ DYNAMIC_EDGE_NULLABLE_KEYS = (
     "description_parts", "keywords_parts", "weight_parts",
 )
 
+class HugeGraphUnavailable(RuntimeError):
+    """HugeGraph 服务不可用 / 响应异常（区别于「查询结果为空」）。
+
+    读写方法不再用空列表、None 或 False 把服务故障伪装成空结果：真空结果
+    （确实没有数据、顶点确实不存在）继续返回空容器；服务/网络/解析故障统一
+    抛此异常并沿调用链向上传递，由路由（503 / error 字段）或任务层（失败
+    记录）显式降级，供 tracing 与监控区分“真空”与“故障”。
+    """
+
+
 class HugeGraphClient:
     def __init__(self):
         self.host = config.HUGEGRAPH_HOST
@@ -93,6 +103,20 @@ class HugeGraphClient:
     
     def _get_graph_url(self, endpoint: str) -> str:
         return f"{self.base_url}/graphs/{self.graph_name}/graph{endpoint}"
+
+    @staticmethod
+    def _raise_unavailable(response, context: str) -> None:
+        """2xx/204 之外一律视为图谱服务故障，抛 HugeGraphUnavailable。
+
+        真空结果由调用方通过 200 + 空集合表达，因此这里不区分 4xx/5xx：
+        响应本身失败就是故障，而不是“没有数据”。
+        """
+        if response.status_code in (200, 201, 204):
+            return
+        body = getattr(response, "text", "") or ""
+        raise HugeGraphUnavailable(
+            f"{context} failed: status={response.status_code}, body={body[:200]}"
+        )
     
     def _ensure_schema_exists(self):
         logger.info("Initializing HugeGraph schema...")
@@ -672,18 +696,19 @@ class HugeGraphClient:
                     self._get_graph_url("/vertices"),
                     params=params
                 )
-                if response.status_code == 200:
-                    vertices = response.json().get("vertices", [])
-                    all_vertices.extend(vertices)
-                    if len(vertices) < limit:
-                        break
-                    offset += limit
-                else:
+                if response.status_code != 200:
+                    self._raise_unavailable(response, "Get vertices by kb")
+                vertices = response.json().get("vertices", [])
+                all_vertices.extend(vertices)
+                if len(vertices) < limit:
                     break
+                offset += limit
             return all_vertices
         except Exception as e:
+            if isinstance(e, HugeGraphUnavailable):
+                raise
             logger.error(f"Get vertices by kb failed: {e}")
-            return []
+            raise HugeGraphUnavailable(f"Get vertices by kb failed: {e}") from e
 
     def get_vertex_by_id(self, vertex_id: str) -> Optional[Dict]:
         """Read one CUSTOMIZE_STRING vertex without relying on a secondary index.
@@ -703,13 +728,18 @@ class HugeGraphClient:
             response = self.session.get(
                 self._get_graph_url(f"/vertices/{encoded_vid}")
             )
-            if response.status_code != 200:
+            if response.status_code == 404:
+                # 顶点确实不存在（真空），不是服务故障
                 return None
+            if response.status_code != 200:
+                self._raise_unavailable(response, "Get vertex by id")
             value = response.json()
             return value if isinstance(value, dict) else None
         except Exception as exc:
+            if isinstance(exc, HugeGraphUnavailable):
+                raise
             logger.error(f"Get vertex by id failed: {exc}")
-            return None
+            raise HugeGraphUnavailable(f"Get vertex by id failed: {exc}") from exc
     
     def get_edges_by_kb(self, kb_id: str, label: str = None, limit: int = 10000) -> List[Dict]:
         if self._use_mock:
@@ -731,22 +761,23 @@ class HugeGraphClient:
                     self._get_graph_url("/edges"),
                     params=params
                 )
-                if response.status_code == 200:
-                    edges = response.json().get("edges", [])
-                    all_edges.extend(edges)
-                    if len(edges) < limit:
-                        break
-                    offset += limit
-                else:
+                if response.status_code != 200:
+                    self._raise_unavailable(response, "Get edges by kb")
+                edges = response.json().get("edges", [])
+                all_edges.extend(edges)
+                if len(edges) < limit:
                     break
+                offset += limit
             return [
                 edge
                 for edge in all_edges
                 if (edge.get("properties") or {}).get("kb_id") == kb_id
             ]
         except Exception as e:
+            if isinstance(e, HugeGraphUnavailable):
+                raise
             logger.error(f"Get edges by kb failed: {e}")
-            return []
+            raise HugeGraphUnavailable(f"Get edges by kb failed: {e}") from e
     
     def get_graph_data(self) -> Dict:
         if self._use_mock:
@@ -761,14 +792,13 @@ class HugeGraphClient:
                     self._get_graph_url("/vertices"),
                     params={"limit": limit, "offset": offset}
                 )
-                if response.status_code == 200:
-                    vertices = response.json().get("vertices", [])
-                    all_vertices.extend(vertices)
-                    if len(vertices) < limit:
-                        break
-                    offset += limit
-                else:
+                if response.status_code != 200:
+                    self._raise_unavailable(response, "Get graph data vertices")
+                vertices = response.json().get("vertices", [])
+                all_vertices.extend(vertices)
+                if len(vertices) < limit:
                     break
+                offset += limit
             
             all_edges = []
             offset = 0
@@ -777,19 +807,20 @@ class HugeGraphClient:
                     self._get_graph_url("/edges"),
                     params={"limit": limit, "offset": offset}
                 )
-                if response.status_code == 200:
-                    edges = response.json().get("edges", [])
-                    all_edges.extend(edges)
-                    if len(edges) < limit:
-                        break
-                    offset += limit
-                else:
+                if response.status_code != 200:
+                    self._raise_unavailable(response, "Get graph data edges")
+                edges = response.json().get("edges", [])
+                all_edges.extend(edges)
+                if len(edges) < limit:
                     break
+                offset += limit
             
             return {"vertices": all_vertices, "edges": all_edges}
         except Exception as e:
+            if isinstance(e, HugeGraphUnavailable):
+                raise
             logger.error(f"Get graph data failed: {e}")
-            return {"vertices": [], "edges": []}
+            raise HugeGraphUnavailable(f"Get graph data failed: {e}") from e
     
     def delete_by_kb_id(self, kb_id: str):
         if self._use_mock:
@@ -841,18 +872,21 @@ class HugeGraphClient:
         return f'"{vid}"'
 
     def _parse_response(self, response):
+        if response.status_code == 204:
+            return {}
+        if response.status_code not in (200, 201):
+            self._raise_unavailable(response, "HugeGraph response")
+        content = response.content
         try:
-            if response.status_code in [200, 201]:
-                content = response.content
-                try:
-                    import gzip
-                    content = gzip.decompress(content)
-                except Exception:
-                    pass
-                return json.loads(content)
+            import gzip
+            content = gzip.decompress(content)
+        except Exception:
+            # 响应未压缩或已由 requests 自动解压，按原文解析
+            pass
+        try:
+            return json.loads(content)
         except Exception as e:
-            logger.error(f"Failed to parse response: {e}")
-        return {}
+            raise HugeGraphUnavailable(f"HugeGraph response parse failed: {e}") from e
 
     @staticmethod
     def _trim_parts_by_doc(props: dict, doc_id: str) -> dict:
@@ -1084,6 +1118,8 @@ class HugeGraphClient:
                     break
                 offset += limit
             return all_edges
+        except HugeGraphUnavailable:
+            raise
         except Exception as e:
             logger.error(f"Get edges for vertex {vertex_id} failed: {e}")
             return []
@@ -1253,12 +1289,14 @@ class HugeGraphClient:
         
         try:
             response = self.session.get(self._get_graph_url("/stats"))
-            if response.status_code == 200:
-                return response.json()
-            return {"vertices": 0, "edges": 0}
+            if response.status_code != 200:
+                self._raise_unavailable(response, "Get graph stats")
+            return response.json()
         except Exception as e:
+            if isinstance(e, HugeGraphUnavailable):
+                raise
             logger.error(f"Get graph stats failed: {e}")
-            return {"vertices": 0, "edges": 0}
+            raise HugeGraphUnavailable(f"Get graph stats failed: {e}") from e
     
     def get_vertices_by_kb_with_details(self, kb_id: str) -> List[Dict]:
         if self._use_mock:
@@ -1536,15 +1574,19 @@ class HugeGraphClient:
                 },
                 timeout=30
             )
-            if response.status_code == 200:
-                result = response.json()
-                if result.get("success"):
-                    data = result.get("result", {}).get("data", [])
-                    return data
-            return []
+            if response.status_code != 200:
+                self._raise_unavailable(response, "Gremlin query")
+            result = response.json()
+            if not result.get("success"):
+                raise HugeGraphUnavailable(
+                    f"Gremlin query returned success=false: {str(result)[:200]}"
+                )
+            return result.get("result", {}).get("data", [])
         except Exception as e:
+            if isinstance(e, HugeGraphUnavailable):
+                raise
             logger.error(f"Gremlin query failed: {e}")
-            return []
+            raise HugeGraphUnavailable(f"Gremlin query failed: {e}") from e
     
     def search_vertices_by_name(self, kb_id: str, name: str, limit: int = 20) -> List[Dict]:
         if self._use_mock:
@@ -1560,6 +1602,8 @@ class HugeGraphClient:
                 if len(filtered) >= limit:
                     break
             return filtered
+        except HugeGraphUnavailable:
+            raise
         except Exception as e:
             logger.error(f"Search vertices by name failed: {e}")
             return []
@@ -1583,6 +1627,8 @@ class HugeGraphClient:
                 if len(filtered) >= limit:
                     break
             return filtered
+        except HugeGraphUnavailable:
+            raise
         except Exception as e:
             logger.error(f"Search vertices by keyword failed: {e}")
             return []
@@ -1670,6 +1716,8 @@ class HugeGraphClient:
             
             result["neighbors"] = result["neighbors"][:limit]
             return result
+        except HugeGraphUnavailable:
+            raise
         except Exception as e:
             logger.error(f"Get neighbors failed: {e}")
             return {"vertex_id": vertex_id, "neighbors": [], "paths": []}
@@ -1717,6 +1765,8 @@ class HugeGraphClient:
                     break
             
             return relations
+        except HugeGraphUnavailable:
+            raise
         except Exception as e:
             logger.error(f"Get entity relations failed: {e}")
             return []
@@ -1743,6 +1793,8 @@ class HugeGraphClient:
                             source_ids.update(source_id)
             
             return list(source_ids)
+        except HugeGraphUnavailable:
+            raise
         except Exception as e:
             logger.error(f"Get related chunks by entities failed: {e}")
             return []
@@ -1769,6 +1821,8 @@ class HugeGraphClient:
                 if len(entities) >= limit:
                     break
             return entities
+        except HugeGraphUnavailable:
+            raise
         except Exception as e:
             logger.error(f"Search by entity type failed: {e}")
             return []
@@ -1794,6 +1848,8 @@ class HugeGraphClient:
             
             entities.sort(key=lambda x: x.get("pagerank", 0) or 0, reverse=True)
             return entities[:limit]
+        except HugeGraphUnavailable:
+            raise
         except Exception as e:
             logger.error(f"Get top entities by pagerank failed: {e}")
             return []

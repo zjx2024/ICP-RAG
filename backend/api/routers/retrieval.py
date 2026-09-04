@@ -2,6 +2,7 @@ from fastapi import APIRouter, Query, HTTPException, Body
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from backend.core.retrieval import knowledge_retriever, RetrievalMode
+from backend.storage.hugegraph_client import HugeGraphUnavailable
 from backend.storage.postgres_client import postgres_client
 
 router = APIRouter(prefix="/knowledge-bases", tags=["retrieval"])
@@ -375,7 +376,10 @@ async def get_top_entities(
         raise HTTPException(status_code=404, detail="Knowledge base not found")
     
     from backend.storage.hugegraph_client import hugegraph_client
-    entities = hugegraph_client.get_top_entities_by_pagerank(kb_id, limit)
+    try:
+        entities = hugegraph_client.get_top_entities_by_pagerank(kb_id, limit)
+    except HugeGraphUnavailable as exc:
+        raise HTTPException(status_code=503, detail=f"图谱服务不可用: {exc}") from exc
     return {
         "kb_id": kb_id,
         "entities": entities,
@@ -393,7 +397,10 @@ async def get_entities_by_type(
         raise HTTPException(status_code=404, detail="Knowledge base not found")
     
     from backend.storage.hugegraph_client import hugegraph_client
-    entities = hugegraph_client.search_by_entity_type(kb_id, entity_type, limit)
+    try:
+        entities = hugegraph_client.search_by_entity_type(kb_id, entity_type, limit)
+    except HugeGraphUnavailable as exc:
+        raise HTTPException(status_code=503, detail=f"图谱服务不可用: {exc}") from exc
     return {
         "kb_id": kb_id,
         "entity_type": entity_type,
@@ -412,7 +419,10 @@ async def get_entity_relations(
         raise HTTPException(status_code=404, detail="Knowledge base not found")
     
     from backend.storage.hugegraph_client import hugegraph_client
-    relations = hugegraph_client.get_entity_relations(kb_id, entity_name, limit)
+    try:
+        relations = hugegraph_client.get_entity_relations(kb_id, entity_name, limit)
+    except HugeGraphUnavailable as exc:
+        raise HTTPException(status_code=503, detail=f"图谱服务不可用: {exc}") from exc
     return {
         "kb_id": kb_id,
         "entity_name": entity_name,
@@ -431,7 +441,10 @@ async def get_shortest_path(
         raise HTTPException(status_code=404, detail="Knowledge base not found")
     
     from backend.storage.hugegraph_client import hugegraph_client
-    paths = hugegraph_client.get_shortest_path(kb_id, source, target)
+    try:
+        paths = hugegraph_client.get_shortest_path(kb_id, source, target)
+    except HugeGraphUnavailable as exc:
+        raise HTTPException(status_code=503, detail=f"图谱服务不可用: {exc}") from exc
     return {
         "kb_id": kb_id,
         "source": source,
