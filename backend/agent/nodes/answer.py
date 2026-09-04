@@ -5044,7 +5044,7 @@ async def _review_answer_target_completeness(
         try:
             reviewed = await asyncio.wait_for(
                 asyncio.to_thread(
-                    llm_service._call_model,
+                    llm_service.call_model,
                     [{"role": "user", "content": prompt}],
                     _prepare_history_review_model(model),
                 ),
@@ -5123,7 +5123,7 @@ async def _finalize_focused_target_answer(
     try:
         raw = await asyncio.wait_for(
             asyncio.to_thread(
-                llm_service._call_model,
+                llm_service.call_model,
                 [{"role": "user", "content": prompt}],
                 _prepare_citation_repair_model(model),
             ),
@@ -5525,7 +5525,7 @@ async def _review_answer_fault_completeness(
         try:
             reviewed = await asyncio.wait_for(
                 asyncio.to_thread(
-                    llm_service._call_model,
+                    llm_service.call_model,
                     [{"role": "user", "content": prompt}],
                     _prepare_history_review_model(model),
                 ),
@@ -5718,7 +5718,7 @@ async def _review_answer_history(
         try:
             reviewed = await asyncio.wait_for(
                 asyncio.to_thread(
-                    llm_service._call_model,
+                    llm_service.call_model,
                     [{"role": "user", "content": prompt}],
                     _prepare_history_review_model(model),
                 ),
@@ -5792,7 +5792,7 @@ async def _review_answer_calculations(
         try:
             reviewed = await asyncio.wait_for(
                 asyncio.to_thread(
-                    llm_service._call_model,
+                    llm_service.call_model,
                     [{"role": "user", "content": prompt}],
                     _prepare_history_review_model(model),
                 ),
@@ -6988,7 +6988,7 @@ async def _repair_answer_citations(
     try:
         raw_response = await asyncio.wait_for(
             asyncio.to_thread(
-                llm_service._call_model,
+                llm_service.call_model,
                 [{"role": "user", "content": prompt}],
                 _prepare_citation_repair_model(model),
             ),
@@ -7058,7 +7058,7 @@ async def _repair_answer_citations(
 async def _generate_answer_response(prompt: str, model, stream_queue, restricted_stream: bool) -> str:
     messages = [{"role": "user", "content": prompt}]
     if stream_queue is None:
-        return await asyncio.to_thread(llm_service._call_model, messages, model)
+        return await asyncio.to_thread(llm_service.call_model, messages, model)
 
     final_answer = ""
     async for token in llm_service.stream_model(messages, model):

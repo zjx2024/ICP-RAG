@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, field_validator
 from backend.agent.db import agent_db
 from backend.agent.state import create_initial_state
 from backend.agent.graph import get_compiled_graph
+from backend.agent.tracing import begin_turn, end_turn
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -414,6 +415,8 @@ async def chat(body: ChatRequest, request: Request):
     THINKING_EVENT_TYPES = {"plan", "tool_call", "reflect", "stage"}
 
     async def event_stream():
+        # B1 全链路 tracing：以本次提问为 trace 单元，图内 LLM/工具调用自动关联。
+        begin_turn(session_id=body.session_id, query=body.query)
         final_answer = ""
         citations = []
         evidence_catalog = []
@@ -555,6 +558,7 @@ async def chat(body: ChatRequest, request: Request):
                 return
             raise
         finally:
+            end_turn()
             if _running_tasks.get(body.session_id) is graph_task:
                 _running_tasks.pop(body.session_id, None)
             _stop_requests.discard(body.session_id)

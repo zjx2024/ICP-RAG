@@ -169,12 +169,15 @@ class LLMClient:
         """对外公开的 LLM 同步调用入口（tracing 统一挂钩点）。
 
         外部模块一律通过本入口调用，不再直接访问私有 ``_call_model``。模板名
-        供 B1 全链路 tracing 记录“哪个提示模板产生了这次调用”；当前先完成
-        耗时与模板名的留痕占位，语义与 _call_model 完全一致。
+        供 B1 全链路 tracing 记录“哪个提示模板产生了这次调用”；语义与
+        ``_call_model`` 完全一致。
         """
         started = time.time()
+        ok = False
         try:
-            return self._call_model(messages, model_config)
+            response = self._call_model(messages, model_config)
+            ok = not str(response or "").startswith("[LLM")
+            return response
         finally:
             elapsed_ms = (time.time() - started) * 1000
             logger.debug(
@@ -182,29 +185,66 @@ class LLMClient:
                 template_name or "<default>",
                 elapsed_ms,
             )
+            try:
+                from backend.agent.tracing import record_llm
+
+                record_llm(
+                    template_name=template_name,
+                    duration_ms=elapsed_ms,
+                    ok=ok,
+                    model_name=str((model_config or {}).get("model_name") or ""),
+                    response_chars=len(str(response or "")) if ok else 0,
+                )
+            except Exception as exc:  # tracing 失败不得影响调用本身
+                logger.debug("trace record_llm failed: %s", exc)
 
     async def stream_model(self, messages: List[Dict], model_config: Optional[Dict] = None) -> AsyncGenerator[str, None]:
         """流式调用 LLM，逐 token yield 输出内容。
 
         - 有 model_config：按配置走对应 provider 的流式接口
         - 无 model_config：走默认 chat_model（仅支持 Ollama）
+
+        B1 tracing：整段流式生成计为一次 LLM 调用，正常耗尽或异常退出均
+        记录；中途被消费方主动中断时在生成器被 close 时兜底记录。
         """
-        if model_config:
-            provider = model_config.get("provider", self.provider)
-            if provider == "ollama":
-                async for chunk in self._stream_ollama_with_config(messages, model_config):
-                    yield chunk
-            elif provider == "qwen":
-                async for chunk in self._stream_qwen_with_config(messages, model_config):
-                    yield chunk
+        started = time.time()
+        response_chars = 0
+        ok = False
+        try:
+            if model_config:
+                provider = model_config.get("provider", self.provider)
+                if provider == "ollama":
+                    async for chunk in self._stream_ollama_with_config(messages, model_config):
+                        response_chars += len(chunk or "")
+                        yield chunk
+                elif provider == "qwen":
+                    async for chunk in self._stream_qwen_with_config(messages, model_config):
+                        response_chars += len(chunk or "")
+                        yield chunk
+                else:
+                    raise LLMStreamError("未知模型 provider")
             else:
-                raise LLMStreamError("未知模型 provider")
-        else:
-            if self.provider == "ollama" and self.chat_model:
-                async for chunk in self._stream_ollama(messages):
-                    yield chunk
-            else:
-                raise LLMStreamError("未配置可用的流式对话模型")
+                if self.provider == "ollama" and self.chat_model:
+                    async for chunk in self._stream_ollama(messages):
+                        response_chars += len(chunk or "")
+                        yield chunk
+                else:
+                    raise LLMStreamError("未配置可用的流式对话模型")
+            ok = True
+        finally:
+            elapsed_ms = (time.time() - started) * 1000
+            try:
+                from backend.agent.tracing import record_llm
+
+                record_llm(
+                    template_name="<stream>",
+                    duration_ms=elapsed_ms,
+                    ok=ok,
+                    model_name=str((model_config or {}).get("model_name") or ""),
+                    response_chars=response_chars,
+                )
+            except Exception as exc:  # tracing 失败不得影响流式本身
+                logger.debug("trace stream_model failed: %s", exc)
 
     async def _stream_ollama(self, messages: List[Dict]) -> AsyncGenerator[str, None]:
         """异步流式调用：必须用 astream + async for，避免同步 for 阻塞事件循环

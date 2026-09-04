@@ -71,4 +71,7 @@ class Config:
     )
     IMAGE_URL_PREFIX = os.getenv("IMAGE_URL_PREFIX", "/images")
 
+    # B1 全链路 tracing 的 JSON-lines 落盘目录。
+    TRACE_DIR = os.getenv("ICP_TRACE_DIR", os.path.join(ARTIFACT_STORAGE_DIR, "traces"))
+
 config = Config()

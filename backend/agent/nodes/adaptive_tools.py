@@ -1198,7 +1198,7 @@ async def adaptive_tool_route_node(state: Mapping[str, Any], config=None) -> Dic
     try:
         response = await asyncio.wait_for(
             asyncio.to_thread(
-                llm_service._call_model,
+                llm_service.call_model,
                 [{"role": "user", "content": prompt}],
                 _model_for_state(state),
             ),
@@ -1225,6 +1225,16 @@ async def adaptive_tool_route_node(state: Mapping[str, Any], config=None) -> Dic
         selected = [tool for tool in selected if tool in contract_tools]
 
     if not parsed:
+        # B1 降级计数：路由输出不可用退回安全候选工具集。
+        try:
+            from backend.agent.tracing import record_degradation
+
+            record_degradation(
+                "adaptive_fallback",
+                detail=str(model_error or "route model output unusable")[:200],
+            )
+        except Exception:
+            pass
         selected = _fallback_tools(
             state=state,
             remaining_query_tools=remaining_query_tools,

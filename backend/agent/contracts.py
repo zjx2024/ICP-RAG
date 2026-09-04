@@ -319,7 +319,7 @@ def make_tool_result(
     """构造可区分空结果、失败、部分降级和安全阻断的工具结果。"""
     if status not in TOOL_STATUSES:
         raise ValueError(f"不支持的工具状态: {status}")
-    return {
+    result = {
         "tool": _clean_string(tool),
         "status": status,
         "params": dict(params or {}),
@@ -334,6 +334,18 @@ def make_tool_result(
             "errors": [_clean_string(item) for item in (errors or []) if _clean_string(item)],
         },
     }
+    # B1 tracing：工具执行结果统一留痕（名称/状态/证据数）；失败不得影响结果。
+    try:
+        from backend.agent.tracing import record_tool
+
+        record_tool(
+            tool_name=result["tool"],
+            evidence_count=len(result["evidence_ids"]),
+            ok=status != "failed",
+        )
+    except Exception:
+        pass
+    return result
 
 
 def deduplicate_evidence(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

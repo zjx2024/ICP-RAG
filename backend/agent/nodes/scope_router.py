@@ -477,7 +477,7 @@ async def scope_router_node(state: Mapping[str, Any], config=None) -> Dict[str, 
     try:
         response = await asyncio.wait_for(
             asyncio.to_thread(
-                llm_service._call_model,
+                llm_service.call_model,
                 [{"role": "user", "content": prompt}],
                 _model_for_state(state),
             ),

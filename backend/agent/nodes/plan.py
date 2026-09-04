@@ -1098,6 +1098,13 @@ def _parse_json_response(text: str) -> dict:
         return parsed
     except Exception as exc:
         logger.warning("Plan JSON parse failed: %s; raw=%s", exc, text[:200])
+        # B1 降级计数：规划模型 JSON 解析失败退回宽召回。
+        try:
+            from backend.agent.tracing import record_degradation
+
+            record_degradation("planner_json", detail=str(exc)[:200])
+        except Exception:
+            pass
         return {
             # A failed semantic planner must not be replaced by a keyword
             # classifier. Broad recall is slower but does not silently omit a
@@ -1188,7 +1195,7 @@ async def _repair_complete_collection_contract(
     try:
         response = await asyncio.wait_for(
             asyncio.to_thread(
-                llm_service._call_model,
+                llm_service.call_model,
                 [{"role": "user", "content": prompt}],
                 _prepare_target_model(model),
             ),
@@ -1557,7 +1564,7 @@ async def _classify_explicit_targets(
     try:
         response = await asyncio.wait_for(
             asyncio.to_thread(
-                llm_service._call_model,
+                llm_service.call_model,
                 [{"role": "user", "content": prompt}],
                 _prepare_target_model(model),
             ),
@@ -1619,7 +1626,7 @@ async def _classify_explicit_targets(
 async def _generate_plan_response(prompt: str, model, stream_queue) -> str:
     messages = [{"role": "user", "content": prompt}]
     if stream_queue is None:
-        return await asyncio.to_thread(llm_service._call_model, messages, model)
+        return await asyncio.to_thread(llm_service.call_model, messages, model)
 
     response = ""
     async for token in llm_service.stream_model(messages, model):

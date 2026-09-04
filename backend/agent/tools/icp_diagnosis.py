@@ -4170,6 +4170,17 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
         evidence.extend(verified_function_text)
         evidence.extend(function_search_evidence)
         function_search_errors, function_fallbacks = _retrieval_diagnostics(function_retrieval_info)
+        if function_search_errors:
+            # B1 降级计数：检索管线出错（含投影失败）时只进 stats，不静默。
+            try:
+                from backend.agent.tracing import record_degradation
+
+                record_degradation(
+                    "retrieval_projection",
+                    detail="; ".join(function_search_errors)[:200],
+                )
+            except Exception:
+                pass
         tool_results.append(
             make_tool_result(
                 tool="function_locator",
