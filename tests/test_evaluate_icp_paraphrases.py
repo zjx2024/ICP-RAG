@@ -354,5 +354,42 @@ class EvaluateIcpParaphrasesTest(unittest.TestCase):
         self.assertTrue(result["cleanup"]["deleted"])
 
 
+class EvaluationGateTests(unittest.TestCase):
+    """B2：CI 门槛参数（--gate / --gate-turn）的判定与解析。"""
+
+    def test_gate_violation_none_when_above_threshold(self):
+        self.assertIsNone(evaluator._gate_violation(0.90, 0.80, 0.95, 0.90))
+        self.assertIsNone(evaluator._gate_violation(0.80, None, 0.90, None))
+
+    def test_gate_violation_reports_case_or_turn_gate(self):
+        message = evaluator._gate_violation(0.70, 0.80, 0.90, None)
+        self.assertIn("用例通过率", message)
+        self.assertIn("0.7000", message)
+        self.assertIn("0.8000", message)
+        turn_message = evaluator._gate_violation(0.90, 0.80, 0.60, 0.70)
+        self.assertIn("轮次通过率", turn_message)
+
+    def test_gate_threshold_accepts_bounded_and_rejects_range(self):
+        self.assertEqual(0.85, evaluator._gate_threshold("0.85"))
+        self.assertEqual(1.0, evaluator._gate_threshold("1"))
+        with self.assertRaises(evaluator.argparse.ArgumentTypeError):
+            evaluator._gate_threshold("1.2")
+        with self.assertRaises(evaluator.argparse.ArgumentTypeError):
+            evaluator._gate_threshold("-0.1")
+        with self.assertRaises(evaluator.argparse.ArgumentTypeError):
+            evaluator._gate_threshold("abc")
+
+    def test_parser_exposes_gate_flags(self):
+        parser = evaluator.build_parser()
+        args = parser.parse_args(
+            ["cases.json", "--gate", "0.9", "--gate-turn", "0.95"]
+        )
+        self.assertEqual(0.9, args.gate)
+        self.assertEqual(0.95, args.gate_turn)
+        bare = parser.parse_args(["cases.json"])
+        self.assertIsNone(bare.gate)
+        self.assertIsNone(bare.gate_turn)
+
+
 if __name__ == "__main__":
     unittest.main()

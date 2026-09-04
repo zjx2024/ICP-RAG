@@ -1578,6 +1578,35 @@ def _positive_float(value: str) -> float:
     return parsed
 
 
+def _gate_threshold(value: str) -> float:
+    """CI 门槛参数：0..1 的通过率下限。"""
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("门槛必须是 0..1 的数字") from exc
+    if not (0.0 <= parsed <= 1.0):
+        raise argparse.ArgumentTypeError("门槛必须是 0..1 的数字")
+    return parsed
+
+
+def _gate_violation(
+    pass_rate: float,
+    gate: Optional[float],
+    turn_pass_rate: float,
+    gate_turn: Optional[float],
+) -> Optional[str]:
+    """按 CI 门槛判定是否触发非零退出；返回违规说明，无违规返回 None。"""
+    if gate is not None and pass_rate < gate:
+        return (
+            f"用例通过率 {pass_rate:.4f} 低于门槛 {gate:.4f}"
+        )
+    if gate_turn is not None and turn_pass_rate < gate_turn:
+        return (
+            f"轮次通过率 {turn_pass_rate:.4f} 低于门槛 {gate_turn:.4f}"
+        )
+    return None
+
+
 def build_parser() -> argparse.ArgumentParser:
     assertion_help = ", ".join(sorted(SUPPORTED_ASSERTIONS))
     parser = argparse.ArgumentParser(
@@ -1623,6 +1652,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         default="-",
         help="报告 JSON 路径；默认 - 表示 stdout",
+    )
+    parser.add_argument(
+        "--gate",
+        type=_gate_threshold,
+        default=None,
+        help="CI 门槛：整体用例通过率低于该值（0..1）时以非零码退出（默认不过门槛）",
+    )
+    parser.add_argument(
+        "--gate-turn",
+        type=_gate_threshold,
+        default=None,
+        help="CI 门槛：按轮次通过率低于该值（0..1）时以非零码退出",
     )
     parser.add_argument("--compact", action="store_true", help="输出紧凑 JSON")
     return parser
@@ -1766,7 +1807,17 @@ def run(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         "groups": _group_summaries(ordered_results),
         "cases": ordered_results,
     }
-    return report, 0 if passed_count == len(ordered_results) else 1
+    if args.gate is not None or args.gate_turn is not None:
+        rate = report["summary"]["pass_rate"]
+        turn_rate = report["summary"]["turn_pass_rate"]
+        report["configuration"]["gate"] = {
+            "case_pass_rate": args.gate,
+            "turn_pass_rate": args.gate_turn,
+        }
+        report["gate_failure"] = _gate_violation(rate, args.gate, turn_rate, args.gate_turn)
+    any_failed = passed_count != len(ordered_results)
+    gate_failed = report.get("gate_failure") is not None
+    return report, 1 if (any_failed or gate_failed) else 0
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -1777,6 +1828,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         _write_report(report, args.output, args.compact)
         if args.output != "-":
             print(f"报告已写入 {args.output}", file=sys.stderr)
+        gate_failure = report.get("gate_failure")
+        if gate_failure:
+            print(f"CI 门槛未通过: {gate_failure}", file=sys.stderr)
         return exit_code
     except (EvaluationInputError, ApiError) as exc:
         print(f"评测配置错误: {exc}", file=sys.stderr)
