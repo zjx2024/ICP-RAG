@@ -739,11 +739,7 @@ def _select_evidence_window(
         return list(evidence)
 
     decision = state.get("safety_decision") or {}
-    approved_ids = {
-        str(value)
-        for value in (decision.get("approved_evidence_ids") or [])
-        if str(value)
-    }
+    approved_ids = approved_id_set(decision.get("approved_evidence_ids") or [])
     calculation_requested = bool(state.get("calculation_requests") or [])
     history_cap = (
         2
@@ -2141,11 +2137,7 @@ def _context_evidence(state: Dict[str, Any]) -> List[Dict[str, Any]]:
     if selected is None and isinstance(decision, dict):
         selected = decision.get("context_evidence_ids")
     selected_ids = {str(value) for value in (selected or []) if str(value)}
-    approved_ids = {
-        str(value)
-        for value in (decision.get("approved_evidence_ids") or [])
-        if str(value)
-    }
+    approved_ids = approved_id_set(decision.get("approved_evidence_ids") or [])
     gate_evidence = [
         item
         for item in evidence
@@ -2690,9 +2682,7 @@ def _extract_evidence_catalog(
         add_id(item.get("evidence_id"))
 
     decision = state.get("safety_decision") or {}
-    approved_ids = {
-        str(value) for value in decision.get("approved_evidence_ids", []) if str(value)
-    }
+    approved_ids = approved_id_set(decision.get("approved_evidence_ids") or [])
     blocked_ids = {
         str(value) for value in decision.get("blocked_evidence_ids", []) if str(value)
     }
@@ -2781,11 +2771,7 @@ def _compact_answer_citations(
         "approved_evidence_ids" in original_decision
         or "blocked_evidence_ids" in original_decision
     )
-    original_approved_ids = {
-        str(value)
-        for value in (original_decision.get("approved_evidence_ids") or [])
-        if str(value)
-    }
+    original_approved_ids = approved_id_set(original_decision.get("approved_evidence_ids") or [])
     public_approved_ids = (
         [value for value in public_ids if value in original_approved_ids]
         if has_gate_decision
@@ -3172,11 +3158,7 @@ def _strip_unapproved_source_failure_claims(answer: str) -> str:
 
 def _approved_citation_numbers(state: Dict[str, Any]) -> set[int]:
     decision = state.get("safety_decision") or {}
-    approved_ids = {
-        str(value)
-        for value in decision.get("approved_evidence_ids", [])
-        if str(value)
-    }
+    approved_ids = approved_id_set(decision.get("approved_evidence_ids") or [])
     return {
         index
         for index, item in enumerate(_context_evidence(state), start=1)
@@ -3595,11 +3577,7 @@ def _requested_source_coverage_notice(answer: str, state: Mapping[str, Any]) -> 
         if isinstance(item, Mapping)
     ]
     decision = state.get("safety_decision") if isinstance(state.get("safety_decision"), Mapping) else {}
-    approved_ids = {
-        str(value or "").strip()
-        for value in (decision.get("approved_evidence_ids") or [])
-        if str(value or "").strip()
-    }
+    approved_ids = approved_id_set(decision.get("approved_evidence_ids") or [])
     lines: List[str] = []
     for tool in requested_tools:
         label = _REQUESTED_SOURCE_LABELS[tool]
@@ -10040,11 +10018,7 @@ def _extend_incident_action_ledger(
         str(item.get("evidence_id") or "") for item in prompt_evidence if str(item.get("evidence_id") or "")
     ]
     decision = state.get("safety_decision") if isinstance(state.get("safety_decision"), Mapping) else {}
-    approved_ids = {
-        str(value)
-        for value in (decision.get("approved_evidence_ids") or [])
-        if str(value)
-    }
+    approved_ids = approved_id_set(decision.get("approved_evidence_ids") or [])
     temporary_state = {
         "query": state.get("query"),
         "intent": state.get("intent"),
@@ -12173,11 +12147,7 @@ def _ensure_explicit_history_target(
     if existing:
         return str(answer or ""), [dict(item) for item in prompt_citations]
     decision = state.get("safety_decision") if isinstance(state.get("safety_decision"), Mapping) else {}
-    approved_ids = {
-        str(value)
-        for value in (decision.get("approved_evidence_ids") or [])
-        if str(value)
-    }
+    approved_ids = approved_id_set(decision.get("approved_evidence_ids") or [])
     candidates = [
         item
         for item in deduplicate_evidence(state.get("evidence_registry") or [])
@@ -14270,11 +14240,9 @@ def _fallback_candidate_lines(state: Dict[str, Any], candidates: List[Dict]) -> 
         for index, item in enumerate(evidence, start=1)
         if str(item.get("evidence_id") or "")
     }
-    approved_ids = {
-        str(value)
-        for value in (state.get("safety_decision") or {}).get("approved_evidence_ids", [])
-        if str(value)
-    }
+    approved_ids = approved_id_set(
+        (state.get("safety_decision") or {}).get("approved_evidence_ids") or []
+    )
     lines = []
     for index, item in enumerate(candidates[:3], start=1):
         supporting_ids = [str(value) for value in item.get("supporting_evidence_ids", []) if str(value)]
@@ -14333,11 +14301,7 @@ def _deterministic_structured_hmc_answer(state: Dict[str, Any]) -> str:
     if decision.get("status") != "answer" or _clarification_questions(state):
         return ""
 
-    approved_ids = {
-        str(value)
-        for value in decision.get("approved_evidence_ids", [])
-        if str(value)
-    }
+    approved_ids = approved_id_set(decision.get("approved_evidence_ids") or [])
     indexed_evidence = list(enumerate(_context_evidence(state), start=1))
     faults = [
         (index, item)
