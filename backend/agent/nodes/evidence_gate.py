@@ -711,6 +711,30 @@ async def evidence_gate_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "用户输入的 HMC 结构化代码未命中权威记录，其他 HMC 关键词/语义近邻"
                 "记录不得作为该代码的含义（已阻止作为该代码的直接证据）"
             )
+    elif has_requested_hmc_match:
+        # 精确命中的反面对称：上一轮或同类问题中其它相似报码的语义近邻记录
+        # 不是当前代码的维修对象，混入会让“这个报码怎么处理”变成别的报码的
+        # 处置（用户也常明确要求“别混相似报码”）。从已批准集合移到已阻止
+        # 集合，审计登记仍保留。
+        hmc_neighbor_ids = [
+            _clean(item.get("evidence_id"))
+            for item in approved_items
+            if _clean(item.get("doc_type")) == "hmc"
+            and _clean(item.get("match_type")) not in _STRUCTURED_HMC_MATCH_TYPES
+        ]
+        if hmc_neighbor_ids:
+            hmc_neighbor_set = set(hmc_neighbor_ids)
+            approved_items = [
+                item
+                for item in approved_items
+                if _clean(item.get("evidence_id")) not in hmc_neighbor_set
+            ]
+            approved_ids = [_clean(item.get("evidence_id")) for item in approved_items]
+            blocked_ids = _unique([*blocked_ids, *hmc_neighbor_ids])
+            warnings.append(
+                "已精确命中权威 HMC 记录，其他相似报码的语义近邻记录不得混入"
+                "该代码的维修/处置说明（已阻止作为直接证据）"
+            )
     for tool in missing_pg_tools:
         blocked_claims.append(f"{tool}_authoritative_facts")
         warnings.append(f"{tool} 的 PostgreSQL 权威事实查询失败，其他来源不能替代该类精确事实")
