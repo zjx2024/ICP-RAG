@@ -47,7 +47,14 @@ COPY static/ static/
 COPY --from=frontend-builder /src/static/dist/ static/dist/
 COPY entrypoint.sh .
 
-RUN chmod +x entrypoint.sh
+RUN chmod +x entrypoint.sh \
+    # 与 docker compose 的 ${APP_UID:-1000} 保持一致：容器默认非 root 运行，
+    # 避免以 root 写入 volumes/artifacts 后宿主普通用户无法解析/回收。
+    && useradd --uid 1000 --create-home --shell /usr/sbin/nologin icp \
+    && mkdir -p /app/data/artifacts \
+    && chown -R 1000:1000 /app
+
+USER 1000:1000
 
 EXPOSE 9999
 ENTRYPOINT ["/app/entrypoint.sh"]

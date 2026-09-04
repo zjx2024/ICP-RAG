@@ -31,8 +31,15 @@ class Config:
     POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
     POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", 5432))
     POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
-    POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "password")
+    # 不写死默认口令：本地开发由 start_server.sh 从 docker compose 继承，
+    # 生产（STRICT_DEPENDENCIES=true）必须通过环境变量显式提供。
+    POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "")
     POSTGRES_DB = os.getenv("POSTGRES_DB", "knowledge_graph")
+    # 强口令开关：置 true 后，STRICT 模式拒绝空口令或等于旧默认值 "password"
+    # 的口令，强制部署方显式注入真实凭据。默认 false 保持与既有数据卷兼容。
+    ICP_REQUIRE_STRONG_POSTGRES_PASSWORD = (
+        os.getenv("ICP_REQUIRE_STRONG_POSTGRES_PASSWORD", "false").lower() == "true"
+    )
     
     # 模型配置已迁移到数据库 llm_models 表
     # MODEL_PROVIDER, OLLAMA_BASE_URL, OLLAMA_MODEL, QWEN_API_KEY, QWEN_API_URL, QWEN_MODEL, EMBEDDING_MODEL

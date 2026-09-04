@@ -28,6 +28,16 @@ if [[ -z "${POSTGRES_PORT:-}" ]] && command -v docker >/dev/null 2>&1 && command
       2>/dev/null || true
   )"
 fi
+# 本地热启动连接 docker compose 的 PostgreSQL：.env 未显式设置口令时从
+# compose 配置继承（与默认数据卷口令保持一致），避免在代码里硬编码默认值。
+if [[ -z "${POSTGRES_PASSWORD:-}" ]] && command -v docker >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  POSTGRES_PASSWORD="$(
+    docker compose -p icp config --format json 2>/dev/null \
+      | python3 -c 'import json, sys; print(json.load(sys.stdin)["services"]["postgres"]["environment"].get("POSTGRES_PASSWORD", ""))' \
+      2>/dev/null || true
+  )"
+  export POSTGRES_PASSWORD
+fi
 export POSTGRES_HOST="${POSTGRES_HOST:-localhost}"
 export OPENSEARCH_HOST="${OPENSEARCH_HOST:-localhost}"
 export OPENSEARCH_PORT="${OPENSEARCH_PORT:-9201}"

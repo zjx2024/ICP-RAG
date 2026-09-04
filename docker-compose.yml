@@ -125,6 +125,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
       POSTGRES_DB: ${POSTGRES_DB:-knowledge_graph}
+      # 置 true 后，应用拒绝以空口令或旧默认 "password" 启动（生产强口令）。
+      ICP_REQUIRE_STRONG_POSTGRES_PASSWORD: "${ICP_REQUIRE_STRONG_POSTGRES_PASSWORD:-false}"
       HUGEGRAPH_HOST: hugegraph
       HUGEGRAPH_PORT: 8080
 

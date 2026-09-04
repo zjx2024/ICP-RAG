@@ -19,11 +19,40 @@ from backend.api import router as business_router
 from backend.core.exceptions import BusinessError
 from backend.core.response import fail
 
+# 生产强口令检查：开启强口令开关后，STRICT 模式不得以空口令或旧默认值
+# "password" 启动，强制部署方显式注入真实凭据（见 config.py）。
+if (
+    config.STRICT_DEPENDENCIES
+    and config.ICP_REQUIRE_STRONG_POSTGRES_PASSWORD
+    and (not config.POSTGRES_PASSWORD or config.POSTGRES_PASSWORD == "password")
+):
+    raise RuntimeError(
+        "ICP_REQUIRE_STRONG_POSTGRES_PASSWORD=true 且 STRICT_DEPENDENCIES=true 时，"
+        "必须通过环境变量 POSTGRES_PASSWORD 显式提供非默认口令"
+    )
+
 app = FastAPI(title="ICP Fault Diagnosis API", version="3.0.0")
 
+# CORS 白名单：默认只放行本机/局域网开发入口，去掉通配符 "*"。
+# 允许跨域访问的来源需通过 CORS_ALLOW_ORIGINS（逗号分隔）显式配置，
+# 例如云端网关域名或内网可视化端。allow_credentials=True 不能与 "*" 并用，
+# 浏览器会拒绝携带凭据的跨域请求，这里改为明确的本机来源列表。
+_DEFAULT_CORS_ORIGINS = [
+    "http://localhost:5174",   # Vite 开发服务器
+    "http://127.0.0.1:5174",
+    "http://localhost:19999",  # 本地热启动
+    "http://127.0.0.1:19999",
+    "http://localhost:9999",   # Docker 容器自访问（健康检查/探活）
+    "http://127.0.0.1:9999",
+]
+_cors_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOW_ORIGINS", "").split(",")
+    if origin.strip()
+] or _DEFAULT_CORS_ORIGINS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
