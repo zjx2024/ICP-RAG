@@ -2,7 +2,6 @@ import { request, buildQuery } from './request';
 import type {
   KnowledgeBase,
   DocumentStatus,
-  UploadResult,
   ParseResult,
   Chunk,
   TaskState,
@@ -10,7 +9,6 @@ import type {
   CommunityReportsResponse,
   LogEntry,
   LogTask,
-  DocMediaDetail,
 } from '@/types';
 
 // ---------- 知识库 ----------
@@ -28,15 +26,6 @@ export const fetchDocuments = (kbId: string) =>
   request<DocumentStatus[]>(`/knowledge-bases/${kbId}/documents`);
 export const getDocument = (kbId: string, docId: string) =>
   request<DocumentStatus>(`/knowledge-bases/${kbId}/documents/${docId}`);
-
-export const uploadDocuments = (kbId: string, files: File[]) => {
-  const fd = new FormData();
-  for (const f of files) fd.append('files', f);
-  return request<UploadResult[]>(`/knowledge-bases/${kbId}/documents/upload`, {
-    method: 'POST',
-    body: fd,
-  });
-};
 
 export const parseDocument = (kbId: string, docId: string, modelId?: string | null) =>
   request<ParseResult>(`/knowledge-bases/${kbId}/documents/${docId}/parse`, {

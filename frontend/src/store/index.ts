@@ -23,18 +23,3 @@ export const useGlobalStore = create<GlobalState>((set) => ({
   modelConfigStatus: null,
   setModelConfigStatus: (s) => set({ modelConfigStatus: s }),
 }));
-
-// 可视化页状态
-interface VisualizeState {
-  kbId?: string;
-  docId?: string;
-  setKbId: (id?: string) => void;
-  setDocId: (id?: string) => void;
-}
-
-export const useVisualizeStore = create<VisualizeState>((set) => ({
-  kbId: undefined,
-  docId: undefined,
-  setKbId: (id) => set({ kbId: id }),
-  setDocId: (id) => set({ docId: id }),
-}));

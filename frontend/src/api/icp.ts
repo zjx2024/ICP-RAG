@@ -196,6 +196,3 @@ export const icpStructuredSearch = (data: {
   '/document-types/search',
   { method: 'POST', body: JSON.stringify(data) },
 );
-
-export const openTaskStream = (taskId: string): EventSource =>
-  new EventSource(`/api/v1/knowledge-bases/tasks/${taskId}/stream`);
