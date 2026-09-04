@@ -1266,6 +1266,7 @@ _PRIOR_EVIDENCE_DEPENDENCE = re.compile(
 )
 _BOUNDARY_META_QUESTION = re.compile(
     r"哪些结论|结论边界|能说|不能说|不能作为|不能给出|不能下结论|边界"
+    r"|能证明|不能证明|证明力|能得出|不能替代|不能代替|证明什么|验证什么"
 )
 _TOOL_BY_DOC_TYPE = {
     str(doc_type): tool for tool, doc_type in DOC_TYPE_BY_TOOL.items()
@@ -2141,6 +2142,21 @@ async def plan_node(state, config=None) -> Dict:
     question_semantics = _detect_question_semantics(query)
     if question_semantics:
         query_frame["question_semantics"] = question_semantics
+    # 边界/元问题（“RBD 能证明什么”“哪些结论不能说”）把回答依据限定在
+    # 上一轮已批准来源族。answer 端据此把答案窗口锁到这些 doc_type，
+    # 防止 function_locator 等强语义邻居跨域顶替上一轮对象自身的记录。
+    # 仅追问轮（上轮确有引用记录）且命中边界表述时锁定；用户本轮显式点名
+    # 新来源时以用户为准（requested_source_tools 会使其失去锁定效果）。
+    locked_doc_types = _prior_answer_doc_types(messages)
+    if (
+        locked_doc_types
+        and (
+            _BOUNDARY_META_QUESTION.search(" ".join(str(query or "").split()))
+            or _PRIOR_EVIDENCE_DEPENDENCE.search(" ".join(str(query or "").split()))
+        )
+    ):
+        query_frame["evidence_domain_locked"] = True
+        query_frame["locked_doc_types"] = locked_doc_types
     topology_dependency = dialogue_context.get("topology_dependency")
     if isinstance(topology_dependency, dict) and topology_dependency.get("required"):
         # ``build_query_frame`` intentionally exposes a closed set of generic

@@ -1477,6 +1477,22 @@ def _filter_answer_domain_evidence(
         )
         if str(value or "").strip()
     }
+    # 边界/元问题（“RBD 能证明什么”“哪些结论不能说”）由 plan 判定后把
+    # evidence_domain_locked 与上一轮已批准 doc_type 放进 query_frame。
+    # 这里把答案窗口锁到这些来源族：跨域的强语义邻居（例如 function_locator
+    # 的网络接入记录）保留审计目录，但不能进入答案上下文，避免元问题被
+    # 其他文档族的记录带偏。用户本轮显式点名新来源（requested_source_tools
+    # 非空）时以用户为准，不锁定。
+    locked_doc_types = {
+        str(value or "").strip()
+        for value in (frame.get("locked_doc_types") or [])
+        if str(value or "").strip()
+    }
+    followup_domain_locked = (
+        frame.get("evidence_domain_locked") is True
+        and bool(locked_doc_types)
+        and not requested_source_tools
+    )
     required_fields = set(required_answer_fields(state))
     # 用户显式点名某类来源（“请查 RBD/FTA”）时，证据门禁批准的该类记录就是
     # 本轮的主要回答对象：主题收敛和拓扑依赖筛选是为“隐式来源选择”服务的，
@@ -1685,7 +1701,12 @@ def _filter_answer_domain_evidence(
         _dropped_by = ""
         _item_evidence_id = str(item.get("evidence_id") or "")
         _item_is_approved = _item_evidence_id in approved_evidence_ids
-        if fta_structure_only and str(item.get("doc_type") or "") != "fta":
+        if (
+            followup_domain_locked
+            and str(item.get("doc_type") or "") not in locked_doc_types
+        ):
+            _dropped_by = "followup_domain"
+        elif fta_structure_only and str(item.get("doc_type") or "") != "fta":
             _dropped_by = "fta_structure_only"
         elif (
             anchored_fta_ids
