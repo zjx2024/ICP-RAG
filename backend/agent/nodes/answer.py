@@ -23,6 +23,11 @@ from backend.agent.evidence_display import (
 )
 from backend.agent.query_understanding import extract_business_codes
 from backend.agent.tool_policy import _SOURCE_COVERAGE_FIELDS
+from backend.agent.nodes.answer_presence import (
+    approved_id_set,
+    normalize_presence_text,
+    semantic_tokens as _semantic_tokens,
+)
 from backend.core.llm_service import llm_service
 from backend.core.rerank import rerank_service
 from backend.agent.model_role_service import agent_model_role_service
@@ -2282,7 +2287,7 @@ def _format_context(state) -> str:
 
     evidence = _context_evidence(state)
     decision = state.get("safety_decision") or {}
-    approved_ids = {str(value) for value in (decision.get("approved_evidence_ids") or [])}
+    approved_ids = approved_id_set(decision.get("approved_evidence_ids") or [])
     blocked_ids = {str(value) for value in (decision.get("blocked_evidence_ids") or [])}
     if registry:
         parts.append(
@@ -11673,19 +11678,11 @@ def _history_numbered_exact_detail_present(
 ) -> bool:
     """Whether a numbered cited step contains the exact structured field."""
 
-    source_normalized = re.sub(
-        r"[^a-z0-9\u4e00-\u9fff]+",
-        "",
-        unicodedata.normalize("NFKC", str(value or "")).casefold(),
-    )
+    source_normalized = normalize_presence_text(value)
     if len(source_normalized) < 6:
         return False
     for line in _history_numbered_citation_text(answer, citation).splitlines():
-        line_normalized = re.sub(
-            r"[^a-z0-9\u4e00-\u9fff]+",
-            "",
-            unicodedata.normalize("NFKC", line).casefold(),
-        )
+        line_normalized = normalize_presence_text(line)
         if source_normalized in line_normalized:
             return True
     return False
@@ -11700,11 +11697,7 @@ def _history_detail_present(
     """Whether a cited history block contains source-specific field details."""
 
     values = value if isinstance(value, (list, tuple)) else [value]
-    answer_normalized = re.sub(
-        r"[^a-z0-9\u4e00-\u9fff]+",
-        "",
-        unicodedata.normalize("NFKC", str(answer or "")).casefold(),
-    )
+    answer_normalized = normalize_presence_text(answer)
     if not answer_normalized:
         return False
     for raw_value in values:
@@ -11715,11 +11708,7 @@ def _history_detail_present(
             source_actions = set(_HISTORY_ACTION_TERM_RE.findall(source))
             if source_actions and not any(action in str(answer or "") for action in source_actions):
                 continue
-        source_normalized = re.sub(
-            r"[^a-z0-9\u4e00-\u9fff]+",
-            "",
-            unicodedata.normalize("NFKC", source).casefold(),
-        )
+        source_normalized = normalize_presence_text(source)
         if len(source_normalized) >= 6 and source_normalized in answer_normalized:
             return True
         # A compact answer may retain one concrete operation/result rather
@@ -11727,11 +11716,7 @@ def _history_detail_present(
         # clause or several non-generic semantic anchors, but never a lone
         # word such as "检查" or "验证".
         for fragment in re.split(r"[+；;，,。\n]", source):
-            normalized_fragment = re.sub(
-                r"[^a-z0-9\u4e00-\u9fff]+",
-                "",
-                unicodedata.normalize("NFKC", fragment).casefold(),
-            )
+            normalized_fragment = normalize_presence_text(fragment)
             if len(normalized_fragment) >= 6 and normalized_fragment in answer_normalized:
                 return True
         source_tokens = {
@@ -13209,37 +13194,6 @@ def _normalized_quote_text(value: Any) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-_SEMANTIC_TOKEN_STOPWORDS = {
-    "系统",
-    "模块",
-    "故障",
-    "异常",
-    "文档",
-    "记录",
-    "资料",
-    "当前",
-    "可能",
-    "主要",
-    "相关",
-}
-
-
-def _semantic_tokens(value: Any) -> set[str]:
-    normalized = _normalized_quote_text(value)
-    tokens = {
-        token
-        for token in re.findall(r"[a-z0-9][a-z0-9._*-]{1,}|[\u4e00-\u9fff]{2,}", normalized)
-        if token not in _SEMANTIC_TOKEN_STOPWORDS
-    }
-    for run in re.findall(r"[\u4e00-\u9fff]{3,}", normalized):
-        tokens.update(
-            run[index:index + 2]
-            for index in range(len(run) - 1)
-            if run[index:index + 2] not in _SEMANTIC_TOKEN_STOPWORDS
-        )
-    return tokens
-
-
 _HISTORICAL_ASSERTION = re.compile(
     # “故障历史记录”是 ICP 功能/模块名（如 FUNC-530），不是历史事件断言；
     # 负向后顾避免该实体名误触发 fault_history 归属要求，否则功能查询的
@@ -14498,7 +14452,7 @@ def _deterministic_structured_hmc_answer(state: Dict[str, Any]) -> str:
 def _fallback_evidence_lines(state: Dict[str, Any]) -> str:
     evidence = _context_evidence(state)
     decision = state.get("safety_decision") or {}
-    approved_ids = {str(value) for value in decision.get("approved_evidence_ids", []) if str(value)}
+    approved_ids = approved_id_set(decision.get("approved_evidence_ids") or [])
     lines = []
     for index, item in enumerate(evidence[:6], start=1):
         evidence_id = str(item.get("evidence_id") or "")
