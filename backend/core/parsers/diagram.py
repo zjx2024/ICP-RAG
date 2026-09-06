@@ -410,7 +410,51 @@ class DiagramParser(Parser):
                                 }
                             )
                     except Exception as exc:
-                        failed.append({"image": image_title, "reason": f"视觉解析失败: {exc}"})
+                        reason = f"视觉解析失败: {exc}"
+                        failed.append({"image": image_title, "reason": reason})
+                        # A discovered source image must have a durable terminal
+                        # extraction outcome.  Otherwise the diagram master has
+                        # no revision and the document remains ``kg_pending``
+                        # forever even though the safe result is simply an
+                        # empty, quarantined visual candidate.  Persisting an
+                        # empty failed candidate records the failure without
+                        # fabricating any topology; automatic validation will
+                        # quarantine the resulting revision.
+                        failed_graph = {
+                            "diagram_type": ctx.doc_type,
+                            "root_fault_id": "",
+                            "metadata": {
+                                "source_block": block_key,
+                                "image_url": image_url,
+                                "storage_key": storage_key,
+                                "minio_path": storage_key,
+                                "mime_type": mime_type,
+                                "source_ref": image_source_ref,
+                            },
+                            "vertices": [],
+                            "edges": [],
+                        }
+                        candidate = diagram_repository.upsert_candidate(
+                            diagram_id=diagram_id,
+                            source_kind="image_vision",
+                            source_fingerprint=fingerprint,
+                            raw_graph=failed_graph,
+                            source_locator={
+                                "block": block_key,
+                                "image_id": image_id,
+                                "storage_key": storage_key,
+                                "image_url": image_url,
+                                "mime_type": mime_type,
+                                "source_ref": image_source_ref,
+                                "extraction_error": str(exc)[:500],
+                            },
+                            extractor_name="analyze_icp_diagram",
+                            extractor_version="1",
+                            extraction_status="failed",
+                        )
+                        candidate_id = str(candidate["candidate_id"])
+                        candidate_ids.setdefault(diagram_id, []).append(candidate_id)
+                        vision_candidate_ids.setdefault(diagram_id, []).append(candidate_id)
                         continue
 
                 graph = {
@@ -431,38 +475,38 @@ class DiagramParser(Parser):
                     "edges": edges,
                 }
 
-                if vertices or edges:
-                    model_name = ""
-                    if isinstance(ctx.model_config, dict):
-                        model_name = str(
-                            ctx.model_config.get("model_name")
-                            or ctx.model_config.get("name")
-                            or ctx.model_config.get("model")
-                            or ""
-                        )
-                    candidate = diagram_repository.upsert_candidate(
-                        diagram_id=diagram_id,
-                        source_kind="image_vision",
-                        source_fingerprint=fingerprint,
-                        raw_graph=graph,
-                        source_locator={
-                            "block": block_key,
-                            "image_id": image_id,
-                            "storage_key": storage_key,
-                            "image_url": image_url,
-                            "mime_type": mime_type,
-                            "source_ref": image_source_ref,
-                        },
-                        extractor_name="analyze_icp_diagram",
-                        extractor_version="1",
-                        model_name=model_name or None,
+                model_name = ""
+                if isinstance(ctx.model_config, dict):
+                    model_name = str(
+                        ctx.model_config.get("model_name")
+                        or ctx.model_config.get("name")
+                        or ctx.model_config.get("model")
+                        or ""
                     )
-                    candidate_ids.setdefault(diagram_id, []).append(
-                        str(candidate["candidate_id"])
-                    )
-                    vision_candidate_ids.setdefault(diagram_id, []).append(
-                        str(candidate["candidate_id"])
-                    )
+                candidate = diagram_repository.upsert_candidate(
+                    diagram_id=diagram_id,
+                    source_kind="image_vision",
+                    source_fingerprint=fingerprint,
+                    raw_graph=graph,
+                    source_locator={
+                        "block": block_key,
+                        "image_id": image_id,
+                        "storage_key": storage_key,
+                        "image_url": image_url,
+                        "mime_type": mime_type,
+                        "source_ref": image_source_ref,
+                    },
+                    extractor_name="analyze_icp_diagram",
+                    extractor_version="1",
+                    model_name=model_name or None,
+                    extraction_status=("succeeded" if vertices or edges else "skipped"),
+                )
+                candidate_ids.setdefault(diagram_id, []).append(
+                    str(candidate["candidate_id"])
+                )
+                vision_candidate_ids.setdefault(diagram_id, []).append(
+                    str(candidate["candidate_id"])
+                )
 
                 try:
                     vectors += self._index_graph(

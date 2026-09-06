@@ -1,3 +1,5 @@
+import backend.agent.nodes.answer_evidence_window as _source_answer_evidence_window
+import backend.agent.nodes.answer_target_presence as _source_answer_target_presence
 import asyncio
 import json
 import unittest
@@ -72,7 +74,7 @@ def _failure_mode_collection_member(
 
 
 class ScopeRoutingTests(unittest.TestCase):
-    def test_explicit_architecture_inventory_request_recovers_closed_contract(self):
+    def test_raw_architecture_inventory_words_do_not_promote_closed_contract(self):
         decision = {
             "primary_intent": "architecture_query",
             "query_targets": [{"intent": "architecture_query"}],
@@ -82,14 +84,12 @@ class ScopeRoutingTests(unittest.TestCase):
             "subjects": ["SYN-ICP-9000", "功能域"],
             "required_answer_fields": ["architecture_hierarchy"],
         }
-        repaired = plan_module._promote_explicit_architecture_collection(
+        repaired = plan_module._downgrade_unrequested_collection_contract(
             decision,
             query="SYN-ICP-9000 总体有几块功能域？请列出全部",
         )
-        self.assertEqual("complete_collection", repaired["coverage_scope"])
-        self.assertEqual("SYN-ICP-9000", repaired["collection_subject"])
-        self.assertEqual("subsystem", repaired["collection_member_kind"])
-        self.assertIn("closed_collection_members", repaired["required_answer_fields"])
+        self.assertEqual("focused_detail", repaired["coverage_scope"])
+        self.assertNotIn("closed_collection_members", repaired["required_answer_fields"])
 
     def test_scope_contract_accepts_only_closed_routes(self):
         parsed = parse_scope_response(json.dumps({
@@ -101,10 +101,10 @@ class ScopeRoutingTests(unittest.TestCase):
         self.assertIsNone(parse_scope_response('{"route":"search_everything"}'))
 
     def test_direct_responses_never_return_tools_or_evidence(self):
-        result = direct_response_node({
+        result = _run(direct_response_node({
             "scope_route": "agent_capability",
             "agent_name": "测试智能体",
-        })
+        }))
         self.assertIn("测试智能体", result["final_answer"])
         self.assertIn("七类资料", result["final_answer"])
         for field in (
@@ -237,7 +237,219 @@ class ScopeRoutingTests(unittest.TestCase):
 
 
 class ConversationAnchorTests(unittest.TestCase):
-    def test_architecture_count_followup_reuses_previous_closed_collection(self):
+    def test_delivered_fields_only_carry_into_a_resolved_continuation(self):
+        messages = [
+            {
+                "role": "assistant",
+                "delivered_answer_fields": [
+                    "local_impact",
+                    "final_impact",
+                    "local_impact",
+                ],
+            }
+        ]
+
+        self.assertEqual(
+            ["local_impact", "final_impact"],
+            plan_module._contextual_prior_delivered_fields(
+                messages, {"context_used": True, "status": "resolved"}
+            ),
+        )
+        self.assertEqual(
+            [],
+            plan_module._contextual_prior_delivered_fields(
+                messages, {"context_used": False, "status": "standalone"}
+            ),
+        )
+
+    def test_delivery_fields_follow_selected_older_object_not_latest_turn(self):
+        messages = [
+            {
+                "id": "answer-a",
+                "role": "assistant",
+                "answer_delivery_manifest": [{
+                    "field": "local_impact",
+                    "evidence_ids": ["ev-a"],
+                    "record_ids": ["FM-A"],
+                    "doc_types": ["fmeca"],
+                    "subject_ids": ["MOD-A"],
+                }],
+            },
+            {
+                "id": "answer-b",
+                "role": "assistant",
+                "answer_delivery_manifest": [{
+                    "field": "maintenance_action",
+                    "evidence_ids": ["ev-b"],
+                    "record_ids": ["MFL-B"],
+                    "doc_types": ["mfl"],
+                    "subject_ids": ["MOD-B"],
+                }],
+            },
+        ]
+        selected = [{
+            "anchor_id": "ev-a",
+            "evidence_id": "ev-a",
+            "record_id": "FM-A",
+            "origin_message_id": "answer-a",
+            "answer_fields": {"module_id": "MOD-A"},
+        }]
+
+        contracts = plan_module._selected_anchor_delivery_contracts(
+            messages,
+            {"context_used": True, "status": "resolved"},
+            selected,
+        )
+
+        self.assertEqual(["local_impact"], [item["field"] for item in contracts])
+
+    def test_field_only_delivery_is_not_applied_when_selected_object_has_no_manifest(self):
+        messages = [{
+            "role": "assistant",
+            "delivered_answer_fields": ["final_impact"],
+        }]
+
+        self.assertEqual(
+            [],
+            plan_module._contextual_prior_delivered_fields(
+                messages,
+                {"context_used": True, "status": "resolved"},
+                [{"anchor_id": "ev-current", "record_id": "FM-CURRENT"}],
+            ),
+        )
+
+    def test_structured_target_preserves_multiple_response_obligations(self):
+        raw_query = "已消解对象的现场处置与历史恢复验证"
+        decision = plan_module._parse_target_response(json.dumps({
+            "primary_intent": "maintenance_query",
+            "targets": ["maintenance_query", "history_query"],
+            "contextualized_query": "已消解对象的现场处置与历史恢复验证",
+            "subjects": ["对象-X"],
+            "requested_facets": ["现场处置", "历史恢复"],
+            "required_answer_fields": [
+                "detection_method", "maintenance_action", "history_steps",
+                "history_result",
+            ],
+            "question_semantics": "act",
+            "response_focus": [
+                "first_action", "maintenance_action", "history_conditions",
+                "recovery_verification",
+            ],
+            "response_scope": "incremental",
+            "response_scope_basis": "现场处置与历史恢复验证",
+            "coverage_scope": "focused_detail",
+            "context_used": True,
+            "context_status": "resolved",
+        }), raw_user_query=raw_query)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual("act", decision["question_semantics"])
+        self.assertEqual(
+            [
+                "first_action", "maintenance_action", "history_conditions",
+                "recovery_verification",
+            ],
+            decision["response_focus"],
+        )
+        self.assertEqual("incremental", decision["response_scope"])
+
+    def test_unknown_response_obligation_is_rejected_not_keyword_repaired(self):
+        decision = plan_module._parse_target_response(json.dumps({
+            "primary_intent": "impact_analysis",
+            "targets": ["impact_analysis"],
+            "required_answer_fields": ["local_impact"],
+            "question_semantics": "invented-shape",
+            "response_focus": ["immediate_impact", "magic-keyword"],
+            "response_scope": "invented-scope",
+            "coverage_scope": "focused_detail",
+            "context_used": False,
+        }))
+
+        self.assertIsNotNone(decision)
+        self.assertEqual("unknown", decision["question_semantics"])
+        self.assertEqual(["immediate_impact"], decision["response_focus"])
+        self.assertEqual("unknown", decision["response_scope"])
+
+    def test_diagram_surface_count_never_adds_unselected_offered_ids(self):
+        offered = [f"ev-rbd-{index}" for index in range(1, 5)]
+        for query in (
+            "重新计算这四个模型",
+            "把先前展示的全体结构再算一遍",
+            "repeat the complete set shown above",
+        ):
+            with self.subTest(query=query):
+                decision = plan_module._parse_target_response(
+                    json.dumps({
+                        "primary_intent": "reliability_query",
+                        "targets": ["reliability_query"],
+                        "contextualized_query": query,
+                        "required_answer_fields": ["failure_probability"],
+                        "selected_anchor_ids": [
+                            "ev-rbd-1", "ev-rbd-2", "ev-rbd-3",
+                        ],
+                        "context_used": True,
+                        "context_status": "resolved",
+                    }, ensure_ascii=False),
+                    offered_anchor_ids=offered,
+                    raw_user_query=query,
+                )
+
+                self.assertEqual(
+                    ["ev-rbd-1", "ev-rbd-2", "ev-rbd-3"],
+                    decision["selected_anchor_ids"],
+                )
+
+    def test_diagram_selection_does_not_jump_to_latest_answer_origin(self):
+        messages = [
+            {
+                "role": "assistant",
+                "message_id": "answer-old",
+                "conversation_anchors": [{
+                    "anchor_id": "ev-rbd-old",
+                    "doc_type": "rbd",
+                    "doc_id": "doc-old",
+                    "record_id": "RBD:OLD",
+                }],
+            },
+            {
+                "role": "assistant",
+                "message_id": "answer-new",
+                "conversation_anchors": [
+                    {
+                        "anchor_id": f"ev-rbd-new-{index}",
+                        "doc_type": "rbd",
+                        "doc_id": "doc-new",
+                        "record_id": f"RBD:NEW:{index}",
+                    }
+                    for index in range(1, 5)
+                ],
+            },
+        ]
+        offered = plan_module._offered_conversation_anchors(messages)
+        decision = plan_module._parse_target_response(
+            json.dumps({
+                "primary_intent": "reliability_query",
+                "targets": ["reliability_query"],
+                "contextualized_query": "把那组结构重新计算",
+                "required_answer_fields": ["failure_probability"],
+                "selected_anchor_ids": ["ev-rbd-old"],
+                "context_used": True,
+                "context_status": "resolved",
+            }, ensure_ascii=False),
+            offered_anchor_ids=[anchor["anchor_id"] for anchor in offered],
+            raw_user_query="把那组结构重新计算",
+        )
+
+        selected = [
+            anchor for anchor in offered
+            if anchor["anchor_id"] in set(decision["selected_anchor_ids"])
+        ]
+        self.assertEqual(["ev-rbd-old"], decision["selected_anchor_ids"])
+        self.assertEqual({"answer-old"}, {
+            anchor.get("origin_message_id") for anchor in selected
+        })
+
+    def test_architecture_count_followup_has_no_raw_wording_promotion(self):
         anchor = {
             "anchor_id": "ev-subsystem",
             "record_id": "SUB-PWR",
@@ -262,17 +474,8 @@ class ConversationAnchorTests(unittest.TestCase):
             "contextualized_query": "所以总数是几个？刚才有没有把供电和显示相关部分漏掉？",
         }
 
-        resolved = plan_module._apply_collection_followup_safety(
-            query="所以总数是几个？刚才有没有把供电和显示相关部分漏掉？",
-            messages=[{"role": "assistant", "conversation_anchors": [anchor]}],
-            dialogue_context=context,
-        )
-
-        self.assertTrue(resolved)
-        self.assertEqual("complete_collection", context["coverage_scope"])
-        self.assertEqual("SYN-ICP-9000", context["collection_subject"])
-        self.assertEqual("subsystem", context["collection_member_kind"])
-        self.assertIn("closed_collection_members", context["required_answer_fields"])
+        self.assertFalse(hasattr(plan_module, "_apply_collection_followup_safety"))
+        self.assertEqual("focused_detail", context["coverage_scope"])
 
     def test_complete_collection_prefers_exact_component_subject_over_context_rows(self):
         rows = [
@@ -299,9 +502,13 @@ class ConversationAnchorTests(unittest.TestCase):
             },
         ]
         state = {
+            "query": "电源与配电子系统的故障模式有哪些？",
             "query_frame": {
-                # Models sometimes phrase the collection slot as a noun phrase;
-                # exact entity slots remain the stable identity candidates.
+                "coverage_request": {
+                    "scope": "complete_collection", "subject": "电源与配电子系统",
+                    "member_kind": "failure_mode", "reference_mode": "current_query",
+                    "basis": "故障模式有哪些",
+                },
                 "collection_subject": "电源与配电子系统的故障模式",
                 "entities": ["电源与配电子系统", "PDS"],
             }
@@ -315,7 +522,7 @@ class ConversationAnchorTests(unittest.TestCase):
         self.assertEqual([], function_ids)
         self.assertEqual("doc-arch", doc_id)
 
-    def test_complete_collection_links_unique_global_name_variant(self):
+    def test_unresolved_name_variant_cannot_authorize_closed_collection(self):
         rows = [
             {
                 "collection_entity_kind": "component",
@@ -339,7 +546,13 @@ class ConversationAnchorTests(unittest.TestCase):
             },
         ]
         state = {
+            "query": "电源与配电模块的故障模式有哪些？",
             "query_frame": {
+                "coverage_request": {
+                    "scope": "complete_collection", "subject": "电源与配电模块",
+                    "member_kind": "failure_mode", "reference_mode": "current_query",
+                    "basis": "故障模式有哪些",
+                },
                 "collection_subject": "电源与配电模块的故障模式",
                 "entities": ["电源与配电系统", "PDU", "PSU"],
             }
@@ -349,9 +562,11 @@ class ConversationAnchorTests(unittest.TestCase):
             diagnosis_module._closed_collection_scope_seeds(rows, state)
         )
 
-        self.assertEqual(["SUB-PWR"], component_ids)
+        # A lexical variant could denote the subsystem or the PDU.  Retrieval
+        # may propose either, but this authority-only helper cannot choose it.
+        self.assertEqual([], component_ids)
         self.assertEqual([], function_ids)
-        self.assertEqual("doc-arch", doc_id)
+        self.assertEqual("", doc_id)
 
     def test_complete_collection_rejects_duplicate_active_name_outside_search_window(self):
         rows = [
@@ -415,11 +630,19 @@ class ConversationAnchorTests(unittest.TestCase):
             "collection_entity_name": "故障记录存储",
         }]
         state = {
+            "query": "它的所有故障模式有哪些？",
             "query_frame": {
+                "coverage_request": {
+                    "scope": "complete_collection", "subject": "它",
+                    "member_kind": "failure_mode", "reference_mode": "selected_anchor",
+                    "selected_anchor_ids": ["anchor-function"], "basis": "所有故障模式",
+                },
                 "collection_subject": "它的所有故障模式",
                 "entities": ["FUNC-530"],
             },
             "selected_conversation_anchors": [{
+                "anchor_id": "anchor-function",
+                "doc_id": "doc-arch",
                 "record_id": "FUNC-530",
                 "answer_fields": {"function_id": "FUNC-530"},
             }],
@@ -455,6 +678,7 @@ class ConversationAnchorTests(unittest.TestCase):
         ]
         anchors = [
             {
+                "anchor_id": f"anchor-member-{index}",
                 "record_id": f"FM-PWR-{index:03d}",
                 "answer_fields": {
                     "collection_parent_id": "SUB-PWR",
@@ -471,7 +695,14 @@ class ConversationAnchorTests(unittest.TestCase):
             )
         ]
         state = {
+            "query": "刚才的集合还有遗漏的故障模式吗？",
             "query_frame": {
+                "coverage_request": {
+                    "scope": "complete_collection", "subject": "刚才的集合",
+                    "member_kind": "failure_mode", "reference_mode": "selected_anchor",
+                    "selected_anchor_ids": [anchor["anchor_id"] for anchor in anchors],
+                    "basis": "还有遗漏的故障模式吗",
+                },
                 "collection_subject": "电源与配电子系统的故障模式",
                 "entities": [
                     "电源与配电子系统", "SUB-PWR", "FUNC-110",
@@ -502,7 +733,13 @@ class ConversationAnchorTests(unittest.TestCase):
             },
         ]
         state = {
+            "query": "电源与配电子系统有哪些故障模式？",
             "query_frame": {
+                "coverage_request": {
+                    "scope": "complete_collection", "subject": "电源与配电子系统",
+                    "member_kind": "failure_mode", "reference_mode": "current_query",
+                    "basis": "有哪些故障模式",
+                },
                 "collection_subject": "电源与配电子系统",
                 "entities": ["SUB-PWR", "FUNC-120"],
             }
@@ -529,7 +766,13 @@ class ConversationAnchorTests(unittest.TestCase):
             },
         ]
         state = {
+            "query": "MOD-B 的所有故障模式",
             "query_frame": {
+                "coverage_request": {
+                    "scope": "complete_collection", "subject": "MOD-B",
+                    "member_kind": "failure_mode", "reference_mode": "current_query",
+                    "basis": "所有故障模式",
+                },
                 "collection_subject": "MOD-B 的所有故障模式",
                 "entities": ["MOD-B"],
             },
@@ -560,7 +803,13 @@ class ConversationAnchorTests(unittest.TestCase):
             },
         ]
         state = {
+            "query": "FUNC-120 和 FUNC-121 的全部故障模式",
             "query_frame": {
+                "coverage_request": {
+                    "scope": "complete_collection", "subject": "FUNC-120 和 FUNC-121",
+                    "member_kind": "failure_mode", "reference_mode": "current_query",
+                    "basis": "全部故障模式",
+                },
                 "collection_subject": "两路稳压供电的全部故障模式",
                 # These are semantic-model outputs for the current turn, not
                 # a rule-generated A/B expansion.
@@ -585,7 +834,13 @@ class ConversationAnchorTests(unittest.TestCase):
             "collection_entity_name": "新模块",
         }]
         state = {
+            "query": "请找 MOD-B 的所有故障模式。",
             "query_frame": {
+                "coverage_request": {
+                    "scope": "complete_collection", "subject": "请找 MOD-B 的所有故障模式。",
+                    "member_kind": "failure_mode", "reference_mode": "current_query",
+                    "basis": "所有故障模式",
+                },
                 "collection_subject": "请找 MOD-B 的所有故障模式。",
                 "entities": [],
             }
@@ -662,6 +917,21 @@ class ConversationAnchorTests(unittest.TestCase):
         self.assertNotIn("severity", anchors[0]["answer_fields"])
         self.assertNotIn("final_impact", anchors[0]["answer_fields"])
 
+    def test_history_keeps_twelve_answer_used_anchors_for_bounded_followup(self):
+        citations = [
+            {
+                "evidence_id": f"ev-{index}",
+                "doc_type": "rbd",
+                "record_id": f"RBD:{index}",
+            }
+            for index in range(1, 14)
+        ]
+
+        anchors = _conversation_anchors(citations)
+
+        self.assertEqual(12, len(anchors))
+        self.assertEqual("ev-12", anchors[-1]["anchor_id"])
+
     def test_target_parser_rejects_model_invented_anchor_id(self):
         result = plan_module._parse_target_response(
             json.dumps({
@@ -679,6 +949,7 @@ class ConversationAnchorTests(unittest.TestCase):
         self.assertEqual(["ev-real"], result["selected_anchor_ids"])
 
     def test_target_parser_accepts_complete_collection_metadata(self):
+        raw_query = "电源与配电子系统的故障模式中，A路间歇停机是否为唯一原因"
         result = plan_module._parse_target_response(
             json.dumps({
                 "primary_intent": "cause_analysis",
@@ -688,14 +959,19 @@ class ConversationAnchorTests(unittest.TestCase):
                 ),
                 "subjects": ["电源与配电子系统", "A路间歇停机"],
                 "requested_facets": ["故障模式", "原因", "完整性"],
-                "coverage_scope": "complete_collection",
-                "collection_subject": "电源与配电子系统",
-                "collection_member_kind": "failure_mode",
+                "coverage_request": {
+                    "scope": "complete_collection",
+                    "subject": "电源与配电子系统",
+                    "member_kind": "failure_mode",
+                    "reference_mode": "current_query",
+                    "basis": "是否为唯一原因",
+                },
                 "context_used": True,
                 "context_status": "resolved",
                 "selected_anchor_ids": ["ev-pwr"],
             }, ensure_ascii=False),
             offered_anchor_ids=["ev-pwr"],
+            raw_user_query=raw_query,
         )
 
         self.assertEqual("complete_collection", result["coverage_scope"])
@@ -707,6 +983,7 @@ class ConversationAnchorTests(unittest.TestCase):
         )
 
     def test_target_parser_preserves_semantic_location_and_incident_contracts(self):
+        raw_query = "运行中反复复位时应优先定位哪个板级环节"
         result = plan_module._parse_target_response(
             json.dumps({
                 "primary_intent": "function_location",
@@ -719,11 +996,16 @@ class ConversationAnchorTests(unittest.TestCase):
                 ],
                 "diagnostic_closure": {
                     "required": True,
+                    "required_dimensions": [
+                        "fault_location", "maintenance_locator",
+                    ],
+                    "basis": raw_query,
                     "reason": "用户描述正在发生的异常并要求排查",
                 },
                 "context_used": False,
                 "context_status": "standalone",
             }, ensure_ascii=False),
+            raw_user_query=raw_query,
         )
 
         self.assertEqual("function_location", result["primary_intent"])
@@ -736,11 +1018,18 @@ class ConversationAnchorTests(unittest.TestCase):
             set(result["required_answer_fields"]),
         )
         self.assertEqual(
-            {"required": True, "reason": "用户描述正在发生的异常并要求排查"},
+            {
+                "required": True,
+                "required_dimensions": [
+                    "fault_location", "maintenance_locator",
+                ],
+                "basis": raw_query,
+                "reason": "用户描述正在发生的异常并要求排查",
+            },
             result["diagnostic_closure"],
         )
 
-    def test_invalid_complete_collection_contract_gets_one_semantic_repair(self):
+    def test_legacy_complete_collection_contract_fails_closed_without_repair(self):
         initial = json.dumps({
             "primary_intent": "impact_analysis",
             "targets": ["impact_analysis"],
@@ -782,11 +1071,10 @@ class ConversationAnchorTests(unittest.TestCase):
                 model={"provider": "ollama"},
             ))
 
-        self.assertEqual(2, call.call_count)
-        self.assertEqual("failure_mode", result["collection_member_kind"])
-        self.assertEqual(
-            ["closed_collection_members"], result["required_answer_fields"]
-        )
+        self.assertEqual(1, call.call_count)
+        self.assertEqual("unknown", result["coverage_scope"])
+        self.assertEqual("unknown", result["collection_member_kind"])
+        self.assertNotIn("closed_collection_members", result["required_answer_fields"])
 
     def test_plain_cause_question_cannot_be_promoted_to_complete_collection(self):
         model_response = json.dumps({
@@ -820,7 +1108,7 @@ class ConversationAnchorTests(unittest.TestCase):
             ))
 
         call.assert_called_once()
-        self.assertEqual("focused_detail", result["coverage_scope"])
+        self.assertEqual("unknown", result["coverage_scope"])
         self.assertEqual("", result["collection_subject"])
         self.assertEqual("unknown", result["collection_member_kind"])
         self.assertEqual(["fault_cause"], result["required_answer_fields"])
@@ -838,6 +1126,14 @@ class ConversationAnchorTests(unittest.TestCase):
             "coverage_scope": "complete_collection",
             "collection_subject": "电源与配电子系统",
             "collection_member_kind": "failure_mode",
+            "coverage_request": {
+                "scope": "complete_collection",
+                "subject": "电源与配电子系统",
+                "member_kind": "failure_mode",
+                "reference_mode": "selected_anchor",
+                "basis": "只有 A路间歇停机 这一个原因吗",
+                "selected_anchor_ids": ["ev-pwr"],
+            },
             "context_used": True,
             "context_status": "resolved",
             "selected_anchor_ids": ["ev-pwr"],
@@ -916,6 +1212,13 @@ class ConversationAnchorTests(unittest.TestCase):
                 "coverage_scope": "complete_collection",
                 "collection_subject": "MOD-PWR-ICU",
                 "collection_member_kind": "failure_mode",
+                "coverage_request": {
+                    "scope": "complete_collection",
+                    "subject": "MOD-PWR-ICU",
+                    "member_kind": "failure_mode",
+                    "reference_mode": "current_query",
+                    "basis": "请完整列出",
+                },
                 "context_used": False,
                 "context_status": "standalone",
                 "selected_anchor_ids": [],
@@ -1000,8 +1303,8 @@ class ConversationAnchorTests(unittest.TestCase):
         self.assertNotIn("原因", result["rewritten_query"])
         self.assertNotIn("影响", result["rewritten_query"])
 
-    def test_exhaustive_followup_recovers_cited_collection_when_model_misses_it(self):
-        """The live wording must not collapse 15 cited members to one detail."""
+    def test_exhaustive_followup_does_not_bypass_missing_typed_contract(self):
+        """Raw wording and prior prose cannot manufacture an N-of-N contract."""
 
         target_response = json.dumps({
             "primary_intent": "cause_analysis",
@@ -1078,17 +1381,16 @@ class ConversationAnchorTests(unittest.TestCase):
                 "iteration": 0,
             }))
 
-        self.assertEqual("complete_collection", result["query_frame"]["coverage_scope"])
-        self.assertEqual("电源与配电子系统", result["query_frame"]["collection_subject"])
+        self.assertEqual("unknown", result["query_frame"]["coverage_scope"])
+        self.assertEqual("", result["query_frame"]["collection_subject"])
+        self.assertEqual("unknown", result["query_frame"]["collection_member_kind"])
+        self.assertEqual([], result["selected_conversation_anchors"])
         self.assertEqual(
-            "failure_mode", result["query_frame"]["collection_member_kind"]
+            ["hybrid_search", "evidence_synthesis"], result["allowed_tools"]
         )
-        self.assertEqual(3, len(result["selected_conversation_anchors"]))
-        self.assertIn("function_locator", result["allowed_tools"])
-        self.assertIn("fmeca_query", result["allowed_tools"])
-        self.assertIn("电源与配电子系统", result["rewritten_query"])
+        self.assertNotIn("fmeca_query", result["allowed_tools"])
 
-    def test_exhaustive_followup_does_not_inherit_mixed_collection_scopes(self):
+    def test_exhaustive_followup_has_no_raw_collection_helper(self):
         anchors = [
             {
                 "anchor_id": "ev-a",
@@ -1119,13 +1421,7 @@ class ConversationAnchorTests(unittest.TestCase):
             "contextualized_query": "这个范围里只有一种吗",
         }
 
-        changed = plan_module._apply_collection_followup_safety(
-            query="这个范围里只有一种吗？",
-            messages=[{"role": "assistant", "conversation_anchors": anchors}],
-            dialogue_context=context,
-        )
-
-        self.assertFalse(changed)
+        self.assertFalse(hasattr(plan_module, "_apply_collection_followup_safety"))
         self.assertEqual("focused_detail", context["coverage_scope"])
 
     def test_power_subsystem_only_a_route_followup_is_marked_complete_collection(self):
@@ -1140,6 +1436,14 @@ class ConversationAnchorTests(unittest.TestCase):
             "coverage_scope": "complete_collection",
             "collection_subject": "电源与配电子系统",
             "collection_member_kind": "failure_mode",
+            "coverage_request": {
+                "scope": "complete_collection",
+                "subject": "电源与配电子系统",
+                "member_kind": "failure_mode",
+                "reference_mode": "selected_anchor",
+                "basis": "只有 A路间歇停机 这一个原因吗",
+                "selected_anchor_ids": ["ev-pwr"],
+            },
             "context_used": True,
             "context_status": "resolved",
             "selected_anchor_ids": ["ev-pwr"],
@@ -1306,9 +1610,14 @@ class ConversationAnchorTests(unittest.TestCase):
                 "memory_enabled": False,
                 "iteration": 0,
             }))
-        self.assertEqual("clarification", result["scope_route"])
+        self.assertEqual("knowledge_base", result["scope_route"])
         self.assertEqual([], result["allowed_tools"])
-        self.assertEqual("direct_response", plan_module.route_after_plan(result))
+        self.assertEqual("", result["clarification_question"])
+        self.assertEqual(
+            "unresolved_identity", result["clarification_reasons"][0]["kind"]
+        )
+        self.assertTrue(result["clarification_fallback"]["required"])
+        self.assertEqual("icp_diagnosis", plan_module.route_after_plan(result))
 
     def test_module_importance_followup_keeps_object_and_combines_goal_facets(self):
         target_response = json.dumps({
@@ -1317,6 +1626,17 @@ class ConversationAnchorTests(unittest.TestCase):
             "contextualized_query": "MOD-PWR-PSUA 为什么重要",
             "subjects": ["MOD-PWR-PSUA"],
             "requested_facets": ["重要性", "职责", "上下游依赖", "失效影响"],
+            "required_answer_fields": [
+                "architecture_function", "local_impact", "final_impact", "relation_path",
+            ],
+            "relation_expansion": {
+                "needed": True,
+                "relation_kind": "relation_path",
+                "reference_mode": "selected_anchor",
+                "basis": "它重要吗",
+                "selected_anchor_ids": ["ev-component"],
+                "reason": "需要核对所选模块的上下游依赖",
+            },
             "context_used": True,
             "context_status": "resolved",
             "selected_anchor_ids": ["ev-component"],
@@ -1337,7 +1657,14 @@ class ConversationAnchorTests(unittest.TestCase):
                 {"tool": "function_locator", "reason": "查询职责与依赖"},
                 {"tool": "fmeca_query", "reason": "查询失效影响"},
             ],
-            "relation_expansion": {"needed": True, "reason": "需要核对上下游关系"},
+            "relation_expansion": {
+                "needed": True,
+                "relation_kind": "relation_path",
+                "reference_mode": "selected_anchor",
+                "basis": "它重要吗",
+                "selected_anchor_ids": ["ev-component"],
+                "reason": "需要核对上下游关系",
+            },
         }, ensure_ascii=False)
         messages = [
             {"role": "user", "content": "MOD-PWR-PSUA 是什么"},
@@ -1795,6 +2122,11 @@ class ConversationAnchorTests(unittest.TestCase):
                 "evidence_synthesis",
             ],
             "query_frame": {
+                "coverage_request": {
+                    "scope": "complete_collection", "subject": "电源与配电子系统",
+                    "member_kind": "failure_mode", "reference_mode": "current_query",
+                    "basis": "只有 A 路间歇停机这一种吗",
+                },
                 "coverage_scope": "complete_collection",
                 "collection_subject": "电源与配电子系统",
                 "collection_member_kind": "failure_mode",
@@ -1941,6 +2273,7 @@ class ConversationAnchorTests(unittest.TestCase):
             "selected_conversation_anchors": [{
                 "anchor_id": "ev-fm-2",
                 "doc_type": "fmeca",
+                "doc_id": "doc-fmeca",
                 "record_id": "FM-SYN-002",
                 "answer_fields": {"record_code": "FM-SYN-002"},
             }],
@@ -1955,9 +2288,9 @@ class ConversationAnchorTests(unittest.TestCase):
         }
         with (
             patch.object(
-                diagnosis_module,
-                "_query_fmeca_by_codes",
-                return_value=[row],
+                diagnosis_module.icp_repository,
+                "get_records_by_business_selectors",
+                return_value={"rows": [row], "reads": []},
             ) as exact_query,
             patch.object(diagnosis_module, "_query_fmeca") as broad_query,
             patch.object(
@@ -1969,7 +2302,7 @@ class ConversationAnchorTests(unittest.TestCase):
             result = _run(diagnosis_module.icp_diagnosis_node(state))
 
         exact_query.assert_called_once()
-        self.assertEqual(["FM-SYN-002"], exact_query.call_args.args[0])
+        self.assertEqual(("fmeca", [{"doc_id": "doc-fmeca", "record_id": "FM-SYN-002"}]), exact_query.call_args.args)
         broad_query.assert_not_called()
         fmeca = [item for item in result["evidence_registry"] if item["doc_type"] == "fmeca"]
         self.assertEqual("III", fmeca[0]["metadata"]["answer_fields"]["severity"])
@@ -1985,6 +2318,7 @@ class ConversationAnchorTests(unittest.TestCase):
             "selected_conversation_anchors": [{
                 "anchor_id": "ev-hmc-1",
                 "doc_type": "hmc",
+                "doc_id": "doc-hmc",
                 "record_id": "91810001**0001",
                 "answer_fields": {"hmc_code": "91810001**0001"},
             }],
@@ -2000,69 +2334,24 @@ class ConversationAnchorTests(unittest.TestCase):
             "fault_desc": "ICU 输入过压钳位失效",
             "repair_method": "检查输入采样与钳位器件，确认异常后更换输入调理模块。",
         }
-        with patch.object(diagnosis_module, "_query_hmc", return_value=[row]) as exact_query:
+        selector = {
+            "kind": "components", "doc_id": "doc-hmc",
+            "lcn": "91810001", "hamc": "**", "hsc": "0001",
+        }
+        row.update(match_type="exact_conversation_reference", hmc_anchor_selector=selector)
+        with (
+            patch.object(diagnosis_module.icp_repository, "get_records_by_business_selectors", return_value={"rows": [row], "reads": []}) as exact_query,
+            patch.object(diagnosis_module, "_query_hmc") as keyword_query,
+        ):
             result = _run(diagnosis_module.icp_diagnosis_node(state))
 
-        self.assertEqual("91810001**0001", exact_query.call_args.args[0])
+        self.assertEqual(("hmc", [selector]), exact_query.call_args.args)
+        keyword_query.assert_not_called()
         hmc = [item for item in result["evidence_registry"] if item["doc_type"] == "hmc"]
         self.assertEqual("exact_conversation_reference", hmc[0]["match_type"])
 
 
 class FinalOutputGateTests(unittest.TestCase):
-    def test_complete_collection_skips_single_mode_fault_fallback(self):
-        fmeca = make_evidence(
-            source_kind="postgres",
-            authority="authoritative_record",
-            evidence_level="L1_DIRECT",
-            claim_type="fmeca_fact",
-            doc_type="fmeca",
-            doc_id="doc-pwr-fmeca",
-            record_id="FM-PWR-001",
-            title="A路间歇停机",
-            content="A路间歇停机的原因、影响和处置。",
-            metadata={
-                "answer_fields": {
-                    "failure_mode": "A路间歇停机",
-                    "fault_cause": "A路供电链路连接异常。",
-                    "local_impact": "A路供电能力不稳定。",
-                    "final_impact": "相关功能可能间歇中断。",
-                    "detection_method": "检查 A 路供电状态与连接情况。",
-                    "compensation_action": "按文档流程切换或隔离异常支路。",
-                }
-            },
-        )
-        state = {
-            "query": "只有 A路间歇停机 这一个原因吗？",
-            "intent": "cause_analysis",
-            "query_targets": [{"intent": "cause_analysis"}],
-            # This asks for the closed set, not an expanded description of the
-            # one prior candidate. The terminal single-mode editor must leave
-            # the answer to the collection-specific closure.
-            "query_frame": {
-                "coverage_scope": "complete_collection",
-                "collection_subject": "电源与配电子系统",
-                "collection_member_kind": "failure_mode",
-            },
-            "evidence_registry": [fmeca],
-            "context_evidence_ids": [fmeca["evidence_id"]],
-            "safety_decision": {
-                "approved_evidence_ids": [fmeca["evidence_id"]],
-                "context_evidence_ids": [fmeca["evidence_id"]],
-            },
-        }
-        citation = next(iter(answer_module._citation_ledger(state)))
-        draft = (
-            "A路间歇停机是当前已返回的一条记录；仅凭这一条不能确认它是否为唯一原因。"
-            f"[^{citation}]"
-        )
-
-        result = answer_module._ensure_approved_single_fault_completeness(
-            draft, state
-        )
-
-        self.assertEqual(draft, result)
-        self.assertNotIn("### 故障模式的原因、影响与处理", result)
-        self.assertNotIn("A路供电链路连接异常", result)
 
     def test_public_citation_compaction_cannot_promote_blocked_evidence(self):
         approved = make_evidence(
@@ -2100,18 +2389,94 @@ class FinalOutputGateTests(unittest.TestCase):
             },
         }
         prompt_citations = answer_module._extract_citations(state)
-        final_answer, citations, _catalog = answer_module._compact_answer_citations(
-            "- 资料记载局部影响。 [^1]\n- 已确定发生未经核验的候选故障。 [^2]",
-            prompt_citations,
-            state,
-        )
-        self.assertIn("资料记载局部影响", final_answer)
-        self.assertNotIn("未经核验", final_answer)
-        self.assertEqual([approved["evidence_id"]], [item["evidence_id"] for item in citations])
+        # Rendering rejects the invalid publication instead of silently
+        # deleting prose and reporting a successful partial interpretation.
+        with self.assertRaises(answer_module.AnswerGenerationError):
+            answer_module._compact_answer_citations(
+                "- 资料记载局部影响。 [^1]\n- 已确定发生未经核验的候选故障。 [^2]",
+                prompt_citations,
+                state,
+            )
 
 
 class CollectionAnswerSafetyTests(unittest.TestCase):
-    def test_identity_only_failure_mode_collection_renderer_omits_extra_fields(self):
+    def test_closed_collection_count_followup_is_left_to_the_answer_model(self):
+        members = []
+        for member_id, name, abbreviation, description in (
+            (
+                "SUB-PWR",
+                "电源与配电子系统",
+                "PWR",
+                "完成外部电源调理和短时保持供电",
+            ),
+            (
+                "SUB-DSP",
+                "显示处理与输出子系统",
+                "DSP",
+                "完成画面合成与显示输出",
+            ),
+        ):
+            members.append(
+                make_evidence(
+                    source_kind="postgres",
+                    authority="authoritative_record",
+                    evidence_level="L1_DIRECT",
+                    claim_type="component_fact",
+                    doc_type="function_locator",
+                    doc_id="doc-arch",
+                    record_id=member_id,
+                    title=name,
+                    content=description,
+                    metadata={
+                        "answer_fields": {
+                            "collection_closed": True,
+                            "collection_parent_id": "SYS-1",
+                            "collection_parent_name": "综合系统",
+                            "collection_member_kind": "subsystem",
+                            "collection_member_count": 2,
+                            "collection_role": "member",
+                            "collection_member_id": member_id,
+                            "collection_member_name": name,
+                            "component_name": name,
+                            "abbreviation": abbreviation,
+                            "description": description,
+                        }
+                    },
+                )
+            )
+        evidence_ids = [item["evidence_id"] for item in members]
+        state = {
+            "query": "所以总数是几个？有没有把供电和显示相关部分漏掉？",
+            "query_frame": {
+                "original_query": "所以总数是几个？有没有把供电和显示相关部分漏掉？",
+                "coverage_scope": "complete_collection",
+                "collection_subject": "SYS-1",
+                "collection_member_kind": "subsystem",
+                "required_answer_fields": ["closed_collection_members"],
+                "prior_delivered_fields": ["closed_collection_members"],
+                "question_semantics": "verify",
+                "response_scope": "incremental",
+                "response_focus": ["count", "completeness_check"],
+            },
+            "collection_resolution": {
+                "closed": True,
+                "parent_id": "SYS-1",
+                "member_kind": "subsystem",
+                "member_count": 2,
+            },
+            "evidence_registry": members,
+            "context_evidence_ids": evidence_ids,
+            "safety_decision": {
+                "approved_evidence_ids": evidence_ids,
+                "context_evidence_ids": evidence_ids,
+            },
+        }
+
+        prompt = answer_module._build_answer_prompt(state, answer_module._format_context(state))
+        self.assertIn(state["query"], prompt)
+        self.assertFalse(hasattr(answer_module, "_render_closed_collection_identity_only"))
+
+    def test_healthy_collection_is_not_replaced_by_identity_renderer(self):
         inventory = [
             _failure_mode_collection_member(index, 2)
             for index in range(1, 3)
@@ -2166,170 +2531,14 @@ class CollectionAnswerSafetyTests(unittest.TestCase):
             },
         }
 
-        # FMECA 模式记录的身份与内容不可分：成员 kind 为 failure_mode 时
-        # 不再有“只列名称”的 identity-only 合同，权威清单必须携带该条
-        # FMECA 的原因、影响、严酷度与检测字段；维修/历史等其他文档族字段
-        # 依旧不得混入。
-        self.assertFalse(answer_module._closed_collection_identity_only(state))
-        result = answer_module._render_closed_collection_identity_only(state)
+        # 集合字段是可用证据，不另建一个按字段决定正文的渲染入口。
+        prompt = answer_module._build_answer_prompt(state, answer_module._format_context(state))
+        self.assertIn(state["query"], prompt)
+        self.assertFalse(hasattr(answer_module, "_closed_collection_identity_only"))
+        self.assertFalse(hasattr(answer_module, "_render_closed_collection_identity_only"))
 
-        self.assertRegex(result, r"共\s*2\s*条故障模式")
-        for index, item in enumerate(inventory, start=1):
-            fields = item["metadata"]["answer_fields"]
-            self.assertIn(fields["failure_mode"], result)
-            self.assertIn(fields["record_code"], result)
-            self.assertIn("原文原因", result)
-            self.assertIn(fields["fault_cause"], result)
-            self.assertIn(fields["local_impact"], result)
-            self.assertIn(fields["severity"], result)
-            self.assertNotIn(str(fields["maintenance_action"]), result)
-        self.assertNotIn("维修措施", result)
 
-    def test_closed_collection_does_not_enter_ranked_candidate_postprocessing(self):
-        inventory = [
-            _failure_mode_collection_member(index, 3)
-            for index in range(1, 4)
-        ]
-        evidence_ids = [item["evidence_id"] for item in inventory]
-        state = {
-            "query": "这个范围里只有这一种吗？",
-            "intent": "cause_analysis",
-            "query_targets": [{"intent": "cause_analysis"}],
-            "query_frame": {
-                "coverage_scope": "complete_collection",
-                "collection_subject": "电源与配电子系统",
-                "collection_member_kind": "failure_mode",
-            },
-            "evidence_registry": inventory,
-            "context_evidence_ids": evidence_ids,
-            "safety_decision": {
-                "approved_evidence_ids": evidence_ids,
-                "context_evidence_ids": evidence_ids,
-            },
-        }
-        draft = "1. A路间歇停机。[^1]\n2. 输入欠压保护误动作。[^2]"
 
-        self.assertEqual(([], []), answer_module._fault_completion_manifest(draft, state))
-        self.assertEqual(
-            draft,
-            answer_module._ensure_multi_candidate_framing(draft, state),
-        )
-        self.assertEqual(
-            draft,
-            answer_module._ensure_broad_fta_structure_context(draft, state),
-        )
-
-    def test_public_citation_compaction_preserves_closed_collection_inventory(self):
-        inventory = [
-            _failure_mode_collection_member(index, 15)
-            for index in range(1, 16)
-        ]
-        evidence_ids = [item["evidence_id"] for item in inventory]
-        state = {
-            "query": "电源与配电这一块要是出问题，资料里都列了哪些故障表现和成因？",
-            "intent": "cause_analysis",
-            "query_targets": [{"intent": "cause_analysis"}],
-            "query_frame": {
-                "coverage_scope": "complete_collection",
-                # Deliberately use a natural-language variant instead of the
-                # canonical parent name to cover the real conversation path.
-                "collection_subject": "电源与配电模块的故障模式",
-                "collection_member_kind": "failure_mode",
-                "required_answer_fields": [
-                    "closed_collection_members",
-                    "failure_mode",
-                    "fault_cause",
-                ],
-            },
-            "collection_resolution": {
-                "closed": True,
-                "parent_id": "SUB-PWR",
-                "parent_name": "电源与配电子系统",
-                "member_kind": "failure_mode",
-                "member_count": 15,
-            },
-            "evidence_registry": inventory,
-            "context_evidence_ids": evidence_ids,
-            "safety_decision": {
-                "approved_evidence_ids": evidence_ids,
-                "blocked_evidence_ids": [],
-                "context_evidence_ids": evidence_ids,
-            },
-        }
-        partial_draft = (
-            "以下是替代排查方向，不表示这些故障同时发生。\n\n"
-            "1. **A路间歇停机**。[^1]\n"
-            "2. **输入欠压保护误动作**。[^2]\n"
-            "3. **电源切换控制异常**。[^3]"
-        )
-        closed_answer = answer_module._ensure_collection_claim_safety(
-            partial_draft,
-            state,
-        )
-
-        final_answer, citations, _catalog = answer_module._compact_answer_citations(
-            closed_answer,
-            answer_module._extract_citations(state),
-            state,
-        )
-
-        self.assertRegex(final_answer, r"共\s*15\s*条故障模式")
-        self.assertIn("原文原因：记录原因15", final_answer)
-        self.assertEqual(15, len(citations))
-        for index in range(1, 16):
-            self.assertIn(f"FM-PWR-{index:03d}", final_answer)
-
-    def test_closed_collection_without_declared_total_is_canonicalized(self):
-        inventory = [
-            _failure_mode_collection_member(index, 15)
-            for index in range(1, 16)
-        ]
-        evidence_ids = [item["evidence_id"] for item in inventory]
-        state = {
-            "query": "资料里都列了哪些故障表现和成因？",
-            "intent": "cause_analysis",
-            "query_targets": [{"intent": "cause_analysis"}],
-            "query_frame": {
-                "coverage_scope": "complete_collection",
-                "collection_subject": "电源与配电子系统",
-                "collection_member_kind": "failure_mode",
-            },
-            "collection_resolution": {
-                "closed": True,
-                "parent_id": "SUB-PWR",
-                "member_count": 15,
-            },
-            "evidence_registry": inventory,
-            "context_evidence_ids": evidence_ids,
-            "safety_decision": {
-                "approved_evidence_ids": evidence_ids,
-                "context_evidence_ids": evidence_ids,
-            },
-        }
-        # This resembles a fluent model draft: all names and citations are
-        # present, but it does not tell the user that this is the complete set.
-        draft = "\n".join(
-            f"{index}. **{item['metadata']['answer_fields']['failure_mode']}**"
-            f"[^{index}]"
-            for index, item in enumerate(inventory, start=1)
-        )
-
-        missing, _manifest = answer_module._target_completion_manifest(draft, state)
-        result = answer_module._ensure_collection_claim_safety(draft, state)
-
-        self.assertIn("closed_collection_members", missing)
-        self.assertRegex(result, r"共\s*15\s*条故障模式")
-        self.assertIn("FM-PWR-015", result)
-
-        placeholder_result = answer_module._ensure_collection_claim_safety(
-            answer_module._NO_SUPPORTED_FACTS_MESSAGE,
-            state,
-        )
-        self.assertRegex(placeholder_result, r"共\s*15\s*条故障模式")
-        self.assertNotIn(
-            answer_module._NO_SUPPORTED_FACTS_MESSAGE,
-            placeholder_result,
-        )
 
     def test_closed_failure_mode_members_use_collection_identity_not_component_fields(self):
         evidence = [
@@ -2358,7 +2567,7 @@ class CollectionAnswerSafetyTests(unittest.TestCase):
         # 故障模式集合的内容完整性按字段核对：纯标题清单不算“已列全”，
         # 否则权威富文本清单会被静默压制。
         self.assertFalse(
-            answer_module._closed_collection_members_present(title_only, manifest)
+            _source_answer_target_presence._closed_collection_members_present(title_only, manifest)
         )
 
         answered = "\n".join(
@@ -2369,7 +2578,7 @@ class CollectionAnswerSafetyTests(unittest.TestCase):
             for item in manifest
         )
         self.assertTrue(
-            answer_module._closed_collection_members_present(answered, manifest)
+            _source_answer_target_presence._closed_collection_members_present(answered, manifest)
         )
 
     def test_evidence_window_keeps_all_fifteen_members_of_closed_collection(self):
@@ -2423,7 +2632,7 @@ class CollectionAnswerSafetyTests(unittest.TestCase):
         # Twelve is the normal soft model-context budget.  A PostgreSQL-closed
         # 15-member collection is indivisible and must expand that budget up
         # to the global hard cap instead of silently dropping three members.
-        selected = answer_module._select_evidence_window(state, evidence, limit=12)
+        selected = _source_answer_evidence_window._select_evidence_window(state, evidence, limit=12)
 
         selected_ids = {item["record_id"] for item in selected}
         inventory_ids = {item["record_id"] for item in inventory}
@@ -2486,72 +2695,13 @@ class CollectionAnswerSafetyTests(unittest.TestCase):
             },
         }
 
-        selected = answer_module._select_evidence_window(state, evidence, limit=12)
+        selected = _source_answer_evidence_window._select_evidence_window(state, evidence, limit=12)
 
         selected_ids = {item["record_id"] for item in selected}
         self.assertTrue(
             {item["record_id"] for item in inventory} <= selected_ids
         )
 
-    def test_evidence_window_matches_natural_scope_variant_without_tool_resolution(self):
-        """A planner label may say 模块 while the canonical parent says 子系统.
-
-        The answer window must still reserve the complete authoritative group;
-        otherwise a normal 12-item context limit silently turns a closed
-        15-record collection into a partial answer.
-        """
-
-        inventory = [
-            _failure_mode_collection_member(index, 15)
-            for index in range(1, 16)
-        ]
-        distractors = []
-        for index in range(20):
-            item = make_evidence(
-                source_kind="postgres",
-                authority="authoritative_record",
-                evidence_level="L1_DIRECT",
-                claim_type="fmeca_fact",
-                doc_type="fmeca",
-                doc_id="doc-other",
-                record_id=f"OTHER-{index}",
-                title=f"高分干扰{index}",
-                content=f"高分干扰{index}",
-            )
-            item["answer_rerank_score"] = 1.0
-            distractors.append(item)
-        evidence = [*distractors, *inventory]
-        state = {
-            "query_frame": {
-                "coverage_scope": "complete_collection",
-                "collection_subject": "电源与配电模块的故障模式",
-                "collection_member_kind": "failure_mode",
-            },
-            # Deliberately omit collection_resolution: later adaptive tool
-            # updates must not make answer safety depend on this transient key.
-            "safety_decision": {
-                "approved_evidence_ids": [item["evidence_id"] for item in evidence],
-            },
-        }
-
-        selected = answer_module._select_evidence_window(state, evidence, limit=12)
-
-        self.assertTrue(
-            {item["record_id"] for item in inventory}
-            <= {item["record_id"] for item in selected}
-        )
-
-        state.update({
-            "evidence_registry": evidence,
-            "context_evidence_ids": [item["evidence_id"] for item in evidence],
-        })
-        rebuilt = answer_module._ensure_collection_claim_safety(
-            "目前只看到前三条故障模式。[^1][^2][^3]",
-            state,
-        )
-        self.assertRegex(rebuilt, r"共\s*15\s*条故障模式")
-        self.assertNotIn("只看到前三条", rebuilt)
-        self.assertIn("FM-PWR-015", rebuilt)
 
     def test_answer_context_restores_approved_closed_members_from_focused_gate(self):
         """A stale Top-K gate window must not truncate an approved closed set."""
@@ -2591,319 +2741,14 @@ class CollectionAnswerSafetyTests(unittest.TestCase):
             {item["record_id"] for item in context},
         )
 
-    def test_nonclosed_collection_claim_is_downgraded_to_partial_records(self):
-        evidence = [
-            _failure_mode_collection_member(index, 3, closed=False)
-            for index in range(1, 3)
-        ]
-        evidence_ids = [item["evidence_id"] for item in evidence]
-        state = {
-            "query": "只有 A路间歇停机 这一个原因吗？",
-            "query_frame": {
-                "coverage_scope": "complete_collection",
-                "collection_subject": "电源与配电子系统",
-                "collection_member_kind": "failure_mode",
-            },
-            "collection_resolution": {
-                "closed": False,
-                "reason": "权威查询结果尚未形成完整集合",
-            },
-            "evidence_registry": evidence,
-            "context_evidence_ids": evidence_ids,
-            "safety_decision": {
-                "approved_evidence_ids": evidence_ids,
-                "context_evidence_ids": evidence_ids,
-            },
-        }
-        draft = (
-            "故障模式共有 2 个：A路间歇停机和输入欠压保护误动作。\n"
-            "- A路间歇停机。[^1]\n"
-            "- 输入欠压保护误动作。[^2]"
-        )
 
-        result = answer_module._ensure_collection_claim_safety(draft, state)
 
-        self.assertIn("当前资料", result)
-        self.assertRegex(result, r"(?:不能|无法)确认.*(?:只有|全部)")
-        self.assertIn("本轮已检索", result)
-        self.assertIn("A路间歇停机", result)
-        self.assertIn("输入欠压保护误动作", result)
-        self.assertNotIn("故障模式共有 2 个", result)
 
-    def test_open_collection_discards_all_exhaustive_synonym_phrasings(self):
-        evidence = [
-            _failure_mode_collection_member(index, 3, closed=False)
-            for index in range(1, 3)
-        ]
-        evidence_ids = [item["evidence_id"] for item in evidence]
-        state = {
-            "query_frame": {
-                "coverage_scope": "complete_collection",
-                "collection_subject": "电源与配电子系统",
-                "collection_member_kind": "failure_mode",
-            },
-            "evidence_registry": evidence,
-            "context_evidence_ids": evidence_ids,
-            "safety_decision": {
-                "approved_evidence_ids": evidence_ids,
-                "context_evidence_ids": evidence_ids,
-            },
-        }
-        unsafe_drafts = (
-            "未发现其他故障模式，当前就是 A、B。",
-            "故障模式为 A、B，除此之外没有。",
-            "A、B 已覆盖所问范围。",
-            "已找全：A、B。",
-            "这就是全部：A、B。",
-            "除 A、B 外无其他原因。",
-        )
 
-        for draft in unsafe_drafts:
-            with self.subTest(draft=draft):
-                result = answer_module._ensure_collection_claim_safety(draft, state)
-                self.assertNotIn(draft, result)
-                self.assertIn("非完整清单", result)
-                self.assertIn("FM-PWR-001", result)
 
-    def test_unrelated_closed_architecture_group_cannot_unlock_failure_modes(self):
-        architecture = []
-        for index in range(1, 3):
-            architecture.append(make_evidence(
-                source_kind="postgres",
-                authority="authoritative_record",
-                evidence_level="L1_DIRECT",
-                claim_type="component_fact",
-                doc_type="function_locator",
-                doc_id="doc-other",
-                record_id=f"SUB-X-{index}",
-                title=f"其他子系统{index}",
-                content=f"其他子系统{index}",
-                metadata={"answer_fields": {
-                    "collection_closed": True,
-                    "collection_parent_id": "SYS-X",
-                    "collection_parent_name": "其他系统",
-                    "collection_member_kind": "subsystem",
-                    "collection_member_count": 2,
-                    "collection_role": "member",
-                    "collection_member_id": f"SUB-X-{index}",
-                    "collection_member_name": f"其他子系统{index}",
-                }},
-            ))
-        evidence_ids = [item["evidence_id"] for item in architecture]
-        state = {
-            "query_frame": {
-                "coverage_scope": "complete_collection",
-                "collection_subject": "电源与配电子系统",
-                "collection_member_kind": "failure_mode",
-            },
-            "evidence_registry": architecture,
-            "context_evidence_ids": evidence_ids,
-            "safety_decision": {
-                "approved_evidence_ids": evidence_ids,
-                "context_evidence_ids": evidence_ids,
-            },
-        }
 
-        result = answer_module._ensure_collection_claim_safety(
-            "全部故障模式只有模式甲。",
-            state,
-        )
 
-        self.assertIn("不能确认", result)
-        self.assertNotIn("模式甲", result)
 
-    def test_cause_collection_with_missing_source_cause_stays_open(self):
-        evidence = [
-            _failure_mode_collection_member(index, 2, closed=True)
-            for index in range(1, 3)
-        ]
-        evidence[1]["metadata"]["answer_fields"]["fault_cause"] = ""
-        evidence[1]["metadata"]["answer_fields"]["collection_member_description"] = "模式说明"
-        evidence_ids = [item["evidence_id"] for item in evidence]
-        state = {
-            "query_frame": {
-                "coverage_scope": "complete_collection",
-                "collection_subject": "电源与配电子系统",
-                "collection_member_kind": "cause",
-            },
-            "collection_resolution": {"parent_id": "SUB-PWR"},
-            "evidence_registry": evidence,
-            "context_evidence_ids": evidence_ids,
-            "safety_decision": {
-                "approved_evidence_ids": evidence_ids,
-                "context_evidence_ids": evidence_ids,
-            },
-        }
-
-        result = answer_module._ensure_collection_claim_safety(
-            "全部原因只有原因甲。",
-            state,
-        )
-
-        self.assertIn("不能确认", result)
-        self.assertIn("原因字段为空", result)
-        self.assertNotIn("全部原因只有原因甲", result)
-
-    def test_tool_closed_flag_cannot_bypass_missing_answer_member(self):
-        evidence = [
-            _failure_mode_collection_member(index, 3, closed=True)
-            for index in range(1, 4)
-        ]
-        # The gate exposed only two of the declared three members.
-        visible = evidence[:2]
-        visible_ids = [item["evidence_id"] for item in visible]
-        state = {
-            "query": "这些就是全部故障模式吗？",
-            "query_frame": {
-                "coverage_scope": "complete_collection",
-                "collection_subject": "电源与配电子系统",
-                "collection_member_kind": "failure_mode",
-            },
-            "collection_resolution": {"closed": True, "member_count": 3},
-            "evidence_registry": evidence,
-            "context_evidence_ids": visible_ids,
-            "safety_decision": {
-                "approved_evidence_ids": visible_ids,
-                "context_evidence_ids": visible_ids,
-            },
-        }
-
-        result = answer_module._ensure_collection_claim_safety(
-            "故障模式共有 3 个。",
-            state,
-        )
-
-        self.assertIn("不能确认", result)
-        self.assertNotIn("故障模式共有 3 个", result)
-
-    def test_complete_collection_fallback_replaces_partial_member_block(self):
-        evidence = [
-            _failure_mode_collection_member(index, 3, closed=True)
-            for index in range(1, 4)
-        ]
-        manifest = []
-        for citation, item in enumerate(evidence, start=1):
-            manifest.append(
-                {
-                    "citation_id": citation,
-                    "record_id": item["record_id"],
-                    "answer_fields": item["metadata"]["answer_fields"],
-                    "supports": ["closed_collection_members"],
-                }
-            )
-        partial_name = evidence[0]["metadata"]["answer_fields"][
-            "collection_member_name"
-        ]
-
-        result = answer_module._append_missing_architecture_roles(
-            f"目前看到 **{partial_name}**。[^1]\n\n补充说明：范围以结构化资料为准。",
-            ["closed_collection_members"],
-            manifest,
-        )
-
-        self.assertEqual(1, result.count(partial_name))
-        self.assertRegex(result, r"共\s*3\s*条故障模式")
-        self.assertIn("补充说明", result)
-
-    def test_cause_collection_fallback_labels_mode_to_cause_mapping(self):
-        evidence = [
-            _failure_mode_collection_member(index, 2, closed=True)
-            for index in range(1, 3)
-        ]
-        manifest = [
-            {
-                "citation_id": citation,
-                "doc_type": "fmeca",
-                "record_id": item["record_id"],
-                "answer_fields": item["metadata"]["answer_fields"],
-                "supports": ["closed_collection_members"],
-            }
-            for citation, item in enumerate(evidence, start=1)
-        ]
-        state = {
-            "query_frame": {
-                "coverage_scope": "complete_collection",
-                "collection_subject": "电源与配电子系统",
-                "collection_member_kind": "cause",
-            },
-            "collection_resolution": {"parent_id": "SUB-PWR"},
-        }
-
-        result = answer_module._append_missing_architecture_roles(
-            "只看到一条原因。",
-            ["closed_collection_members"],
-            manifest,
-            state,
-        )
-
-        self.assertIn("故障模式与原文原因映射", result)
-        self.assertIn("覆盖 2 条故障模式记录", result)
-        self.assertNotRegex(result, r"2\s*个原因")
-        self.assertIn("FM-PWR-001", result)
-
-    def test_closed_collection_claim_without_member_citations_is_rebuilt(self):
-        evidence = [
-            _failure_mode_collection_member(index, 2)
-            for index in range(1, 3)
-        ]
-        evidence_ids = [item["evidence_id"] for item in evidence]
-        state = {
-            "query": "只有 A路间歇停机 这一个原因吗？",
-            "query_frame": {
-                "coverage_scope": "complete_collection",
-                "collection_subject": "电源与配电子系统",
-                "collection_member_kind": "failure_mode",
-            },
-            "collection_resolution": {"closed": True},
-            "evidence_registry": evidence,
-            "context_evidence_ids": evidence_ids,
-            "safety_decision": {
-                "approved_evidence_ids": evidence_ids,
-                "context_evidence_ids": evidence_ids,
-            },
-        }
-        draft = (
-            "完整故障模式共有 2 项：A路间歇停机、输入欠压保护误动作。"
-        )
-
-        result = answer_module._ensure_collection_claim_safety(draft, state)
-        self.assertIn("完整 FMECA 故障模式记录", result)
-        self.assertIn("FM-PWR-001", result)
-        self.assertIn("FM-PWR-002", result)
-
-    def test_unsupported_unique_cause_line_cannot_empty_closed_collection_answer(self):
-        evidence = [
-            _failure_mode_collection_member(index, 2)
-            for index in range(1, 3)
-        ]
-        evidence_ids = [item["evidence_id"] for item in evidence]
-        state = {
-            "query_frame": {
-                "coverage_scope": "complete_collection",
-                "collection_subject": "电源与配电子系统",
-                "collection_member_kind": "failure_mode",
-            },
-            "collection_resolution": {
-                "closed": True,
-                "parent_id": "SUB-PWR",
-            },
-            "evidence_registry": evidence,
-            "context_evidence_ids": evidence_ids,
-            "safety_decision": {
-                "approved_evidence_ids": evidence_ids,
-                "context_evidence_ids": evidence_ids,
-            },
-        }
-
-        result = answer_module._ensure_collection_claim_safety(
-            "原因甲是唯一原因。完整故障模式共有2项。",
-            state,
-        )
-
-        self.assertTrue(result.strip())
-        self.assertNotIn("唯一原因", result)
-        self.assertIn("FM-PWR-001", result)
-        self.assertIn("FM-PWR-002", result)
 
 
 if __name__ == "__main__":

@@ -276,6 +276,38 @@ class TableStructuredGraphTests(unittest.TestCase):
             2, len(method_edges[0]["properties"]["occurrence_qualifiers"])
         )
 
+    def test_mfl_absent_api_marker_is_not_a_shared_business_identity(self):
+        graph = build_mfl_graph(
+            "doc-mfl",
+            [
+                {
+                    "mfl_code": "MFL-001",
+                    "api_reportable": False,
+                    "api_name": "—",
+                    "api_method": "周期查询",
+                    "api_usage": "读取当前状态",
+                },
+                {
+                    "mfl_code": "MFL-002",
+                    "api_reportable": False,
+                    "api_name": "N/A",
+                    "api_method": "周期查询",
+                    "api_usage": "读取当前状态",
+                },
+            ],
+        )
+
+        self.assertEqual([], _nodes(graph, "API"))
+        self.assertEqual([], _edges(graph, "reports_via_api"))
+        self.assertEqual(2, len(_edges(graph, "has_api_method")))
+        self.assertEqual(2, len(_edges(graph, "has_api_usage")))
+        self.assertFalse(
+            any(
+                item["code"] == "explicit_id_property_conflict"
+                for item in graph["warnings"]
+            )
+        )
+
     def test_identical_text_in_fmeca_and_mfl_is_not_semantically_merged(self):
         fmeca = build_fmeca_graph(
             "doc-shared",

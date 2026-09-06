@@ -534,6 +534,25 @@ class IcpRepositoryContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             client.clear_icp_authoritative_rows("doc-2", "fmea; DROP TABLE fmea")
 
+    def test_graph_result_patch_does_not_increment_parse_count(self):
+        connection = _Connection()
+        client = PostgresClient.__new__(PostgresClient)
+        client.conn = connection
+
+        client.patch_icp_document_result(
+            "doc-graph",
+            {
+                "kg_pending": False,
+                "graph_projection": {"status": "kg_done"},
+            },
+        )
+
+        sql, params = connection.queries[0]
+        self.assertIn("COALESCE(last_result, '{}'::jsonb) || %s::jsonb", sql)
+        self.assertNotIn("parse_count", sql)
+        self.assertEqual("doc-graph", params[1])
+        self.assertEqual(1, connection.commits)
+
     def test_hmc_variant_and_fmeca_precision_reach_postgres_contract(self):
         connection = _Connection()
         client = PostgresClient.__new__(PostgresClient)

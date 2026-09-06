@@ -37,6 +37,7 @@ def _target_payload(
             "subject_kind": subject_kind,
             "failure_state": failure_state,
             "question_aspects": [aspect],
+            "basis": query,
         },
         "coverage_scope": "focused_detail",
         "collection_subject": "",
@@ -96,7 +97,8 @@ class StructuredTopologyTargetTests(unittest.TestCase):
                             ),
                         ),
                         ensure_ascii=False,
-                    )
+                    ),
+                    raw_user_query=query,
                 )
 
                 self.assertIsNotNone(parsed)
@@ -126,7 +128,8 @@ class StructuredTopologyTargetTests(unittest.TestCase):
             "impact",
         )
         parsed = plan_module._parse_target_response(
-            json.dumps(incomplete, ensure_ascii=False)
+            json.dumps(incomplete, ensure_ascii=False),
+            raw_user_query=incomplete["contextualized_query"],
         )
 
         self.assertEqual(
@@ -156,7 +159,8 @@ class StructuredTopologyTargetTests(unittest.TestCase):
             },
         }
         parsed = plan_module._parse_target_response(
-            json.dumps(payload, ensure_ascii=False)
+            json.dumps(payload, ensure_ascii=False),
+            raw_user_query=payload["contextualized_query"],
         )
         decision = resolve_tool_policy(
             intent=parsed["primary_intent"],
@@ -169,19 +173,20 @@ class StructuredTopologyTargetTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            ["fmeca_query", "evidence_synthesis"],
+            ["fmeca_query", "hybrid_search", "evidence_synthesis"],
             decision["allowed_tools"],
         )
         self.assertNotIn("rbd_query", decision["authorized_tools"])
+        self.assertEqual(["fmeca"], decision["hybrid_doc_types"])
 
 
 class ReliabilityContractPolicyTests(unittest.TestCase):
-    def test_reliability_target_repairs_focused_impact_only_contract(self):
+    def test_reliability_intent_does_not_invent_an_rbd_field_contract(self):
         fields = ensure_intent_answer_fields(
             ["local_impact", "final_impact"],
             intents=["impact_analysis", "reliability_query"],
         )
-        self.assertIn("rbd_success_criterion", fields)
+        self.assertEqual(["local_impact", "final_impact"], fields)
 
         decision = resolve_tool_policy(
             intent="impact_analysis",
@@ -198,11 +203,10 @@ class ReliabilityContractPolicyTests(unittest.TestCase):
         )
 
         self.assertIn("fmeca_query", decision["allowed_tools"])
-        self.assertIn("rbd_query", decision["allowed_tools"])
-        self.assertIn("rbd_query", decision["authorized_tools"])
-        self.assertIn(
-            "rbd_success_criterion",
-            decision["query_targets"][0]["required_fields"],
+        self.assertNotIn("rbd_query", decision["allowed_tools"])
+        self.assertNotIn("rbd_query", decision["authorized_tools"])
+        self.assertNotIn(
+            "rbd_success_criterion", decision["query_targets"][0]["required_fields"]
         )
 
     def test_non_numeric_topology_question_never_authorizes_calculator(self):
@@ -320,6 +324,7 @@ class ImplicitTopologyPlanIntegrationTests(unittest.TestCase):
                 "subject_kind": "supply_path",
                 "failure_state": "损坏",
                 "question_aspects": ["impact"],
+                "basis": query,
             },
             result["query_frame"]["topology_dependency"],
         )

@@ -1,5 +1,15 @@
 """ICP FTA/RBD 确定性计算节点。"""
 from __future__ import annotations
+from backend.agent.diagram_query_scope import diagram_in_scope
+
+from backend.agent.diagram_identity import (
+    _graph_identity_values as _graph_identity_values,
+    _graph_scope_values as _graph_scope_values,
+    _requested_graph_keys as _requested_graph_keys,
+    _requested_graph_selectors as _requested_graph_selectors,
+    _selector_match_score as _selector_match_score,
+    _stable_graph_identity_matches as _stable_graph_identity_matches,
+)
 
 import json
 import logging
@@ -14,7 +24,13 @@ from backend.agent.evidence_display import (
     summarize_rbd_calculation,
 )
 from backend.agent.query_understanding import build_tool_terms
-from backend.agent.tool_policy import detect_calculation_requests
+from backend.agent.rbd_contract import (
+    bind_rbd_models,
+    extract_explicit_rbd_ids,
+    selected_rbd_anchor_selectors,
+    validate_rbd_authority,
+)
+from backend.agent.tool_policy import calculation_requests_from_authorizations
 from backend.icp.diagram_repository import diagram_repository
 from backend.icp.diagram_validation import (
     FORMAL_VALIDATION_STATUSES,
@@ -121,60 +137,16 @@ def _is_usable_graph_evidence(item: Dict[str, Any]) -> bool:
     )
 
 
-def _graph_identity_values(row: Mapping[str, Any]) -> set[str]:
-    """Return stable identifiers exposed by a graph revision or source row.
-
-    The graph repository commonly returns a revision UUID, while FTA/RBD
-    source evidence uses the business key (for example ``FTA-SYN-005``).
-    Both identify the same model and must bind to one another for deterministic
-    calculation evidence to pass the provenance gate.
-    """
-
-    values: set[str] = set()
-    for key in (
-        "revision_id", "id", "diagram_key", "diagram_id", "record_id",
-        "title", "image_title", "name",
-    ):
-        value = str(row.get(key) or "").strip()
-        if value:
-            values.add(value.casefold())
-    metadata = row.get("metadata")
-    if isinstance(metadata, Mapping):
-        for key in ("revision_id", "diagram_key", "diagram_id", "record_id"):
-            value = str(metadata.get(key) or "").strip()
-            if value:
-                values.add(value.casefold())
-    return values
 
 
-def _requested_graph_keys(state: Mapping[str, Any], kind: str) -> set[str]:
-    """Extract explicit or cited FTA/RBD business keys for this turn."""
 
-    prefix = kind.upper()
-    texts: List[str] = [str(state.get("query") or "")]
-    frame = state.get("query_frame")
-    if isinstance(frame, Mapping):
-        texts.extend(str(value or "") for value in (frame.get("entities") or []))
-        texts.extend(str(value or "") for value in (frame.get("normalized_terms") or []))
-    for anchor in state.get("selected_conversation_anchors") or []:
-        if not isinstance(anchor, Mapping):
-            continue
-        texts.extend(str(anchor.get(key) or "") for key in ("record_id", "title"))
-        fields = anchor.get("answer_fields")
-        if isinstance(fields, Mapping):
-            texts.extend(
-                str(fields.get(key) or "")
-                for key in ("diagram_key", "diagram_id", "revision_id", "record_id")
-            )
-    pattern = re.compile(
-        rf"(?<![A-Za-z0-9]){re.escape(prefix)}[-_][A-Za-z0-9][A-Za-z0-9._-]*",
-        re.IGNORECASE,
-    )
-    return {
-        match.group(0).casefold()
-        for text in texts
-        for match in pattern.finditer(text)
-    }
+
+
+
+
+
+
+
 
 
 def _calculation_parent_evidence_ids(
@@ -184,7 +156,6 @@ def _calculation_parent_evidence_ids(
 ) -> List[str]:
     """Find the active, validated structural source for a calculation row."""
 
-    row_keys = _graph_identity_values(row)
     result: List[str] = []
     for raw_item in evidence_registry or []:
         if not isinstance(raw_item, Mapping) or str(raw_item.get("doc_type") or "") != kind:
@@ -195,7 +166,7 @@ def _calculation_parent_evidence_ids(
             metadata = item.get("document_metadata")
         if isinstance(metadata, Mapping):
             item["metadata"] = dict(metadata)
-        if not (row_keys & _graph_identity_values(item)):
+        if not _stable_graph_identity_matches(row, item):
             continue
         if not _is_usable_graph_evidence(item):
             continue
@@ -208,7 +179,7 @@ def _calculation_parent_evidence_ids(
 def _query_graphs(
     doc_type: str,
     terms: Sequence[str],
-    limit: int = 3,
+    limit: int = 12,
     errors: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Read only active, formally validated and published PG revisions."""
@@ -349,13 +320,15 @@ async def icp_calculation_node(state) -> Dict[str, Any]:
     }
 
     allowed_tools = set(state.get("allowed_tools") or [])
-    raw_requests = state.get("calculation_requests")
-    if raw_requests is None:
-        # 兼容旧会话状态，但仍只从用户原始问题授权。
-        raw_requests = detect_calculation_requests(raw_user_query)
-    calculation_requests = {
-        str(value or "").strip() for value in (raw_requests or []) if str(value or "").strip()
-    }
+    # The raw query remains the deterministic source of numeric parameters,
+    # but never creates semantic permission.  Only the target/planner consensus
+    # emitted by ``plan_node`` can authorize a calculator.
+    calculation_requests = set(
+        calculation_requests_from_authorizations(
+            state.get("calculation_authorizations"),
+            raw_user_query=raw_user_query,
+        )
+    )
     want_fta = (
         "fta_analyzer" in allowed_tools
         and bool(calculation_requests & {"fta_cut_sets", "fta_probability"})
@@ -373,38 +346,158 @@ async def icp_calculation_node(state) -> Dict[str, Any]:
         dict(item) for item in (state.get("confirmed_graphs") or [])
         if _is_usable_graph_row(item)
     ]
+    effective_rbd_binding: Dict[str, Any] = (
+        dict(state.get("rbd_query_binding"))
+        if isinstance(state.get("rbd_query_binding"), Mapping)
+        else {}
+    )
 
-    def graph_rows(kind: str, errors: List[str]) -> List[Dict[str, Any]]:
+    def graph_rows(
+        kind: str,
+        errors: List[str],
+        selection_warnings: List[str],
+    ) -> List[Dict[str, Any]]:
         selected = [
             item for item in formal_graphs
             if str(item.get("diagram_type") or item.get("doc_type") or "") == kind
         ]
-        # A semantic retrieval may have hydrated only part of a requested model
-        # set (for example two of four RBDs). Always merge the repository query
-        # instead of treating any non-empty selection as complete.
+        # Repository text matching is recall only.  The rows below may join the
+        # calculation set solely through a stable selector or a stable identity
+        # already handed off by the diagnosis node.
         queried = _query_graphs(kind, terms_by_type[kind], errors=errors)
-        requested_keys = _requested_graph_keys(state, kind)
-        if requested_keys:
-            # A follow-up such as “按这份 FTA 计算” inherits the selected
-            # business key from its cited anchor. Do not add sibling diagrams
-            # merely because a broad lexical query also matches them.
-            selected = [
-                item for item in selected
-                if _graph_identity_values(item) & requested_keys
+        selectors = _requested_graph_selectors(state, kind)
+
+        def deduplicate(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+            result: List[Dict[str, Any]] = []
+            for raw_row in rows:
+                row = dict(raw_row)
+                if not _graph_identity_values(row):
+                    continue
+                if any(_stable_graph_identity_matches(row, other) for other in result):
+                    continue
+                result.append(row)
+            return result
+
+        candidates = deduplicate([*selected, *queried])
+        if kind == "fta" and state.get("fta_query_binding"):
+            scoped = [row for row in candidates if diagram_in_scope(
+                row, state["fta_query_binding"], query=raw_user_query)]
+            if not scoped:
+                selection_warnings.append("FTA 当前模型身份未通过本轮范围复验，未执行计算")
+            return scoped
+        if kind == "rbd":
+            nonlocal effective_rbd_binding
+            binding_was_declared = bool(
+                isinstance(state.get("rbd_query_binding"), Mapping)
+                and state["rbd_query_binding"].get("required") is True
+            )
+            if not binding_was_declared:
+                explicit_rbd_ids = extract_explicit_rbd_ids(raw_user_query)
+                _selected_rows, effective_rbd_binding = bind_rbd_models(
+                    candidates,
+                    required=True,
+                    raw_user_query=raw_user_query,
+                    explicit_rbd_ids=explicit_rbd_ids,
+                    anchor_selectors=selected_rbd_anchor_selectors(
+                        state.get("selected_conversation_anchors") or []
+                    ),
+                    allow_multiple=len(explicit_rbd_ids) > 1,
+                )
+            validation = validate_rbd_authority(
+                effective_rbd_binding,
+                models=candidates,
+                raw_user_query=raw_user_query,
+                selected_anchors=state.get("selected_conversation_anchors") or [],
+            )
+            if not validation.get("valid"):
+                selection_warnings.append(
+                    "RBD 计算目标未通过精确稳定 ID、已选引用、正式图业务 ID "
+                    "及图修订一致性复验"
+                    f"（{validation.get('reason') or 'unresolved'}），未执行计算"
+                )
+                return []
+            authorized = [
+                candidates[index]
+                for index in validation.get("model_indexes") or []
+                if isinstance(index, int) and 0 <= index < len(candidates)
             ]
-            queried = [
-                item for item in queried
-                if _graph_identity_values(item) & requested_keys
+            return deduplicate(authorized)
+
+        if selectors:
+            resolved: List[Dict[str, Any]] = []
+            for selector in selectors:
+                scored = [
+                    (_selector_match_score(item, selector), item)
+                    for item in candidates
+                ]
+                best_score = max((score for score, _ in scored), default=0)
+                matches = [item for score, item in scored if score == best_score and score > 0]
+                if len(matches) != 1:
+                    if len(matches) > 1:
+                        selection_warnings.append(
+                            f"{kind.upper()} 计算目标的稳定标识匹配到多个图修订，"
+                            "需要补充修订ID、文档或构型后才能计算"
+                        )
+                    continue
+                match = matches[0]
+                if not any(
+                    _stable_graph_identity_matches(match, existing)
+                    for existing in resolved
+                ):
+                    resolved.append(match)
+            return resolved
+
+        # In the ordinary pipeline ``confirmed_graphs`` is the authoritative
+        # handoff from the current RBD/FTA query.  Re-read/merge only the same
+        # stable records; a sibling found merely because it shares a title or
+        # prose term must not enter the calculation set.
+        selected = deduplicate(selected)
+        if not selected:
+            if queried:
+                selection_warnings.append(
+                    f"{kind.upper()} 候选仅由标题或文本召回，未获得当前轮的稳定图身份绑定，未执行计算"
+                )
+            return []
+
+        merged = deduplicate(
+            [
+                *selected,
+                *[
+                    row
+                    for row in queried
+                    if any(
+                        _stable_graph_identity_matches(row, chosen)
+                        for chosen in selected
+                    )
+                ],
             ]
-        result: List[Dict[str, Any]] = []
-        seen = set()
-        for item in [*selected, *queried]:
-            identity = str(item.get("revision_id") or item.get("id") or "").strip()
-            if not identity or identity in seen:
-                continue
-            seen.add(identity)
-            result.append(item)
-        return result
+        )
+
+        # Two active diagrams may legitimately share a human-readable title
+        # across documents or configurations.  Without explicit stable
+        # selectors, neither member of such a group is uniquely authorized.
+        by_title: Dict[str, List[Dict[str, Any]]] = {}
+        for item in merged:
+            title = str(item.get("title") or item.get("image_title") or "").strip().casefold()
+            if title:
+                by_title.setdefault(title, []).append(item)
+        ambiguous_ids = {
+            identity
+            for group in by_title.values()
+            if len(group) > 1
+            for item in group
+            for identity in _graph_identity_values(item)
+        }
+        if ambiguous_ids:
+            selection_warnings.append(
+                f"{kind.upper()} 存在同名但稳定身份不同的图，未指定修订ID、文档或构型的成员未执行计算"
+            )
+            merged = [
+                item
+                for item in merged
+                if not (_graph_identity_values(item) & ambiguous_ids)
+            ]
+        return merged
 
     def parent_evidence_ids(row: Dict[str, Any], kind: str) -> List[str]:
         return _calculation_parent_evidence_ids(
@@ -418,7 +511,7 @@ async def icp_calculation_node(state) -> Dict[str, Any]:
         previews = []
         errors: List[str] = []
         warnings: List[str] = []
-        rows = graph_rows("fta", errors)
+        rows = graph_rows("fta", errors, warnings)
         for row in rows:
             try:
                 result = calculate_fta(row.get("graph") or {}, mission_time=mission_time)
@@ -469,8 +562,21 @@ async def icp_calculation_node(state) -> Dict[str, Any]:
                         ],
                         metadata={
                             "algorithm": "backend.icp.reliability.calculate_fta",
+                            "revision_id": str(row.get("revision_id") or ""),
+                            "diagram_id": str(row.get("diagram_id") or ""),
+                            "diagram_key": str(row.get("diagram_key") or ""),
+                            "configuration": next(iter(_graph_scope_values(row, "configuration")), ""),
                             "graph_revision_id": str(row.get("revision_id") or ""),
                             "numeric_complete": numeric_complete,
+                            "calculation": {
+                                "requested_operations": sorted(calculation_requests),
+                                "cut_sets_require_probability": False,
+                                "probability_block_reason": probability_block_reason,
+                                "missing_probability_nodes": missing_probabilities,
+                                "parameters": {"mission_time": mission_time, "mission_time_unit": "h"},
+                                "results": {"top_event_probability": result.get("top_event_probability")},
+                                "units": {"top_event_probability": "1"},
+                            },
                         },
                     )
                 )
@@ -522,7 +628,7 @@ async def icp_calculation_node(state) -> Dict[str, Any]:
         previews = []
         errors: List[str] = []
         warnings: List[str] = []
-        rows = graph_rows("rbd", errors)
+        rows = graph_rows("rbd", errors, warnings)
         for row in rows:
             try:
                 result = calculate_rbd(row.get("graph") or {}, mission_time=mission_time)
@@ -577,6 +683,11 @@ async def icp_calculation_node(state) -> Dict[str, Any]:
                             "algorithm": "backend.icp.reliability.calculate_rbd",
                             "graph_revision_id": str(row.get("revision_id") or ""),
                             "numeric_complete": numeric_complete,
+                            "calculation": {
+                                "parameters": {"mission_time": mission_time, "mission_time_unit": "h"},
+                                "results": {"system_reliability": result.get("system_reliability")},
+                                "units": {"system_reliability": "1"},
+                            },
                         },
                     )
                 )
@@ -637,4 +748,9 @@ async def icp_calculation_node(state) -> Dict[str, Any]:
         "tool_calls": tool_calls,
         "tool_results": tool_results,
         "evidence_registry": evidence,
+        **(
+            {"rbd_query_binding": effective_rbd_binding}
+            if want_rbd and effective_rbd_binding
+            else {}
+        ),
     }

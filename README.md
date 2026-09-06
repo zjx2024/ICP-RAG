@@ -50,7 +50,7 @@ Word / Excel / 图片
 结构化边以 `(doc_id, relation, source, target)` 为规范身份；同一文档内相同端点和关系的多次字段/行来源合并为一条边，来源限定保存在 `occurrence_qualifiers`。故障历史中的每个步骤使用独立 `FaultHistoryStep` 实例，通过 `has_diagnosis_step`、`has_step_content` 和 `next_step` 分别表达案例归属、步骤原文与先后顺序。
 
 运行栈固定为 PostgreSQL 15、OpenSearch、ArtifactStore + LocalFS、HugeGraph、
-Ollama + Qwen3.6、BGE-M3 和 BGE-Reranker-v2-M3。当前方案不部署独立向量库：
+Ollama + Qwen3.8 27B、BGE-M3 和 BGE-Reranker-v2-M3。当前方案不部署独立向量库：
 OpenSearch 同时承担全文和 1024 维向量检索。
 
 ## 3. 诊断流程
@@ -88,11 +88,15 @@ OpenSearch 同时承担全文和 1024 维向量检索。
 
 FTA/RBD 数值由确定性 Python 算法计算。缺少概率、故障率、可靠度或任务时间时，系统明确报告缺失参数，不生成虚构数值。
 
+FTA 最小割集只依赖完整逻辑结构，不依赖事件概率。当前确定性算法支持 AND/OR；XOR 仍可查询其显式结构，但由于尚无带否定事件的割集表示和明确的多输入约定，计算会明确拒绝，不按 OR 替代。`provisional` 图仍不得用于正式计算。
+
+候选相关性权重可用 `ICP_CANDIDATE_RANKING_WEIGHTS` JSON 显式覆盖（见 `.env.example`）；默认权重不变，实际权重记录在 `evidence_synthesis.params.ranking_profile`。权重不是故障概率，也不能改变精确身份、权威来源优先级、证据门禁或计算授权。
+
 ## 5. 前端页面
 
 - **七类文档知识库**：上传、解析、查看原文/向量/结构化记录，以及自动入图状态、隔离原因和图投影；
 - **ICP 故障诊断**：会话式诊断、实时工具调用、候选证据和证据支持度；
-- **系统设置**：本地 Qwen3.6、BGE-M3 和 BGE-Reranker-v2-M3 的角色与端点配置。
+- **系统设置**：本地 Qwen3.8 27B、BGE-M3 和 BGE-Reranker-v2-M3 的角色与端点配置；原 Qwen3.6 保留，可在模型设置中回切。
 
 独立“图片画廊”和旧通用知识库页面已从产品入口移除。图片抽取与静态服务仍保留，用于 FTA、RBD、系统架构原图及证据查看。
 
@@ -232,6 +236,7 @@ tests/
 
 ## 11. 当前维护文档
 
+- [智能体架构整改方案](docs/ICP智能体架构整改方案.md)：按因果对照、证据/任务职责、发布链路替换和全量验收推进；不是已完成能力声明；
 - [部署指南](docs/部署指南.md)：本地热启动、Docker、备份、恢复和迁移验收；
 - [开源本地化完整实施方案](docs/开源本地化完整实施方案.md)：数据分层、检索、投影、回滚及验收；
 - [七类文档解析与证据智能体详细设计](docs/ICP七类文档解析与证据智能体详细设计.md)：解析、工具、工作流与证据门禁；

@@ -3,10 +3,41 @@ import unittest
 
 from backend.agent.contracts import make_evidence, make_tool_result
 from backend.agent.nodes.evidence_gate import evidence_gate_node
+from backend.agent.rbd_contract import bind_rbd_models
 
 
 def _run(state):
     return asyncio.run(evidence_gate_node(state))
+
+
+def _calculation_authorization(operation, target, basis):
+    return [{
+        "operation": operation,
+        "mode": "calculate",
+        "target": target,
+        "basis": basis,
+    }]
+
+
+def _rbd_binding(*, query, revision_id, diagram_key, doc_id, status):
+    row = {
+        "diagram_type": "rbd",
+        "revision_id": revision_id,
+        "diagram_id": f"diagram-{revision_id}",
+        "diagram_key": diagram_key,
+        "doc_id": doc_id,
+        "validation_status": status,
+        "projection_status": "published",
+        "is_active": True,
+        "graph": {"vertices": [], "edges": []},
+    }
+    _rows, binding = bind_rbd_models(
+        [row],
+        required=True,
+        raw_user_query=query,
+        explicit_rbd_ids=[diagram_key],
+    )
+    return binding
 
 
 class EvidenceGateCompatibilityTests(unittest.TestCase):
@@ -26,6 +57,41 @@ class EvidenceGateCompatibilityTests(unittest.TestCase):
 
 
 class EvidenceGateRulesTests(unittest.TestCase):
+    def test_planned_answer_mode_is_invariant_under_intent_perturbation(self):
+        evidence = make_evidence(
+            source_kind="postgres",
+            authority="authoritative_record",
+            evidence_level="L1_DIRECT",
+            claim_type="fmeca_fact",
+            doc_type="fmeca",
+            record_id="FM-MODE-INVARIANT",
+            content="结构化事实",
+        )
+        base = {
+            "answer_mode": "knowledge_explanation",
+            "evidence_registry": [evidence],
+            "allowed_tools": ["fmeca_query"],
+            "candidate_faults": [
+                {
+                    "fault": "候选记录",
+                    "score": 0.5,
+                    "exact_hmc_match": False,
+                }
+            ],
+            "diagnostic_support": 0.5,
+        }
+
+        diagnostic_label = _run({**base, "intent": "symptom_diagnosis"})
+        architecture_label = _run({**base, "intent": "architecture_query"})
+
+        self.assertEqual(
+            diagnostic_label["safety_decision"],
+            architecture_label["safety_decision"],
+        )
+        self.assertFalse(
+            diagnostic_label["safety_decision"]["requires_clarification"]
+        )
+
     def test_candidate_seed_graph_path_is_context_only_until_query_binding_is_proved(self):
         path = make_evidence(
             source_kind="hugegraph",
@@ -277,6 +343,7 @@ class EvidenceGateRulesTests(unittest.TestCase):
         )
         result = _run(
             {
+                "answer_mode": "fault_diagnosis",
                 "evidence_registry": [graph],
                 "allowed_tools": ["fta_query", "fta_analyzer"],
             }
@@ -287,7 +354,121 @@ class EvidenceGateRulesTests(unittest.TestCase):
         self.assertTrue(decision["requires_clarification"])
         self.assertNotIn(graph["evidence_id"], result["approved_evidence_ids"])
 
+    def test_requested_relation_with_empty_graph_result_blocks_formal_topology(self):
+        query = "说明 MOD-A 到 FUNC-B 的影响传播"
+        result = _run(
+            {
+                "query": query,
+                "query_frame": {
+                    "required_answer_fields": ["impact_propagation"],
+                },
+                "relation_expansion": {
+                    "needed": True,
+                    "relation_kind": "impact_propagation",
+                    "reference_mode": "current_query",
+                    "basis": "MOD-A 到 FUNC-B 的影响传播",
+                    "selected_anchor_ids": [],
+                    "reason": "需要核验结构关系",
+                },
+                "evidence_registry": [],
+                "tool_results": [
+                    make_tool_result(
+                        tool="graph_traversal",
+                        status="empty",
+                        data={"path_count": 0},
+                    )
+                ],
+                "allowed_tools": ["graph_traversal"],
+            }
+        )
+
+        self.assertIn(
+            "formal_topology", result["safety_decision"]["blocked_claims"]
+        )
+
+    def test_candidate_seed_path_cannot_satisfy_formal_topology(self):
+        query = "说明 MOD-A 到 FUNC-B 的关系"
+        graph = make_evidence(
+            source_kind="hugegraph",
+            authority="validated_relation",
+            evidence_level="L3_INFERRED",
+            claim_type="relation_path",
+            doc_type="function_locator",
+            doc_id="doc-function",
+            record_id="path-candidate",
+            review_status="auto_validated",
+            content="MOD-A -> FUNC-B",
+            metadata={
+                "validation_status": "auto_validated",
+                "is_active": True,
+                "projection_status": "published",
+                "seed_binding_status": "candidate",
+            },
+        )
+        result = _run(
+            {
+                "query": query,
+                "query_frame": {"required_answer_fields": ["relation_path"]},
+                "relation_expansion": {
+                    "needed": True,
+                    "relation_kind": "relation_path",
+                    "reference_mode": "current_query",
+                    "basis": "MOD-A 到 FUNC-B 的关系",
+                    "selected_anchor_ids": [],
+                    "reason": "需要核验结构关系",
+                },
+                "evidence_registry": [graph],
+                "allowed_tools": ["graph_traversal"],
+            }
+        )
+
+        self.assertNotIn(graph["evidence_id"], result["approved_evidence_ids"])
+        self.assertIn(
+            "formal_topology", result["safety_decision"]["blocked_claims"]
+        )
+
+    def test_exact_seed_path_can_satisfy_formal_topology(self):
+        query = "说明 MOD-A 到 FUNC-B 的关系"
+        graph = make_evidence(
+            source_kind="hugegraph",
+            authority="validated_relation",
+            evidence_level="L2_CORROBORATED",
+            claim_type="relation_path",
+            doc_type="function_locator",
+            doc_id="doc-function",
+            record_id="path-exact",
+            review_status="auto_validated",
+            content="MOD-A -> FUNC-B",
+            metadata={
+                "validation_status": "auto_validated",
+                "is_active": True,
+                "projection_status": "published",
+                "seed_binding_status": "exact",
+            },
+        )
+        result = _run(
+            {
+                "query": query,
+                "query_frame": {"required_answer_fields": ["relation_path"]},
+                "relation_expansion": {
+                    "needed": True,
+                    "relation_kind": "relation_path",
+                    "reference_mode": "current_query",
+                    "basis": "MOD-A 到 FUNC-B 的关系",
+                    "selected_anchor_ids": [],
+                    "reason": "需要核验结构关系",
+                },
+                "evidence_registry": [graph],
+                "allowed_tools": ["graph_traversal"],
+            }
+        )
+
+        self.assertNotIn(
+            "formal_topology", result["safety_decision"]["blocked_claims"]
+        )
+
     def test_confirmed_relation_and_derived_calculation_are_approved(self):
+        query = "给出 RBD-GATE-1 的系统可靠度"
         graph = make_evidence(
             source_kind="hugegraph",
             authority="confirmed_relation",
@@ -295,10 +476,18 @@ class EvidenceGateRulesTests(unittest.TestCase):
             claim_type="rbd_structure",
             doc_type="rbd",
             doc_id="doc-rbd",
-            record_id="revision-1",
+            record_id="RBD-GATE-1",
             review_status="confirmed",
             content="A 与 B 串联",
-            metadata={"is_active": True, "projection_status": "published"},
+            metadata={
+                "revision_id": "revision-1",
+                "diagram_id": "diagram-revision-1",
+                "diagram_key": "RBD-GATE-1",
+                "validation_status": "manual_confirmed",
+                "is_active": True,
+                "projection_status": "published",
+                "rbd_block_business_ids": [],
+            },
         )
         calculation = make_evidence(
             source_kind="calculation",
@@ -313,8 +502,19 @@ class EvidenceGateRulesTests(unittest.TestCase):
         )
         result = _run(
             {
+                "query": query,
                 "evidence_registry": [graph, calculation],
                 "allowed_tools": ["rbd_query", "rbd_calculator"],
+                "rbd_query_binding": _rbd_binding(
+                    query=query,
+                    revision_id="revision-1",
+                    diagram_key="RBD-GATE-1",
+                    doc_id="doc-rbd",
+                    status="manual_confirmed",
+                ),
+                "calculation_authorizations": _calculation_authorization(
+                    "rbd_reliability", "rbd", "给出 RBD-GATE-1 的系统可靠度"
+                ),
             }
         )
         self.assertEqual(
@@ -354,8 +554,12 @@ class EvidenceGateRulesTests(unittest.TestCase):
 
         result = _run(
             {
+                "query": "列出不能再约简的底层组合",
                 "evidence_registry": [graph, calculation],
                 "allowed_tools": ["fta_query", "fta_analyzer"],
+                "calculation_authorizations": _calculation_authorization(
+                    "fta_cut_sets", "fta", "不能再约简的底层组合"
+                ),
             }
         )
 
@@ -385,8 +589,12 @@ class EvidenceGateRulesTests(unittest.TestCase):
 
         result = _run(
             {
+                "query": "给出系统可靠度",
                 "evidence_registry": [graph],
                 "allowed_tools": ["rbd_query", "rbd_calculator"],
+                "calculation_authorizations": _calculation_authorization(
+                    "rbd_reliability", "rbd", "给出系统可靠度"
+                ),
             }
         )
 
@@ -442,25 +650,51 @@ class EvidenceGateRulesTests(unittest.TestCase):
         self.assertIn("formal_calculation", result["safety_decision"]["blocked_claims"])
 
     def test_calculation_request_without_calculation_evidence_is_blocked(self):
+        query = "检查 RBD-GATE-2"
         graph = make_evidence(
             source_kind="hugegraph",
             authority="confirmed_relation",
             evidence_level="L1_DIRECT",
             claim_type="rbd_structure",
             doc_type="rbd",
-            record_id="revision-1",
+            doc_id="doc-rbd",
+            record_id="RBD-GATE-2",
             review_status="confirmed",
             content="A 与 B 串联",
-            metadata={"is_active": True, "projection_status": "published"},
+            metadata={
+                "revision_id": "revision-1",
+                "diagram_id": "diagram-revision-1",
+                "diagram_key": "RBD-GATE-2",
+                "validation_status": "manual_confirmed",
+                "is_active": True,
+                "projection_status": "published",
+                "rbd_block_business_ids": [],
+            },
         )
         result = _run(
             {
+                "query": query,
                 "evidence_registry": [graph],
                 "allowed_tools": ["rbd_query", "rbd_calculator"],
+                "rbd_query_binding": _rbd_binding(
+                    query=query,
+                    revision_id="revision-1",
+                    diagram_key="RBD-GATE-2",
+                    doc_id="doc-rbd",
+                    status="manual_confirmed",
+                ),
             }
         )
         self.assertIn("formal_calculation", result["safety_decision"]["blocked_claims"])
-        self.assertTrue(result["safety_decision"]["requires_clarification"])
+        self.assertFalse(result["safety_decision"]["requires_clarification"])
+        self.assertIn(
+            "incomplete_calculation",
+            {
+                item["kind"]
+                for item in result["safety_decision"]["clarification_reasons"]
+            },
+        )
+        self.assertEqual([], result["safety_decision"]["questions"])
 
     def test_confirmed_but_inactive_graph_cannot_support_topology(self):
         graph = make_evidence(
@@ -559,7 +793,13 @@ class EvidenceGateRulesTests(unittest.TestCase):
         )
         decision = result["safety_decision"]
         self.assertEqual("blocked", decision["status"])
-        self.assertIn("exact_hmc_fact", decision["blocked_claims"])
+        self.assertNotIn("exact_hmc_fact", decision["blocked_claims"])
+        self.assertIn("hmc_query_authoritative_facts", decision["blocked_claims"])
+        self.assertEqual([], decision["unresolved_identity_slots"])
+        self.assertIn(
+            "authoritative_source_unavailable",
+            {item["kind"] for item in decision["clarification_reasons"]},
+        )
         self.assertTrue(any("不能替代" in value for value in decision["warnings"]))
 
     def test_exact_hmc_empty_result_is_not_replaced_by_search_projection(self):
@@ -590,7 +830,15 @@ class EvidenceGateRulesTests(unittest.TestCase):
         self.assertEqual("clarify", decision["status"])
         self.assertIn("exact_hmc_fact", decision["blocked_claims"])
         self.assertNotIn("authoritative_source_unavailable", decision["blocked_claims"])
-        self.assertTrue(any("已完成但未找到" in value for value in decision["questions"]))
+        self.assertEqual([], decision["questions"])
+        self.assertEqual(
+            ["hmc_record_identity"],
+            [item["slot"] for item in decision["unresolved_identity_slots"]],
+        )
+        self.assertIn(
+            "authoritative_record_not_found",
+            {item["kind"] for item in decision["clarification_reasons"]},
+        )
         self.assertNotIn(search["evidence_id"], result["approved_evidence_ids"])
 
     def test_exact_hmc_requires_exact_code_match_not_keyword_pg_row(self):
@@ -607,6 +855,7 @@ class EvidenceGateRulesTests(unittest.TestCase):
         result = _run(
             {
                 "intent": "exact_code",
+                "query": "LCN=31810001 HAMC=** HSC=0001",
                 "evidence_registry": [keyword],
                 "tool_results": [
                     make_tool_result(
@@ -624,6 +873,7 @@ class EvidenceGateRulesTests(unittest.TestCase):
         self.assertEqual("clarify", decision["status"])
         self.assertIn("exact_hmc_fact", decision["blocked_claims"])
         self.assertNotIn("authoritative_source_unavailable", decision["blocked_claims"])
+        self.assertEqual([], decision["questions"])
 
     def test_single_lcn_hsc_component_match_is_accepted_without_guessing_hamc(self):
         component = make_evidence(
@@ -705,7 +955,13 @@ class EvidenceGateRulesTests(unittest.TestCase):
         decision = result["safety_decision"]
         self.assertEqual("clarify", decision["status"])
         self.assertTrue(decision["requires_clarification"])
-        self.assertTrue(any("HAMC" in value for value in decision["questions"]))
+        self.assertEqual([], decision["questions"])
+        self.assertEqual(
+            ["hamc"],
+            [item["slot"] for item in decision["unresolved_identity_slots"]],
+        )
+        source = decision["unresolved_identity_slots"][0]["source"]
+        self.assertEqual(("tool_result", "hmc_query"), (source["kind"], source["name"]))
 
     def test_lcn_hsc_empty_match_clarifies_without_claiming_pg_unavailable(self):
         empty_hmc = make_tool_result(
@@ -727,8 +983,15 @@ class EvidenceGateRulesTests(unittest.TestCase):
         self.assertEqual("clarify", decision["status"])
         self.assertIn("exact_hmc_fact", decision["blocked_claims"])
         self.assertNotIn("authoritative_source_unavailable", decision["blocked_claims"])
-        self.assertTrue(any("LCN+HSC 未找到匹配" in value for value in decision["questions"]))
-        self.assertFalse(any("服务恢复" in value for value in decision["questions"]))
+        self.assertEqual([], decision["questions"])
+        self.assertEqual(
+            ["hamc"],
+            [item["slot"] for item in decision["unresolved_identity_slots"]],
+        )
+        self.assertIn(
+            "authoritative_record_not_found",
+            {item["kind"] for item in decision["clarification_reasons"]},
+        )
 
     def test_single_weak_keyword_candidate_forces_clarification(self):
         evidence = make_evidence(
@@ -743,6 +1006,7 @@ class EvidenceGateRulesTests(unittest.TestCase):
         result = _run(
             {
                 "intent": "symptom_diagnosis",
+                "answer_mode": "fault_diagnosis",
                 "evidence_registry": [evidence],
                 "allowed_tools": ["fmeca_query"],
                 "candidate_faults": [
@@ -758,20 +1022,34 @@ class EvidenceGateRulesTests(unittest.TestCase):
 
         self.assertEqual("clarify", result["safety_decision"]["status"])
         self.assertTrue(result["safety_decision"]["requires_clarification"])
-        self.assertTrue(any("非精确关键词候选" in q for q in result["safety_decision"]["questions"]))
+        self.assertEqual([], result["safety_decision"]["questions"])
+        self.assertIn(
+            "insufficient_evidence",
+            {
+                item["kind"]
+                for item in result["safety_decision"]["clarification_reasons"]
+            },
+        )
+        self.assertEqual(
+            {"kind": "generic_clarification", "required": True},
+            result["safety_decision"]["clarification_fallback"],
+        )
 
     def test_new_contract_empty_registry_is_assessed_not_legacy_compatible(self):
         empty_hmc = make_tool_result(tool="hmc_query", status="empty", backend="postgres")
         result = _run(
             {
                 "intent": "exact_code",
+                "answer_mode": "exact_code_lookup",
                 "evidence_registry": [],
                 "tool_results": [empty_hmc],
                 "allowed_tools": ["hmc_query"],
             }
         )
         self.assertEqual("clarify", result["safety_decision"]["status"])
-        self.assertIn("exact_hmc_fact", result["safety_decision"]["blocked_claims"])
+        self.assertNotIn("exact_hmc_fact", result["safety_decision"]["blocked_claims"])
+        self.assertEqual([], result["safety_decision"]["unresolved_identity_slots"])
+        self.assertEqual([], result["safety_decision"]["questions"])
 
     def test_composite_function_tool_does_not_mislabel_opensearch_error_as_pg_failure(self):
         function_result = make_tool_result(

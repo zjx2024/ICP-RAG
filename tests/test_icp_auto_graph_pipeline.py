@@ -30,6 +30,10 @@ class _TaskManager:
 class _Postgres:
     def __init__(self):
         self.statuses = []
+        self.results = {"doc-1": {"rows_ok": 3}}
+
+    def patch_icp_document_result(self, doc_id, result_patch):
+        self.results.setdefault(doc_id, {}).update(result_patch)
 
     def update_icp_document_status(self, doc_id, status):
         self.statuses.append((doc_id, status))
@@ -84,6 +88,7 @@ class AutomaticGraphPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("kg_done", tasks.result["status"])
         self.assertEqual(4, tasks.result["vertices"])
         self.assertEqual(("doc-1", "kg_done"), postgres.statuses[-1])
+        self.assertEqual(3, postgres.results["doc-1"]["rows_ok"])
 
     async def test_auto_validated_diagram_is_forwarded_to_verified_projector(self):
         revision = {

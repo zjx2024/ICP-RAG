@@ -4,6 +4,7 @@
 """
 from typing import TypedDict, Annotated, List, Dict
 import operator
+from copy import deepcopy
 
 
 class AgentState(TypedDict, total=False):
@@ -36,13 +37,17 @@ class AgentState(TypedDict, total=False):
     scope_route: str
     scope_route_source: str
     scope_route_reason: str
+    scope_failure_kind: str
     scope_confidence: float
 
     intent: str
     # A question may request cause + repair + history at the same time.  intent
     # remains the primary answer contract; query_targets drive tool coverage.
     query_targets: List[Dict]
-    # Calculation authority is parsed only from the raw user request.
+    # Two model stages classify the request independently; code keeps only a
+    # closed, verbatim-grounded consensus object.  ``calculation_requests`` is
+    # a compatibility projection for answer formatting, not authority.
+    calculation_authorizations: List[Dict]
     calculation_requests: List[str]
     # 规划模型对“完整回答是否需要跨文档关系补全”的语义判断。
     # 它不授予任意图查询权限；实际执行仍需 authorized_tools 和业务 seed。
@@ -57,6 +62,23 @@ class AgentState(TypedDict, total=False):
     # ``canonical_business_ids`` may only come from persisted structured IDs;
     # the answer layer uses it to authorize one exact RBD redundancy group.
     topology_dependency: Dict
+    structured_entity_binding: Dict
+    # 本轮原始表达与一条权威结构化记录之间的有界字段绑定。它只约束
+    # record relevance，不会用文本相似度生成跨文档实体身份。
+    structured_record_binding: Dict
+    # Fault-history parent selected by the retrieval/tool stage.  The answer
+    # stage consumes this exact decision instead of independently selecting a
+    # different semantic neighbour.  Candidate relevance and exact identity
+    # authority are represented separately inside the binding.
+    history_parent_binding: Dict
+    # Cross-family ownership is explicit: a textually similar MFL record is
+    # not the maintenance row for an exact HMC unless authoritative data stores
+    # that relation.
+    hmc_mfl_binding: Dict
+    # A focused RBD request may hand off at most one graph unless stable typed
+    # selectors prove distinct requested models.
+    rbd_query_binding: Dict
+    fta_query_binding: Dict
     # ``query_frame`` may carry a model-authored complete-collection
     # obligation. It becomes public only after PostgreSQL proves the set is
     # closed; semantic recall alone can never satisfy it.
@@ -103,6 +125,13 @@ class AgentState(TypedDict, total=False):
     # 证据支持度不是故障概率；diagnostic_confidence 仅保留给旧链路兼容。
     diagnostic_support: float
     diagnostic_confidence: float
+    # Retrieval/gate nodes expose machine-readable gaps only.  They never own
+    # the wording of a follow-up question; ``clarification_question`` remains
+    # a legacy/scope-router field until the answer consumer is migrated.
+    missing_input_requirements: List[Dict]
+    unresolved_identity_slots: List[Dict]
+    clarification_reasons: List[Dict]
+    clarification_fallback: Dict
     clarification_question: str
     calculation_results: List[Dict]
     confirmed_graphs: List[Dict]
@@ -137,10 +166,16 @@ class AgentState(TypedDict, total=False):
     used_evidence_ids: List[str]
     iteration: int
     final_answer: str
-    # 答案完成度状态：full=必答字段完整，partial=存在未从已批准证据确认的字段。
+    # 答案完成度状态：full=本轮自然语言目标经综合审核已答，partial=部分可答。
     # 用于区分“部分确认答案”与“系统错误”，前端据此展示而不是当作失败。
     answer_completion_status: str
-    answer_unconfirmed_fields: List[str]
+    answer_unconfirmed_fields: List[str]  # 保留 API 字段名；内容为未完成目标，不再是字段白名单。
+    # 本轮实际交付的必答字段名。chat_router 将其随 assistant 消息持久化，
+    # 下一轮仅在确实沿用同一对话对象时用作回答形态收敛提示。
+    delivered_answer_fields: List[str]
+    # 新答案只写 kind=goal_delivery：自然语言目标、完成状态和实际引用身份。
+    # 历史 field_delivery/response_obligation 仍可读取，但不再由答案侧生产。
+    answer_delivery_manifest: List[Dict]
 
 
 def create_initial_state(query: str, agent_id: str, kb_id: str, kb_ids: List[str] = None,
@@ -155,7 +190,7 @@ def create_initial_state(query: str, agent_id: str, kb_id: str, kb_ids: List[str
                          sql_limit: int = 5, summary_threshold: int = 12,
                          keep_recent_turns: int = 6, memory_enabled: bool = True) -> AgentState:
     return {
-        "messages": history or [],
+        "messages": deepcopy(history or []),
         "query": query,
         "kb_id": kb_id,
         "kb_ids": [k for k in (kb_ids or ([] if not kb_id else [kb_id])) if k],
@@ -179,9 +214,11 @@ def create_initial_state(query: str, agent_id: str, kb_id: str, kb_ids: List[str
         "scope_route": "unclassified",
         "scope_route_source": "",
         "scope_route_reason": "",
+        "scope_failure_kind": "",
         "scope_confidence": 0.0,
         "intent": "",
         "query_targets": [],
+        "calculation_authorizations": [],
         "calculation_requests": [],
         "relation_expansion": {"needed": False, "reason": ""},
         "answer_mode": "fault_diagnosis",
@@ -190,6 +227,12 @@ def create_initial_state(query: str, agent_id: str, kb_id: str, kb_ids: List[str
         "type_keywords": [],
         "query_frame": {},
         "topology_dependency": {},
+        "structured_entity_binding": {},
+        "structured_record_binding": {},
+        "history_parent_binding": {},
+        "hmc_mfl_binding": {},
+        "rbd_query_binding": {},
+        "fta_query_binding": {},
         "collection_resolution": {
             "requested": False,
             "closed": False,
@@ -202,6 +245,9 @@ def create_initial_state(query: str, agent_id: str, kb_id: str, kb_ids: List[str
             "subjects": [],
             "requested_facets": [],
             "required_answer_fields": [],
+            "question_semantics": "unknown",
+            "response_focus": [],
+            "response_scope": "standalone",
             "context_used": False,
             "status": "standalone",
         },
@@ -226,6 +272,13 @@ def create_initial_state(query: str, agent_id: str, kb_id: str, kb_ids: List[str
         "candidate_faults": [],
         "diagnostic_support": 0.0,
         "diagnostic_confidence": 0.0,
+        "missing_input_requirements": [],
+        "unresolved_identity_slots": [],
+        "clarification_reasons": [],
+        "clarification_fallback": {
+            "kind": "generic_clarification",
+            "required": False,
+        },
         "clarification_question": "",
         "calculation_results": [],
         "confirmed_graphs": [],
@@ -252,4 +305,6 @@ def create_initial_state(query: str, agent_id: str, kb_id: str, kb_ids: List[str
         "final_answer": "",
         "answer_completion_status": "full",
         "answer_unconfirmed_fields": [],
+        "delivered_answer_fields": [],
+        "answer_delivery_manifest": [],
     }

@@ -22,6 +22,8 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence
 
+from backend.core.value_normalization import normalize_optional_identifier
+
 
 SUPPORTED_DOC_TYPES = frozenset(
     {"function_locator", "hmc", "fmeca", "mfl", "fault_history"}
@@ -836,7 +838,10 @@ def build_mfl_graph(
             record_key=code,
             source_refs=refs,
         )
-        api_name = clean_text(row.get("api_name"))
+        # Defend old authoritative rows too: pre-normalization imports may
+        # still contain a dash/N/A placeholder.  It must never become a shared
+        # cross-document API identity.
+        api_name = normalize_optional_identifier(row.get("api_name"))
         if api_name:
             api_node = builder.add_business_node(
                 "api", "API", api_name, {"name": api_name}, source_refs=refs
@@ -851,6 +856,17 @@ def build_mfl_graph(
             )
             builder.link_text_fields(
                 api_node,
+                row,
+                {"api_method": "has_api_method", "api_usage": "has_api_usage"},
+                record_key=code,
+                source_refs=refs,
+            )
+        else:
+            # Method/usage cells can still be explicit and useful even when no
+            # API identifier was declared.  Keep them scoped to the MFL record
+            # instead of dropping them or attaching them to a fabricated API.
+            builder.link_text_fields(
+                record,
                 row,
                 {"api_method": "has_api_method", "api_usage": "has_api_usage"},
                 record_key=code,

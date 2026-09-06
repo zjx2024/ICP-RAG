@@ -11,6 +11,7 @@ independent from a running PostgreSQL service.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 import uuid
@@ -44,6 +45,8 @@ from backend.icp.diagram_validation import (
     revision_is_projectable,
 )
 
+
+logger = logging.getLogger(__name__)
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _REVIEWABLE_DIAGRAM_TYPES = frozenset({"fta", "rbd"})
@@ -1343,6 +1346,7 @@ class DiagramRepository:
             cursor.execute(
                 """
                 SELECT r.*, d.doc_id, d.diagram_type, d.diagram_key, d.title,
+                       doc.file_name AS doc_name, doc.metadata AS document_metadata,
                        TRUE AS is_active
                 FROM icp_diagrams d
                 JOIN icp_documents doc ON doc.doc_id=d.doc_id
@@ -1389,6 +1393,7 @@ class DiagramRepository:
             cursor.execute(
                 f"""
                 SELECT r.*, d.doc_id, d.diagram_type, d.diagram_key, d.title,
+                       doc.file_name AS doc_name, doc.metadata AS document_metadata,
                        TRUE AS is_active
                 FROM icp_diagrams d
                 JOIN icp_documents doc ON doc.doc_id=d.doc_id

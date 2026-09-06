@@ -88,6 +88,32 @@ class TableAdapterTests(unittest.TestCase):
         self.assertEqual(row["repair_action"], "更换模块并复测")
         self.assertEqual(row["maintenance_action"], "更换模块并复测")
 
+    def test_mfl_absent_api_marker_is_normalized_but_raw_cell_is_retained(self):
+        document = Document()
+        table = document.add_table(rows=2, cols=6)
+        headers = [
+            "MFL",
+            "模块故障模式",
+            "API是否可直接上报",
+            "API名称",
+            "API调用方法",
+            "API使用方法",
+        ]
+        values = ["MFL-002", "模块失效", "否", "—", "周期查询", "读取状态"]
+        for column, value in enumerate(headers):
+            table.cell(0, column).text = value
+        for column, value in enumerate(values):
+            table.cell(1, column).text = value
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._save(document, directory, "mfl-no-api.docx")
+            draft = extract_domain_drafts(path, "mfl")[0]
+
+        self.assertEqual("", draft.values["api_name"])
+        self.assertEqual("—", draft.raw_data["field_raw_values"]["api_name"])
+        self.assertEqual("周期查询", draft.values["api_method"])
+        self.assertEqual("读取状态", draft.values["api_usage"])
+
     def test_fmeca_keeps_numeric_probability_separate_from_display_text(self):
         document = Document()
         table = document.add_table(rows=2, cols=4)

@@ -1,14 +1,31 @@
 import unittest
 
 from backend.agent.tool_policy import (
-    detect_calculation_requests,
     extract_hmc_components,
+    normalize_calculation_authorizations,
     resolve_tool_policy,
 )
 from backend.agent.tools.icp_calculation import _mission_time
 
 
 class ToolPolicyTests(unittest.TestCase):
+    def test_focused_direct_query_retains_only_same_source_semantic_fallback(self):
+        for field, direct, doc_type in (("maintenance_api", "mfl_query", "mfl"), ("local_impact", "fmeca_query", "fmeca")):
+            policy = resolve_tool_policy(intent="entity_profile", query="查 MOD-CASE-31 的该维度", raw_user_query="查 MOD-CASE-31 的该维度",
+                proposed_plan=[{"tool": direct}], required_answer_fields=[field], coverage_scope="focused_detail")
+            self.assertIn(direct, policy["allowed_tools"])
+            self.assertNotIn("hybrid_search", policy["allowed_tools"])
+            self.assertIn("hybrid_search", policy["authorized_tools"])
+            self.assertEqual([doc_type], policy["authorized_doc_types"])
+
+    def test_natural_description_has_same_source_recall_before_answering(self):
+        for query in ("外面的接收端收不到内部生成的内容", "Where could the output interruption be?"):
+            policy = resolve_tool_policy(intent="maintenance_query", query=query, raw_user_query=query,
+                proposed_plan=[{"tool": "mfl_query"}], required_answer_fields=["maintenance_locator", "maintenance_api"])
+            self.assertIn("hybrid_search", policy["allowed_tools"])
+            self.assertEqual(["mfl"], policy["hybrid_doc_types"])
+            self.assertNotIn("hmc_query", policy["allowed_tools"])
+
     def test_business_id_prefix_is_not_mistaken_for_a_named_source_request(self):
         decision = resolve_tool_policy(
             intent="entity_profile",
@@ -31,6 +48,11 @@ class ToolPolicyTests(unittest.TestCase):
             proposed_plan=[],
             coverage_scope="complete_collection",
             collection_member_kind="cause",
+            query_targets=[{
+                "intent": "cause_analysis",
+                "required_fields": ["closed_collection_members"],
+            }],
+            required_answer_fields=["closed_collection_members"],
         )
 
         self.assertIn("function_locator", decision["allowed_tools"])
@@ -69,17 +91,31 @@ class ToolPolicyTests(unittest.TestCase):
             {"hmc_query", "mfl_query"}.issubset(set(decision["allowed_tools"]))
         )
 
-    def test_relation_contract_keeps_fta_locator_and_graph_when_planner_starts_with_fmeca(self):
+    def test_relation_contract_keeps_explicit_fta_field_locator_and_graph(self):
+        query = "外发数据为什么会中断"
         decision = resolve_tool_policy(
             intent="cause_analysis",
-            query="外发数据为什么会中断",
+            query=query,
+            raw_user_query=query,
             query_targets=[
-                {"intent": "cause_analysis", "required_fields": ["fault_cause"]}
+                {
+                    "intent": "cause_analysis",
+                    "required_fields": ["fault_cause", "structural_cause_chain"],
+                }
             ],
-            required_answer_fields=["fault_cause"],
+            required_answer_fields=["fault_cause", "structural_cause_chain"],
             coverage_scope="focused_detail",
-            relation_expansion_required=True,
-            proposed_plan=[{"tool": "fmeca_query", "reason": "直接原因"}],
+            relation_expansion={
+                "needed": True,
+                "relation_kind": "structural_cause_chain",
+                "reference_mode": "current_query",
+                "basis": "外发数据为什么会中断",
+                "reason": "需要核对跨文档结构链",
+            },
+            proposed_plan=[
+                {"tool": "fmeca_query", "reason": "直接原因"},
+                {"tool": "fta_query", "reason": "结构原因链"},
+            ],
         )
 
         self.assertTrue(
@@ -94,7 +130,15 @@ class ToolPolicyTests(unittest.TestCase):
         decision = resolve_tool_policy(
             intent="architecture_query",
             query="系统由哪些模块组成？",
+            query_targets=[{
+                "intent": "architecture_query",
+                "required_fields": ["architecture_hierarchy"],
+            }],
+            required_answer_fields=["architecture_hierarchy"],
+            coverage_scope="focused_detail",
             proposed_plan=[
+                {"tool": "function_locator", "reason": "读取层级"},
+                {"tool": "hybrid_search", "reason": "结构化未命中时补查"},
                 {"tool": "fta_query", "reason": "误规划"},
                 {"tool": "drop_database", "reason": "未知工具"},
                 {"tool": "fault_reasoning", "reason": "兼容别名"},
@@ -104,6 +148,7 @@ class ToolPolicyTests(unittest.TestCase):
             ["function_locator", "hybrid_search", "evidence_synthesis"],
             decision["allowed_tools"],
         )
+        self.assertIn("hybrid_search", decision["authorized_tools"])
         self.assertEqual(["function_locator"], decision["hybrid_doc_types"])
         self.assertEqual(["fta_query", "drop_database"], decision["rejected_tools"])
 
@@ -120,7 +165,7 @@ class ToolPolicyTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            ["fmeca_query", "evidence_synthesis"], decision["allowed_tools"]
+            ["fmeca_query", "hybrid_search", "evidence_synthesis"], decision["allowed_tools"]
         )
         self.assertIn("mfl_query", decision["authorized_tools"])
         self.assertIn("fault_history_query", decision["authorized_tools"])
@@ -156,14 +201,20 @@ class ToolPolicyTests(unittest.TestCase):
             ],
             required_answer_fields=["fault_cause"],
             coverage_scope="focused_detail",
-            diagnostic_closure={"required": True, "reason": "当前现场异常需要排查闭环"},
+            diagnostic_closure={
+                "required": True,
+                "required_dimensions": ["maintenance_action", "history_result"],
+                "basis": "运行时反复重启，可能是什么原因",
+                "reason": "当前现场异常需要排查闭环",
+            },
             proposed_plan=[{"tool": "fmeca_query"}],
         )
 
         # The first query remains minimal, but the adaptive stage keeps the
         # documented handling/history sources available for closure.
         self.assertEqual(
-            ["fmeca_query", "evidence_synthesis"], decision["allowed_tools"]
+            ["fmeca_query", "mfl_query", "hybrid_search", "evidence_synthesis"],
+            decision["allowed_tools"],
         )
         self.assertTrue(
             {"mfl_query", "hmc_query", "fault_history_query"}.issubset(
@@ -313,43 +364,123 @@ class ToolPolicyTests(unittest.TestCase):
             query="运行中反复重启",
             proposed_plan=[{"tool": "mfl_query"}, {"tool": "rbd_query"}],
         )
-        self.assertIn("mfl_query", decision["allowed_tools"])
+        self.assertEqual(
+            ["hybrid_search", "evidence_synthesis"], decision["allowed_tools"]
+        )
+        self.assertIn("mfl_query", decision["rejected_tools"])
         self.assertNotIn("rbd_query", decision["allowed_tools"])
-        self.assertNotIn("hybrid_search", decision["allowed_tools"])
-        self.assertEqual([], decision["hybrid_doc_types"])
+        self.assertEqual(
+            [
+                "function_locator", "hmc", "fmeca", "fta", "rbd", "mfl",
+                "fault_history",
+            ],
+            decision["hybrid_doc_types"],
+        )
 
-    def test_model_selected_query_is_not_expanded_to_fixed_intent_bundle(self):
+    def test_model_selected_source_without_any_execution_contract_uses_generic_fallback(self):
         decision = resolve_tool_policy(
             intent="impact_analysis",
             query="滤波电容老化会有什么影响？",
             proposed_plan=[{"tool": "fmeca_query", "reason": "查询影响记录"}],
         )
         self.assertEqual(
-            ["fmeca_query", "evidence_synthesis"],
+            ["hybrid_search", "evidence_synthesis"],
             decision["allowed_tools"],
         )
         self.assertIn("hybrid_search", decision["authorized_tools"])
-        self.assertIn("graph_traversal", decision["authorized_tools"])
-        self.assertIn("fta_query", decision["authorized_tools"])
-        self.assertIn("rbd_query", decision["authorized_tools"])
+        self.assertIn("fmeca_query", decision["rejected_tools"])
+        self.assertNotIn("graph_traversal", decision["authorized_tools"])
+        self.assertNotIn("fta_query", decision["authorized_tools"])
+        self.assertNotIn("rbd_query", decision["authorized_tools"])
 
-    def test_maintenance_policy_keeps_fmeca_authorized_for_adaptive_completion(self):
+    def test_canonical_maintenance_field_authorizes_only_its_owner(self):
         decision = resolve_tool_policy(
             intent="maintenance_query",
-            query="这个故障怎么处理？",
-            proposed_plan=[{"tool": "mfl_query", "reason": "先查维修动作"}],
+            query="这个故障定位到哪个维修条目？",
+            query_targets=[{
+                "intent": "maintenance_query",
+                "required_fields": ["maintenance_locator"],
+            }],
+            required_answer_fields=["maintenance_locator"],
+            coverage_scope="focused_detail",
+            proposed_plan=[{"tool": "mfl_query", "reason": "查询维修定位"}],
         )
 
         self.assertEqual(
-            ["mfl_query", "evidence_synthesis"],
+            ["mfl_query", "hybrid_search", "evidence_synthesis"],
             decision["allowed_tools"],
         )
-        self.assertIn("fmeca_query", decision["authorized_tools"])
+        self.assertNotIn("fmeca_query", decision["authorized_tools"])
+        self.assertEqual(["mfl"], decision["hybrid_doc_types"])
+
+    def test_no_contract_rejects_multiple_direct_families_and_runs_one_generic_recall(self):
+        decision = resolve_tool_policy(
+            intent="cause_analysis",
+            query="一个没有结构合同的模型输出",
+            proposed_plan=[
+                {"tool": "fmeca_query"},
+                {"tool": "fta_query"},
+                {"tool": "fault_history_query"},
+            ],
+        )
+
+        self.assertEqual(
+            ["hybrid_search", "evidence_synthesis"], decision["allowed_tools"]
+        )
+        self.assertEqual(
+            {"fmeca_query", "fta_query", "fault_history_query"},
+            set(decision["rejected_tools"]),
+        )
+        self.assertEqual(
+            ["function_locator", "hmc", "fmeca", "fta", "rbd", "mfl", "fault_history"],
+            decision["hybrid_doc_types"],
+        )
+
+    def test_selected_anchor_is_an_execution_contract_for_its_source(self):
+        decision = resolve_tool_policy(
+            intent="maintenance_query",
+            query="它还有哪些已记录状态",
+            selected_anchor_ids=["ev-mfl"],
+            selected_anchor_doc_types=["mfl"],
+            proposed_plan=[{"tool": "mfl_query"}],
+        )
+
+        self.assertIn("mfl_query", decision["allowed_tools"])
+        self.assertNotIn("hybrid_search", decision["allowed_tools"])
+
+    def test_one_selected_anchor_does_not_unlock_neighbour_source_proposals(self):
+        decision = resolve_tool_policy(
+            intent="cause_analysis",
+            query="继续核对它",
+            selected_anchor_ids=["ev-rbd"],
+            selected_anchor_doc_types=["rbd"],
+            proposed_plan=[
+                {"tool": "rbd_query"},
+                {"tool": "fmeca_query"},
+                {"tool": "fault_history_query"},
+            ],
+        )
+
+        self.assertEqual(
+            ["rbd_query", "evidence_synthesis"], decision["allowed_tools"]
+        )
+        self.assertEqual(
+            {"fmeca_query", "fault_history_query"},
+            set(decision["rejected_tools"]),
+        )
 
     def test_impact_planner_can_select_propagation_tools_without_fixed_full_scan(self):
+        query = "公共时基慢慢漂了，会牵连哪些能力？"
         decision = resolve_tool_policy(
             intent="impact_analysis",
-            query="公共时基慢慢漂了，会牵连哪些能力？",
+            query=query,
+            raw_user_query=query,
+            relation_expansion={
+                "needed": True,
+                "relation_kind": "impact_propagation",
+                "reference_mode": "current_query",
+                "basis": "会牵连哪些能力",
+            },
             proposed_plan=[
                 {"tool": "fmeca_query", "reason": "查直接影响"},
                 {"tool": "fta_query", "reason": "查故障传播结构"},
@@ -376,9 +507,17 @@ class ToolPolicyTests(unittest.TestCase):
             query="两路中一路异常、另一路正常，继续运行有什么风险？",
             raw_user_query="两路中一路异常、另一路正常，继续运行有什么风险？",
             query_targets=[
-                {"intent": "impact_analysis"},
-                {"intent": "reliability_query"},
+                {
+                    "intent": "impact_analysis",
+                    "required_fields": ["local_impact"],
+                },
+                {
+                    "intent": "reliability_query",
+                    "required_fields": ["rbd_single_failure_boundary"],
+                },
             ],
+            required_answer_fields=["local_impact", "rbd_single_failure_boundary"],
+            coverage_scope="focused_detail",
             proposed_plan=[
                 {"tool": "fmeca_query"},
                 {"tool": "rbd_query"},
@@ -400,7 +539,12 @@ class ToolPolicyTests(unittest.TestCase):
             intent="impact_analysis",
             query="改写后的检索语句：计算可靠度",
             raw_user_query="两路中一路异常，另一路正常有什么风险？",
-            query_targets=[{"intent": "reliability_query"}],
+            query_targets=[{
+                "intent": "reliability_query",
+                "required_fields": ["rbd_success_criterion"],
+            }],
+            required_answer_fields=["rbd_success_criterion"],
+            coverage_scope="focused_detail",
             proposed_plan=[
                 {"tool": "rbd_query"},
                 {"tool": "rbd_calculator"},
@@ -414,6 +558,14 @@ class ToolPolicyTests(unittest.TestCase):
             intent="impact_analysis",
             query="检索用改写",
             raw_user_query="一路失效后，请按 10 小时任务计算系统成功概率",
+            calculation_authorizations=[
+                {
+                    "operation": "rbd_reliability",
+                    "mode": "calculate",
+                    "target": "rbd",
+                    "basis": "按 10 小时任务计算系统成功概率",
+                }
+            ],
             query_targets=[{"intent": "reliability_query"}],
             proposed_plan=[{"tool": "rbd_query"}],
         )
@@ -421,7 +573,7 @@ class ToolPolicyTests(unittest.TestCase):
         self.assertIn("rbd_query", explicit["allowed_tools"])
         self.assertIn("rbd_calculator", explicit["allowed_tools"])
 
-    def test_hybrid_only_plan_receives_target_scoped_document_types(self):
+    def test_hybrid_only_plan_uses_generic_seven_type_scope_without_field_contract(self):
         decision = resolve_tool_policy(
             intent="impact_analysis",
             query="滤波电容老化的影响",
@@ -432,14 +584,22 @@ class ToolPolicyTests(unittest.TestCase):
             decision["allowed_tools"],
         )
         self.assertEqual(
-            ["function_locator", "hmc", "fmeca", "mfl", "fault_history"],
+            ["function_locator", "hmc", "fmeca", "fta", "rbd", "mfl", "fault_history"],
             decision["hybrid_doc_types"],
         )
 
-    def test_cause_policy_requires_fta_without_user_document_terms(self):
-        generic = resolve_tool_policy(intent="cause_analysis", query="为什么会黑屏？")
+    def test_structural_cause_field_requires_fta_without_user_document_terms(self):
+        generic = resolve_tool_policy(
+            intent="cause_analysis",
+            query="为什么会黑屏？",
+            query_targets=[{
+                "intent": "cause_analysis",
+                "required_fields": ["structural_cause_chain"],
+            }],
+            required_answer_fields=["structural_cause_chain"],
+            coverage_scope="focused_detail",
+        )
         self.assertIn("fta_query", generic["allowed_tools"])
-        self.assertIn("fta", generic["hybrid_doc_types"])
         self.assertNotIn("fta_analyzer", generic["allowed_tools"])
         self.assertNotIn("graph_traversal", generic["allowed_tools"])
 
@@ -453,6 +613,12 @@ class ToolPolicyTests(unittest.TestCase):
             ],
             required_answer_fields=["fault_cause"],
             coverage_scope="focused_detail",
+            requested_sources=[{
+                "doc_type": "rbd",
+                "basis": "RBD",
+                "requested_fields": ["rbd_single_failure_boundary"],
+                "question_role": "capability",
+            }],
             proposed_plan=[
                 {"tool": "function_locator"},
                 {"tool": "fmeca_query"},
@@ -465,15 +631,17 @@ class ToolPolicyTests(unittest.TestCase):
         self.assertIn("rbd_query", decision["allowed_tools"])
         self.assertIn("rbd_query", decision["authorized_tools"])
         self.assertIn("rbd_query", decision["requested_source_tools"])
-        self.assertIn("rbd_success_criterion", decision["source_coverage_fields"])
-        self.assertIn("rbd_path_structure", decision["source_coverage_fields"])
+        self.assertEqual(
+            ["rbd_single_failure_boundary"],
+            decision["source_coverage_fields"],
+        )
         self.assertNotIn("rbd_calculator", decision["allowed_tools"])
         rbd_plan = next(
             item for item in decision["tools_plan"] if item["tool"] == "rbd_query"
         )
         self.assertIn("用户明确要求", rbd_plan["reason"])
 
-    def test_planner_selected_graph_is_retained_for_post_retrieval_gate(self):
+    def test_planner_selected_graph_without_grounded_contract_is_rejected(self):
         decision = resolve_tool_policy(
             intent="cause_analysis",
             query="这个故障通过哪些功能关联到模块？",
@@ -482,16 +650,126 @@ class ToolPolicyTests(unittest.TestCase):
                 {"tool": "graph_traversal"},
             ],
         )
-        self.assertIn("graph_traversal", decision["allowed_tools"])
+        self.assertNotIn("graph_traversal", decision["allowed_tools"])
+        self.assertNotIn("graph_traversal", decision["authorized_tools"])
+        self.assertIn("graph_traversal", decision["rejected_tools"])
 
-    def test_cause_plan_without_initial_graph_still_authorizes_adaptive_expansion(self):
+    def test_bare_relation_boolean_and_answer_field_do_not_authorize_graph(self):
+        decision = resolve_tool_policy(
+            intent="cause_analysis",
+            query="这个现象是什么原因",
+            raw_user_query="这个现象是什么原因",
+            query_targets=[{
+                "intent": "cause_analysis",
+                "required_fields": ["structural_cause_chain"],
+            }],
+            required_answer_fields=["structural_cause_chain"],
+            coverage_scope="focused_detail",
+            relation_expansion_required=True,
+            proposed_plan=[{"tool": "graph_traversal"}],
+        )
+
+        self.assertNotIn("graph_traversal", decision["allowed_tools"])
+        self.assertNotIn("graph_traversal", decision["authorized_tools"])
+        self.assertFalse(decision["relation_expansion"].get("needed", False))
+
+    def test_graph_capable_answer_fields_do_not_open_deferred_graph_execution(self):
+        for field in ("relation_path", "impact_propagation", "fault_location"):
+            with self.subTest(field=field):
+                decision = resolve_tool_policy(
+                    intent="architecture_query",
+                    query="只读取当前字段",
+                    raw_user_query="只读取当前字段",
+                    query_targets=[{
+                        "intent": "architecture_query",
+                        "required_fields": [field],
+                    }],
+                    required_answer_fields=[field],
+                    coverage_scope="focused_detail",
+                    proposed_plan=[{"tool": "graph_traversal"}],
+                )
+
+                self.assertNotIn("graph_traversal", decision["allowed_tools"])
+                self.assertNotIn(
+                    "graph_traversal", decision["authorized_tools"]
+                )
+                self.assertIn("graph_traversal", decision["rejected_tools"])
+
+    def test_relation_contract_requires_closed_kind_and_literal_current_basis(self):
+        query = "请核对这个对象与上游模块的连接"
+        for relation in (
+            {"needed": True},
+            {
+                "needed": "yes",
+                "relation_kind": "relation_path",
+                "reference_mode": "current_query",
+                "basis": "与上游模块的连接",
+            },
+            {
+                "needed": True,
+                "relation_kind": "invented_relation",
+                "reference_mode": "current_query",
+                "basis": "与上游模块的连接",
+            },
+            {
+                "needed": True,
+                "relation_kind": "relation_path",
+                "reference_mode": "current_query",
+                "basis": "来自改写而非当前问题",
+            },
+        ):
+            with self.subTest(relation=relation):
+                decision = resolve_tool_policy(
+                    intent="architecture_query",
+                    query=query,
+                    raw_user_query=query,
+                    relation_expansion=relation,
+                    proposed_plan=[{"tool": "graph_traversal"}],
+                )
+                self.assertNotIn("graph_traversal", decision["allowed_tools"])
+
+    def test_selected_anchor_relation_contract_requires_selected_offered_id(self):
+        query = "它与上游模块怎样连接"
+        contract = {
+            "needed": True,
+            "relation_kind": "relation_path",
+            "reference_mode": "selected_anchor",
+            "basis": "它与上游模块怎样连接",
+            "selected_anchor_ids": ["ev-real", "ev-invented"],
+        }
+        accepted = resolve_tool_policy(
+            intent="architecture_query",
+            query=query,
+            raw_user_query=query,
+            relation_expansion=contract,
+            selected_anchor_ids=["ev-real"],
+            selected_anchor_doc_types=["function_locator"],
+            proposed_plan=[{"tool": "graph_traversal"}],
+        )
+        rejected = resolve_tool_policy(
+            intent="architecture_query",
+            query=query,
+            raw_user_query=query,
+            relation_expansion=contract,
+            selected_anchor_ids=["ev-other"],
+            selected_anchor_doc_types=["function_locator"],
+            proposed_plan=[{"tool": "graph_traversal"}],
+        )
+
+        self.assertIn("graph_traversal", accepted["allowed_tools"])
+        self.assertEqual(
+            ["ev-real"], accepted["relation_expansion"]["selected_anchor_ids"]
+        )
+        self.assertNotIn("graph_traversal", rejected["allowed_tools"])
+
+    def test_cause_plan_without_relation_contract_does_not_authorize_graph(self):
         decision = resolve_tool_policy(
             intent="cause_analysis",
             query="系统运行中总是无故反复重启，通常是什么原因？",
             proposed_plan=[{"tool": "fmeca_query"}, {"tool": "fta_query"}],
         )
         self.assertNotIn("graph_traversal", decision["allowed_tools"])
-        self.assertIn("graph_traversal", decision["authorized_tools"])
+        self.assertNotIn("graph_traversal", decision["authorized_tools"])
 
     def test_planner_failure_uses_scoped_fallback_without_graph_or_calculators(self):
         decision = resolve_tool_policy(
@@ -501,7 +779,7 @@ class ToolPolicyTests(unittest.TestCase):
             planner_failed=True,
         )
         self.assertEqual(
-            ["fmeca_query", "fta_query", "hybrid_search", "evidence_synthesis"],
+            ["hybrid_search", "evidence_synthesis"],
             decision["allowed_tools"],
         )
         # 规划失败时不应信任失败输出中的图工具建议。
@@ -517,7 +795,7 @@ class ToolPolicyTests(unittest.TestCase):
         self.assertNotIn("mfl_query", decision["allowed_tools"])
         self.assertNotIn("fault_history_query", decision["allowed_tools"])
 
-    def test_planner_multi_targets_are_merged_without_keyword_rules(self):
+    def test_intent_targets_without_fields_do_not_create_a_source_bundle(self):
         decision = resolve_tool_policy(
             intent="cause_analysis",
             query="任意措辞",
@@ -527,11 +805,16 @@ class ToolPolicyTests(unittest.TestCase):
                 {"intent": "history_query"},
             ],
         )
-        for tool in (
-            "hmc_query", "fmeca_query", "fta_query", "mfl_query",
-            "fault_history_query", "hybrid_search",
-        ):
-            self.assertIn(tool, decision["allowed_tools"])
+        self.assertEqual(
+            ["hybrid_search", "evidence_synthesis"], decision["allowed_tools"]
+        )
+        self.assertFalse(
+            {
+                "function_locator", "hmc_query", "fmeca_query", "fta_query",
+                "rbd_query", "mfl_query", "fault_history_query",
+            }
+            & set(decision["allowed_tools"])
+        )
 
     def test_focused_severity_rejects_planner_selected_repair_and_history_tools(self):
         decision = resolve_tool_policy(
@@ -553,7 +836,7 @@ class ToolPolicyTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            ["fmeca_query", "evidence_synthesis"],
+            ["fmeca_query", "hybrid_search", "evidence_synthesis"],
             decision["allowed_tools"],
         )
         self.assertEqual(
@@ -565,13 +848,13 @@ class ToolPolicyTests(unittest.TestCase):
             ],
             decision["rejected_tools"],
         )
-        self.assertNotIn("hybrid_search", decision["allowed_tools"])
+        self.assertEqual(["fmeca"], decision["hybrid_doc_types"])
         self.assertIn("hybrid_search", decision["authorized_tools"])
         self.assertNotIn("hmc_query", decision["authorized_tools"])
         self.assertNotIn("mfl_query", decision["authorized_tools"])
         self.assertNotIn("fault_history_query", decision["authorized_tools"])
 
-    def test_initial_symptom_diagnosis_is_not_reduced_to_one_field_toolset(self):
+    def test_symptom_intent_authorizes_only_explicit_failure_mode_sources(self):
         decision = resolve_tool_policy(
             intent="symptom_diagnosis",
             query="设备运行中偶发自动复位",
@@ -583,9 +866,9 @@ class ToolPolicyTests(unittest.TestCase):
             proposed_plan=[{"tool": "fmeca_query"}],
         )
 
-        self.assertIn("hmc_query", decision["authorized_tools"])
         self.assertIn("mfl_query", decision["authorized_tools"])
-        self.assertIn("fault_history_query", decision["authorized_tools"])
+        self.assertNotIn("hmc_query", decision["authorized_tools"])
+        self.assertNotIn("fault_history_query", decision["authorized_tools"])
 
     def test_duplicate_query_targets_merge_required_fields_without_loss(self):
         decision = resolve_tool_policy(
@@ -628,6 +911,14 @@ class ToolPolicyTests(unittest.TestCase):
         numeric = resolve_tool_policy(
             intent="reliability_query",
             query="任务时间 10 小时时，计算系统可靠度是多少？",
+            calculation_authorizations=[
+                {
+                    "operation": "rbd_reliability",
+                    "mode": "calculate",
+                    "target": "rbd",
+                    "basis": "计算系统可靠度是多少",
+                }
+            ],
             proposed_plan=[],
         )
         self.assertNotIn("rbd_calculator", narrative["allowed_tools"])
@@ -636,12 +927,24 @@ class ToolPolicyTests(unittest.TestCase):
 
     def test_rbd_recompute_paraphrase_authorizes_deterministic_calculator(self):
         query = "按资料里的失效率复算十小时任务的成功概率，并找出最低的一项"
-        self.assertEqual(["rbd_reliability"], detect_calculation_requests(query))
+        authorization = {
+            "operation": "rbd_reliability",
+            "mode": "calculate",
+            "target": "rbd",
+            "basis": "复算十小时任务的成功概率",
+        }
+        self.assertEqual(
+            [authorization],
+            normalize_calculation_authorizations(
+                [authorization], raw_user_query=query
+            ),
+        )
         self.assertEqual(10.0, _mission_time(query))
         self.assertEqual(25.0, _mission_time("复算二十五小时任务可靠度"))
         decision = resolve_tool_policy(
             intent="reliability_query",
             query=query,
+            calculation_authorizations=[authorization],
             proposed_plan=[{"tool": "rbd_query"}],
         )
         self.assertIn("rbd_calculator", decision["allowed_tools"])

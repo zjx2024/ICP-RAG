@@ -209,6 +209,10 @@ def _structured_client(*, reverse=False):
     )
 
 
+def _authorize_all(requests):
+    return {item["authorization_key"]: True for item in requests}
+
+
 def _provenance_bridge_client():
     vertices = [
         _structured_vertex("sg:b:component:a", "故障模块"),
@@ -833,6 +837,23 @@ class GraphTraversalTests(unittest.TestCase):
         update = asyncio.run(
             graph_traversal_node(
                 {
+                    "selected_conversation_anchors": [
+                        {
+                            "anchor_id": "ev-component-a",
+                            "doc_type": "function_locator",
+                            "record_id": "COMP-A",
+                        }
+                    ],
+                    "graph_seed_bindings": [
+                        {
+                            "logical_id": "sg:b:component:a",
+                            "entity_kind": "component",
+                            "business_id": "COMP-A",
+                            "source_tool": "function_locator",
+                            "binding_status": "exact",
+                            "match_type": "exact_conversation_reference",
+                        }
+                    ],
                     "graph_traversal_request": {
                         "mode": "neighbors",
                         "seed_ids": ["sg:b:component:a"],
@@ -841,15 +862,29 @@ class GraphTraversalTests(unittest.TestCase):
                     }
                 },
                 client=_structured_client(),
+                reauthorize_relations=_authorize_all,
             )
         )
         self.assertEqual("graph_traversal", update["tool_results"][0]["tool"])
         self.assertEqual("ok", update["tool_results"][0]["status"])
+        self.assertTrue(
+            update["tool_results"][0]["params"]["require_relation_reauthorization"]
+        )
         self.assertTrue(update["evidence_registry"])
         self.assertEqual(
             update["evidence_registry"][0]["evidence_id"],
             update["tool_calls"][0]["results_preview"][0]["evidence_id"],
         )
+        self.assertTrue(
+            all(
+                item["metadata"]["seed_binding_status"] == "exact"
+                for item in update["evidence_registry"]
+            )
+        )
+        self.assertTrue(
+            all(item["seed_binding_status"] == "exact" for item in update["graph_paths"])
+        )
+        self.assertTrue(all(item["reauthorized"] for item in update["graph_paths"]))
 
     def test_langgraph_adapter_skips_safely_without_entity_seed(self):
         update = asyncio.run(
@@ -860,20 +895,27 @@ class GraphTraversalTests(unittest.TestCase):
                     "graph_traversal_request": {},
                 },
                 client=_structured_client(),
+                reauthorize_relations=_authorize_all,
             )
         )
         self.assertEqual("empty", update["tool_results"][0]["status"])
         self.assertEqual([], update["evidence_registry"])
         self.assertEqual([], update["graph_paths"])
 
-    def test_candidate_seed_downgrades_path_but_not_formal_edge_status(self):
+    def test_scoped_structured_candidate_downgrades_path_but_not_formal_edge_status(self):
         update = asyncio.run(
             graph_traversal_node(
                 {
-                    "allowed_tools": ["graph_traversal"],
+                    "allowed_tools": ["function_locator", "graph_traversal"],
+                    "authorized_tools": ["function_locator", "graph_traversal"],
+                    "query_frame": {"required_answer_fields": ["record_name"]},
+                    "tool_results": [
+                        {"tool": "function_locator", "status": "ok"}
+                    ],
                     "graph_seed_bindings": [
                         {
                             "logical_id": "sg:b:component:a",
+                            "source_tool": "function_locator",
                             "binding_status": "candidate",
                             "match_type": "semantic_candidate",
                         }
@@ -886,6 +928,7 @@ class GraphTraversalTests(unittest.TestCase):
                     },
                 },
                 client=_structured_client(),
+                reauthorize_relations=_authorize_all,
             )
         )
         evidence = update["evidence_registry"][0]
@@ -893,6 +936,284 @@ class GraphTraversalTests(unittest.TestCase):
         self.assertEqual("validated_relation", evidence["authority"])
         self.assertEqual("candidate", evidence["metadata"]["seed_binding_status"])
         self.assertEqual("candidate", update["graph_paths"][0]["seed_binding_status"])
+
+    def test_adapter_blocks_seed_when_current_state_has_no_binding(self):
+        update = asyncio.run(
+            graph_traversal_node(
+                {
+                    "allowed_tools": ["graph_traversal"],
+                    "graph_seed_bindings": [],
+                    "graph_traversal_request": {
+                        "mode": "neighbors",
+                        "seed_ids": ["sg:b:component:a"],
+                    },
+                },
+                client=_GraphClient({}, fail=True),
+            )
+        )
+
+        self.assertEqual("blocked", update["tool_results"][0]["status"])
+        self.assertEqual([], update["evidence_registry"])
+        self.assertEqual([], update["graph_paths"])
+
+    def test_adapter_marks_seeded_request_blocked_when_policy_disallows_graph(self):
+        update = asyncio.run(
+            graph_traversal_node(
+                {
+                    "allowed_tools": ["function_locator"],
+                    "graph_seed_bindings": [
+                        {
+                            "logical_id": "sg:b:component:a",
+                            "business_id": "COMP-A",
+                            "source_tool": "function_locator",
+                            "binding_status": "exact",
+                            "match_type": "exact_record_identity",
+                        }
+                    ],
+                    "graph_traversal_request": {
+                        "mode": "neighbors",
+                        "seed_ids": ["sg:b:component:a"],
+                    },
+                },
+                client=_GraphClient({}, fail=True),
+            )
+        )
+
+        self.assertEqual("blocked", update["tool_results"][0]["status"])
+        self.assertEqual([], update["evidence_registry"])
+
+    def test_adapter_blocks_entire_request_if_one_seed_is_not_eligible(self):
+        update = asyncio.run(
+            graph_traversal_node(
+                {
+                    # User-facing text is not an authorization channel for an
+                    # injected graph ID.
+                    "query": "请围绕 sg:b:component:b 展开关系",
+                    "allowed_tools": ["graph_traversal"],
+                    "graph_seed_bindings": [
+                        {
+                            "logical_id": "sg:b:component:a",
+                            "business_id": "COMP-A",
+                            "source_tool": "function_locator",
+                            "binding_status": "exact",
+                            "match_type": "exact_record_identity",
+                        }
+                    ],
+                    "graph_traversal_request": {
+                        "mode": "neighbors",
+                        "seed_ids": [
+                            "sg:b:component:a",
+                            "sg:b:component:b",
+                        ],
+                    },
+                },
+                client=_GraphClient({}, fail=True),
+            )
+        )
+
+        self.assertEqual("blocked", update["tool_results"][0]["status"])
+        self.assertEqual([], update["evidence_registry"])
+        self.assertIn(
+            "sg:b:component:b",
+            update["tool_results"][0]["diagnostics"]["errors"][0],
+        )
+
+    def test_adapter_blocks_unscoped_semantic_candidate(self):
+        base_state = {
+            "allowed_tools": ["function_locator", "graph_traversal"],
+            "authorized_tools": ["function_locator", "graph_traversal"],
+            "graph_seed_bindings": [
+                {
+                    "logical_id": "sg:b:component:a",
+                    "source_tool": "function_locator",
+                    "binding_status": "candidate",
+                    "match_type": "semantic_candidate",
+                }
+            ],
+            "graph_traversal_request": {
+                "mode": "neighbors",
+                "seed_ids": ["sg:b:component:a"],
+            },
+        }
+        for label, state_patch in (
+            (
+                "no_explicit_field_or_source_obligation",
+                {"tool_results": [{"tool": "function_locator", "status": "ok"}]},
+            ),
+            (
+                "owner_tool_not_executed",
+                {"query_frame": {"required_answer_fields": ["record_name"]}},
+            ),
+        ):
+            with self.subTest(label=label):
+                update = asyncio.run(
+                    graph_traversal_node(
+                        {**base_state, **state_patch},
+                        client=_GraphClient({}, fail=True),
+                    )
+                )
+                self.assertEqual("blocked", update["tool_results"][0]["status"])
+                self.assertEqual([], update["evidence_registry"])
+
+    def test_adapter_blocks_unknown_or_unbound_seed_status(self):
+        for binding_status in ("", "unknown", "unbound"):
+            with self.subTest(binding_status=binding_status):
+                update = asyncio.run(
+                    graph_traversal_node(
+                        {
+                            "allowed_tools": ["function_locator", "graph_traversal"],
+                            "authorized_tools": ["function_locator", "graph_traversal"],
+                            "query_frame": {"required_answer_fields": ["record_name"]},
+                            "tool_results": [
+                                {"tool": "function_locator", "status": "ok"}
+                            ],
+                            "graph_seed_bindings": [
+                                {
+                                    "logical_id": "sg:b:component:a",
+                                    "source_tool": "function_locator",
+                                    "binding_status": binding_status,
+                                    "match_type": "semantic_candidate",
+                                }
+                            ],
+                            "graph_traversal_request": {
+                                "mode": "neighbors",
+                                "seed_ids": ["sg:b:component:a"],
+                            },
+                        },
+                        client=_GraphClient({}, fail=True),
+                    )
+                )
+                self.assertEqual("blocked", update["tool_results"][0]["status"])
+
+    def test_adapter_blocks_unregistered_candidate_match_protocol(self):
+        update = asyncio.run(
+            graph_traversal_node(
+                {
+                    "allowed_tools": ["function_locator", "graph_traversal"],
+                    "authorized_tools": ["function_locator", "graph_traversal"],
+                    "query_frame": {"required_answer_fields": ["record_name"]},
+                    "tool_results": [{"tool": "function_locator", "status": "ok"}],
+                    "graph_seed_bindings": [
+                        {
+                            "logical_id": "sg:b:component:a",
+                            "source_tool": "function_locator",
+                            "binding_status": "candidate",
+                            "match_type": "unregistered_similarity_rule",
+                        }
+                    ],
+                    "graph_traversal_request": {
+                        "mode": "neighbors",
+                        "seed_ids": ["sg:b:component:a"],
+                    },
+                },
+                client=_GraphClient({}, fail=True),
+            )
+        )
+
+        self.assertEqual("blocked", update["tool_results"][0]["status"])
+
+    def test_exact_conversation_seed_must_match_selected_anchor_identity(self):
+        state = {
+            "allowed_tools": ["fmeca_query", "graph_traversal"],
+            "selected_conversation_anchors": [
+                {
+                    "anchor_id": "ev-fmeca-a",
+                    "doc_type": "fmeca",
+                    "record_id": "FM-A",
+                }
+            ],
+            "graph_seed_bindings": [
+                {
+                    "logical_id": "sg:b:fmeca_record:a",
+                    "business_id": "FM-B",
+                    "source_tool": "fmeca_query",
+                    "binding_status": "exact",
+                    "match_type": "exact_conversation_reference",
+                }
+            ],
+            "graph_traversal_request": {
+                "mode": "neighbors",
+                "seed_ids": ["sg:b:fmeca_record:a"],
+            },
+        }
+
+        mismatched = asyncio.run(
+            graph_traversal_node(state, client=_GraphClient({}, fail=True))
+        )
+        self.assertEqual("blocked", mismatched["tool_results"][0]["status"])
+
+        matched = {
+            **state,
+            "graph_seed_bindings": [
+                {**state["graph_seed_bindings"][0], "business_id": "FM-A"}
+            ],
+        }
+        # The matching identity reaches the backend; its deliberate outage
+        # proves the adapter accepted the binding without relying on prose.
+        accepted = asyncio.run(
+            graph_traversal_node(matched, client=_GraphClient({}, fail=True))
+        )
+        self.assertEqual("failed", accepted["tool_results"][0]["status"])
+
+    def test_adapter_reapplies_candidate_seed_caps(self):
+        bindings = [
+            {
+                "logical_id": f"sg:b:component:{index}",
+                "source_tool": "function_locator",
+                "binding_status": "candidate",
+                "match_type": "semantic_candidate",
+            }
+            for index in range(4)
+        ]
+        update = asyncio.run(
+            graph_traversal_node(
+                {
+                    "allowed_tools": ["function_locator", "graph_traversal"],
+                    "authorized_tools": ["function_locator", "graph_traversal"],
+                    "query_frame": {"source_obligations": [{"tool": "function_locator"}]},
+                    "tool_results": [{"tool": "function_locator", "status": "ok"}],
+                    "graph_seed_bindings": bindings,
+                    "graph_traversal_request": {
+                        "mode": "neighbors",
+                        "seed_ids": [item["logical_id"] for item in bindings],
+                    },
+                },
+                client=_GraphClient({}, fail=True),
+            )
+        )
+
+        self.assertEqual("blocked", update["tool_results"][0]["status"])
+
+    def test_adapter_excludes_ambiguous_structured_candidate(self):
+        update = asyncio.run(
+            graph_traversal_node(
+                {
+                    "allowed_tools": ["fmeca_query", "graph_traversal"],
+                    "authorized_tools": ["fmeca_query", "graph_traversal"],
+                    "query_frame": {"required_answer_fields": ["fault_cause"]},
+                    "tool_results": [{"tool": "fmeca_query", "status": "ok"}],
+                    "structured_record_binding": {
+                        "ambiguous": True,
+                        "relevance_only": False,
+                    },
+                    "graph_seed_bindings": [
+                        {
+                            "logical_id": "sg:b:fmeca_record:1",
+                            "source_tool": "fmeca_query",
+                            "binding_status": "candidate",
+                            "match_type": "structured_query",
+                        }
+                    ],
+                    "graph_traversal_request": {
+                        "mode": "neighbors",
+                        "seed_ids": ["sg:b:fmeca_record:1"],
+                    },
+                },
+                client=_GraphClient({}, fail=True),
+            )
+        )
+
+        self.assertEqual("blocked", update["tool_results"][0]["status"])
 
 
 if __name__ == "__main__":

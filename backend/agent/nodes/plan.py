@@ -4,26 +4,41 @@ import json
 import logging
 import os
 import re
+import time
+import unicodedata
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from backend.agent.answer_contract import (
     ensure_intent_answer_fields,
+    normalize_diagnostic_closure,
     normalize_answer_fields,
+    normalize_response_mode,
 )
-from backend.agent.contracts import answer_mode_for_intent
+from backend.agent.clarification_contract import (
+    make_clarification_fallback,
+    make_clarification_identity,
+    make_clarification_reason,
+    make_missing_input_requirement,
+    normalize_clarification_identity,
+    normalize_missing_input_requirements,
+    unique_contract_items,
+)
+from backend.agent.user_context_binding import offered_user_inputs, validate_user_context_bindings
+from backend.agent.model_runtime_policy import bounded_model_transport
 from backend.core.llm_service import llm_service
+from backend.agent.document_semantics import document_semantics_prompt
 from backend.agent.model_role_service import agent_model_role_service
 from backend.agent.memory import inject_memory, maybe_summarize
 from backend.agent.query_understanding import (
     build_query_frame,
     normalize_tool_queries,
 )
-from backend.agent.nodes.scope_router import _has_prior_knowledge_turn
 from backend.agent.tool_policy import (
     DOC_TYPE_BY_TOOL,
-    _SOURCE_COVERAGE_FIELDS,
-    detect_explicit_source_tools,
+    QUERY_TOOL_NAMES,
     extract_hmc_components,
+    normalize_calculation_authorizations,
+    normalize_relation_expansion_contract,
     resolve_tool_policy,
 )
 
@@ -46,7 +61,12 @@ TARGET_LLM_TIMEOUT_SECONDS = _positive_env_float("ICP_AGENT_TARGET_TIMEOUT_SECON
 # Keep this well below the answer budget, but large enough to finish the
 # structured contract.
 PLAN_MAX_PREDICTION_TOKENS = 2048
-TARGET_MAX_PREDICTION_TOKENS = 512
+# The target now emits the whole turn contract, not a tiny intent label.
+# A 512-token cap truncated JSON before context/anchor fields on every turn
+# of a real 40-turn run, silently dropping all semantic safeguards.
+TARGET_MAX_PREDICTION_TOKENS = min(8192, max(512, int(
+    _positive_env_float("ICP_AGENT_TARGET_MAX_TOKENS", 2048)
+)))
 
 _TARGET_INTENTS = {
     "exact_code",
@@ -61,6 +81,86 @@ _TARGET_INTENTS = {
     "history_query",
     "hybrid",
 }
+
+# Open-ended discourse meaning belongs to the semantic target model.  Code
+# validates the returned enum but must not try to recognize every possible
+# Chinese paraphrase with an ever-growing keyword table.
+_QUESTION_SEMANTICS = {
+    "describe",
+    "explain",
+    "rank",
+    "verify",
+    "compare",
+    "act",
+    "unknown",
+}
+_RESPONSE_FOCUSES = {
+    "importance",
+    "immediate_impact",
+    "count",
+    "completeness_check",
+    "first_action",
+    "maintenance_action",
+    "status_interface",
+    "history_conditions",
+    "recovery_verification",
+    "exclusion_basis",
+    "verification_criteria",
+    "history_root_cause",
+    "history_solution",
+    "source_capability",
+    "source_limitation",
+    "exact_identity",
+    "cause",
+    "missing_input_requirements",
+}
+_RESPONSE_SCOPES = {"standalone", "incremental", "full_restatement", "unknown"}
+
+# ``answer_mode`` remains in the state/SSE contract for saved agents and older
+# consumers.  It must not recreate an intent-driven answer template, however:
+# its compatibility value is derived only from the validated response/field
+# contract that already crossed the model boundary.
+_ARCHITECTURE_PRESENTATION_FIELDS = {
+    "architecture_hierarchy",
+    "architecture_function",
+    "architecture_interface",
+    "relation_path",
+}
+_HMC_PRESENTATION_FIELDS = {"hmc_identity", "hmc_symptom"}
+_MAINTENANCE_PRESENTATION_FIELDS = {
+    "maintenance_locator",
+    "maintenance_action",
+    "maintenance_api",
+    "platform_test_status",
+    "platform_test_result",
+}
+
+
+def _answer_mode_from_contract(query_frame: Mapping[str, Any]) -> str:
+    """Return a legacy presentation label without consulting coarse intent."""
+
+    fields = set(normalize_answer_fields(query_frame.get("required_answer_fields")))
+    response = query_frame.get("response_mode")
+    response_mode = (
+        str(response.get("mode") or "unknown")
+        if isinstance(response, Mapping)
+        else "unknown"
+    )
+    closure = query_frame.get("diagnostic_closure")
+    if response_mode == "diagnostic" or (
+        isinstance(closure, Mapping) and closure.get("required") is True
+    ):
+        return "fault_diagnosis"
+    if (
+        fields & _HMC_PRESENTATION_FIELDS
+        and query_frame.get("hmc_components_source") == "current_query"
+    ):
+        return "exact_code_lookup"
+    if fields & _MAINTENANCE_PRESENTATION_FIELDS:
+        return "maintenance_guidance"
+    if fields & _ARCHITECTURE_PRESENTATION_FIELDS:
+        return "architecture_knowledge"
+    return "knowledge_explanation"
 
 _TOPOLOGY_SUBJECT_KINDS = {
     "path",
@@ -80,6 +180,66 @@ _TOPOLOGY_QUESTION_ASPECTS = {
     "mission_success",
 }
 
+_TYPED_RECORD_FIELD_SCHEMA = {
+    "fmeca": {"failure_mode", "fault_cause", "function"},
+}
+_SUBJECT_BINDING_KINDS = {
+    "component",
+    "module",
+    "function",
+    *_TOPOLOGY_SUBJECT_KINDS,
+}
+
+# Open-language interpretation belongs to the target model.  These collections
+# are protocol enums only: they bound what may cross the model/code boundary
+# and never attempt to recognize wording in the user's question.
+_ICP_DOCUMENT_TYPES = frozenset({
+    "function_locator",
+    "hmc",
+    "fta",
+    "rbd",
+    "fmeca",
+    "mfl",
+    "fault_history",
+})
+_TOOL_BY_DOC_TYPE = {
+    doc_type: tool for tool, doc_type in DOC_TYPE_BY_TOOL.items()
+}
+_SOURCE_QUESTION_ROLES = frozenset({
+    "evidence",
+    "capability",
+    "limitation",
+    "comparison",
+})
+_COVERAGE_SCOPES = frozenset({
+    "complete_collection",
+    "focused_detail",
+    "relation_path",
+})
+_COVERAGE_REFERENCE_MODES = frozenset({"current_query", "selected_anchor"})
+_ARCHITECTURE_ROLES = frozenset({
+    "source",
+    "receiver",
+    "converter",
+    "processor",
+    "validator",
+    "upstream",
+    "downstream",
+    "destination",
+    "responsible_component",
+})
+_COMPARISON_SUBJECT_KINDS = frozenset({
+    "failure_mode",
+    "component",
+    "module",
+    "path",
+    "record",
+})
+_PAYLOAD_KINDS = frozenset({"data_flow", "signal_flow", "unknown"})
+_PAYLOAD_DIRECTIONS = frozenset(
+    {"external_to_system", "system_to_external", "internal", "unknown"}
+)
+
 TARGET_PROMPT = """你只负责识别用户这一轮明确询问的信息目标，不做检索规划，不回答问题。系统会在后续按目标补齐必要证据，因此这里不要把补充证据误写成用户目标。
 
 目标定义：
@@ -96,10 +256,24 @@ TARGET_PROMPT = """你只负责识别用户这一轮明确询问的信息目标�
 - hybrid：确实无法归入以上目标
 
 额外语义合同：
-- diagnostic_closure：用户在描述当前、实际发生的异常并寻求排查/处置时为 true。它表示系统在不越过证据边界的前提下，除直接回答外还应补齐原因、影响、处置和真正相似的历史实绩；抽象知识解释（如“某器件老化一般有什么影响”）为 false。
+- diagnostic_closure：只有用户在描述当前、实际发生的异常并要求形成诊断闭环时才生成。required_dimensions 必须逐项使用 required_answer_fields 的规范字段，且只列这个闭环实际缺少的维度；basis 必须逐字摘录当前用户问题中的连续原话。不能用 intent 自动展开原因、影响、处置或历史套餐。
+- response_mode：只描述本轮回答的组织宽度。mode 只能是 structure_only、focused、diagnostic、explanation、unknown，basis 必须逐字摘录当前用户问题中的连续原话。FTA/架构等只要求结构关系时用 structure_only；只回答明确字段用 focused；当前异常且用户要求诊断闭环用 diagnostic；解释概念/意义用 explanation；无法判断用 unknown。不得根据 intent 在代码侧补推。
 - structural_cause_chain：用户问多个上游条件如何共同造成结果、故障如何沿结构传递、哪些底层条件会触发当前现象时，写入 required_answer_fields。
+- 冗余切换只是现象时，不等于用户在问结构原因链。若用户描述一条支路在某工况下掉线、另一条支路接管，再问优先怀疑什么，只选择 cause_analysis / fault_cause；只有明确追问多路为何共同不可用或故障如何沿结构传播时才增加 structural_cause_chain。
 - fault_location / maintenance_locator：用户问问题落在哪个模块、环节、SUR 板或功能子电路时，分别写入相应字段；不要求用户说 Function Locator 或 MFL。
 - impact_propagation：用户问异常会先后牵连哪些功能、如何一路扩散或下游哪里受影响时写入；它要求跨文档关系补全，不等同于 RBD 可靠性计算。
+- relation_expansion 是唯一可授权跨文档图查询的语义合同。needed=true 时 relation_kind 只能是 relation_path、structural_cause_chain、impact_propagation；reference_mode=current_query 时 basis 必须逐字摘录当前问题中的连续原话，selected_anchor 时除当前原话 basis 外还必须选择系统给出的 anchor_id。只写 needed、intent 或 required_answer_fields 均不授权图查询。无需关系查询时输出 needed=false，其余授权字段留空。
+- question_semantics 只描述本轮要求的表达关系，从 describe、explain、rank、verify、compare、act、unknown 中选择一个；不要根据答案中应出现的某个词来判断。
+- response_focus 是本轮必须直接回应的语义维度，可多选：importance、immediate_impact、count、completeness_check、first_action、maintenance_action、status_interface、history_conditions、recovery_verification、exclusion_basis、verification_criteria、history_root_cause、history_solution、source_capability、source_limitation、exact_identity、cause。它们是含义标签，不是要求答案照抄的标题或词汇。
+- response_scope：只表示用户本轮要求的重述范围，必须附 response_scope_basis 逐字摘录当前原话。独立问题为 standalone；明确只补充新维度为 incremental；明确要求从头完整重述为 full_restatement；无法从当前原话判断时为 unknown 且 basis 留空。不得因 context_used=true 自动设为 incremental。
+- calculation_authorizations 只表达本轮对 FTA/RBD 操作的语义方式，不填写算法参数。operation 只能是 fta_cut_sets、fta_probability、rbd_reliability；mode 只能是 calculate、explain、read_document；target 分别必须是 fta、fta、rbd；basis 必须逐字摘录当前用户问题中的一段连续原话。只有 mode=calculate 表示请求执行确定性算法，解释算法或读取资料已有数值分别使用 explain、read_document。
+- requested_sources 表达用户明确要求回查的资料族。doc_type 只能是 function_locator、hmc、fta、rbd、fmeca、mfl、fault_history；question_role 只能是 evidence、capability、limitation、comparison；requested_fields 记录用户要求向该资料核实的规范字段，即使该资料通常不提供此字段，也必须保留问题，交给后续查询确认并解释边界。basis 必须逐字摘录当前用户问题中指向该资料的连续原话。业务对象属于哪类资料，与本轮要求向哪类资料求证是两件事；不能用当前对象、上轮来源或候选工具代替本轮指定的来源。用户只是询问业务对象而未要求指定资料时不要生成。
+- coverage_request 是独立的集合覆盖请求。scope 只能是 complete_collection、focused_detail、relation_path；member_kind 使用受控成员类型；reference_mode=current_query 时 subject 和 basis 都必须逐字来自当前问题，selected_anchor 时只能引用系统给出的 anchor_id。不要填写父ID、成员ID、权威计数等资料事实。
+- 对真实组成、全部数量或组成是否完整的核对，需要 complete_collection 与 closed_collection_members，即使本轮是省略主体的短追问；这与仅统计上轮列了几项不同。追问主体由已选锚点消解时使用 selected_anchor，basis 仍取本轮原话。按所问层级选择成员类型，不把顶层功能域一律当成 module；无法确定层级时保留歧义，不把局部 Top-K 记录当成总体清单。
+- architecture_roles 用于把用户当前明确命名的架构对象标成 source、receiver、converter、processor、validator、upstream、downstream、destination 或 responsible_component；subject 和 basis 都必须是当前问题中的连续原话。comparison_subjects 用于列出本轮需要并列比较的对象，kind 只能是 failure_mode、component、module、path、record，value 和 basis 都必须是当前问题中的连续原话。
+- missing_input_requirements 只表示用户本轮在询问当前状态机尚缺输入；slot 写状态机槽名，basis 必须逐字来自当前问题。模型不负责臆测缺什么，最终清单会只从系统实际缺失槽生成。
+- payload_contract 只描述本轮数据/信号载荷的方向相关性，不生成任何实体身份。kind 只能是 data_flow、signal_flow、unknown，direction 只能是 external_to_system、system_to_external、internal、unknown；非 unknown 时 source_role、destination_role 均须为当前原话对象，basis 是包含两个对象的当前问题连续原话。无法判断时使用 unknown 且角色可为空。
+- 当用户已经把一个退化/故障模式作为前提，询问它为什么表现为多个功能异常、为何影响范围不是局部时，问题是在问该模式的局部与最终影响链，而不是反问该退化本身的起因；选择 impact_analysis，required_answer_fields 至少包含 local_impact、final_impact。若同一记录已直接给出这两项，不要误加 structural_cause_chain。
 
 约束：
 1. 只有用户同一句话明确提出多个目标时才能多选。
@@ -109,18 +283,19 @@ TARGET_PROMPT = """你只负责识别用户这一轮明确询问的信息目标�
 5. 用户先描述异常现象，再问“优先怀疑哪里、先查哪部分、可能是哪一段”，属于 cause_analysis；功能定位只是检索步骤，不能把答案目标降成 function_location。
 6. 明确命名一条路、通道、支路或供电/数据/信号路径已经失效，并询问影响、后果或还能否工作时，后果同时取决于故障影响记录和剩余拓扑的成功判据，因此同时选择 impact_analysis 和 reliability_query；用户不必主动提到另一条路、备份、RBD、串并联或冗余。
 7. 询问某模块/部件“是否重要、有多关键、为什么重要”，以 impact_analysis 为主目标并增加 architecture_query：需要说明其职责/依赖以及失效影响。只有用户还问单路失效、备份或任务继续能力时才增加 reliability_query。
-8. contextualized_query 必须把本轮省略的对象补全成可独立理解的问题，但不得增加历史中没有的代码、模块或现象。requested_facets 只写用户本轮实际询问的维度；required_answer_fields 必须使用下方规范字段，只列本轮必须回答的字段，不能为了完整而扩展。
+8. contextualized_query 必须把本轮省略的对象补全成可独立理解的问题，保留每个分问、条件和当前纠正；不得增加历史中没有的代码、模块或现象。requested_facets 用自然语言写本轮实际要解决的分问，不受规范字段或 response_focus 目录限制；解释、比较、反事实、验证等关系不能被压缩成字段名。required_answer_fields 仅映射本轮可能需要读取的证据字段，不是回答范围或措辞白名单；无法映射的分问仍必须保留在 contextualized_query 和 requested_facets 中，不得为了完整扩展用户目标。
 9. 本轮问题可独立理解时 context_status=standalone；结合历史可唯一消解时为 resolved；存在多个同类对象无法判断时为 ambiguous；历史中没有所指对象时为 missing。
 10. 证据锚点只表示上轮回答实际引用过某条记录；需要沿用时必须在 selected_anchor_ids 中选择其 anchor_id，不得生成新 ID。新一轮仍需回到权威存储重新查询。
-11. coverage_scope 描述回答的覆盖义务：普通局部说明为 focused_detail；用户询问某集合是否穷尽、是否只有一个、是否还有其他项、全部有哪些时为 complete_collection；询问链路/多跳关系为 relation_path；无法判断为 unknown。它不是检索条数。
-12. coverage_scope=complete_collection 时，collection_subject 必须写需要闭合核验的集合主体，collection_member_kind 写成员类型（例如 failure_mode、cause、component、module、subsystem、record）；主体在历史中不能唯一确定时，context_status=ambiguous，不能猜测。
+11. 覆盖义务只由带 basis/已选锚点的 coverage_request 产生：普通局部说明为 focused_detail，穷尽集合为 complete_collection，链路/多跳关系为 relation_path。裸 coverage_scope、collection_subject 或 collection_member_kind 只是旧格式审计值，不能授权闭集、扩展窗口或增加 closed_collection_members。
+12. coverage_request.scope=complete_collection 时，subject 必须是需要闭合核验的父主体，member_kind 写成员类型；current_query 的 subject 和 basis 必须都来自当前原话，selected_anchor 必须选系统提供的 anchor_id。主体无法唯一确定时设 context_status=ambiguous，不能猜测。
 13. 询问 FMECA、MFL、故障历史等业务记录“是什么”仍属于 entity_profile，但 required_answer_fields 应使用 record_identity，并由相应结构化资料回答；不要把所有业务 ID 都当成架构组件，也不要另造“ID查询”意图。
-14. 使用 topology_dependency 输出上述判断的结构依据。只有同时满足“明确命名的路径类对象 + 已描述失效状态 + 询问影响/连续工作能力”时 required=true；subject_kind 只能是 path、channel、branch、supply_path、power_path、data_path、signal_path、redundant_leg，question_aspects 只能从 impact、consequence、continuity、continued_operation、mission_success 中选择。
+14. 使用 topology_dependency 输出上述判断的结构依据。只有同时满足“明确命名的路径类对象 + 已描述失效状态 + 询问影响/连续工作能力”时 required=true；subject_kind 只能是 path、channel、branch、supply_path、power_path、data_path、signal_path、redundant_leg，question_aspects 只能从 impact、consequence、continuity、continued_operation、mission_success 中选择。basis 必须是同时包含 subject 与 failure_state 的当前问题连续原话；若不存在一段共同原话，可分别填写 subject_basis 与 failure_state_basis，且二者都必须是当前问题连续原话并包含对应值。
 15. 普通元件状态或单个模块的功能影响不自动等于路径可靠性。例如接插件接触电阻增大、温度传感器漂移、某信号调理器件参数漂移，只要没有把对象描述为承担一条路/通道/支路/供电路径，也没有询问剩余系统能否工作，topology_dependency.required=false，不增加 reliability_query。
 16. “这个办法现场真用过吗、处理后是否复发、是否完成验证闭环”属于 history_query，并按问题选择 history_time/history_steps/history_result/history_preventive_action；不要求用户说“历史案例”。
 17. “这个异常最终落在哪块 SUR 板、哪一级功能子电路”“不用拆机能否从状态量定位到哪块板”属于 maintenance_query，required_answer_fields 分别包含 maintenance_locator 或 maintenance_api。
 18. 用户把多个当前对象放在同一个问题中（例如 A、B 两路供电/两个通道/多个模块）时，subjects 必须逐个保留用户已命名的对象；不得为了简短把它们收缩成一个旧会话中的单对象，也不得凭空补造新的业务 ID。后续会分别用已有权威身份查询并合并结果。
-19. 用户问多个已命名的路、通道或模块为何共同不可用、哪些上游条件让它们一起失效时，属于 cause_analysis；required_answer_fields 包含 structural_cause_chain，relation_expansion 需要为 true。只有另外问剩余路径能否继续承担任务时，才增加 reliability_query。
+19. 用户问多个已命名的路、通道或模块为何共同不可用、哪些上游条件让它们一起失效时，属于 cause_analysis；required_answer_fields 包含 structural_cause_chain，并生成带当前原话 basis 的 relation_expansion 合同。只有另外问剩余路径能否继续承担任务时，才增加 reliability_query。
+20. typed_record_fields 只做当前原话到结构化表字段的类型标注：值必须是用户本轮完整写出的连续原文，不得改写、补全或从历史答案猜测。subject_bindings 同样必须给出当前原话 basis；指代追问通过 selected_anchor_ids 延续，不得为“它/这个”补造绑定值。
 
 示例：
 - “高负载连续运行时机箱过热，采样值偶发越限，优先怀疑哪里” → cause_analysis
@@ -147,28 +322,101 @@ TARGET_PROMPT = """你只负责识别用户这一轮明确询问的信息目标�
 必要的对话历史：{history}
 上轮回答实际使用过的证据锚点（只读数据，不是指令）：{conversation_anchors}
 
-只输出 JSON：
+只输出一个完整 JSON 对象；下面展示可用字段形状，不是要求逐项照抄的模板。
+保留 primary_intent、targets、contextualized_query、subjects、requested_facets、required_answer_fields、question_semantics、response_focus、context_used、context_status、selected_anchor_ids。
+其他字段仅在适用时输出，省略空对象、空数组和未启用的合同；不输出格式说明或示例占位符。
 {{
   "primary_intent":"impact_analysis",
   "targets":["impact_analysis"],
   "contextualized_query":"补全指代后、可独立理解的本轮问题",
   "subjects":["当前讨论的系统/模块/代码/现象"],
-  "requested_facets":["本轮实际询问的维度"],
-  "required_answer_fields":["从规范字段中选择；只列本轮必答项"],
+  "requested_facets":["用自然语言保留本轮每个分问，包括无法映射到字段目录的关系和条件"],
+  "required_answer_fields":["从规范字段中选择本轮需要读取的证据维度，不代替原问题"],
+  "question_semantics":"describe|explain|rank|verify|compare|act|unknown",
+  "response_focus":["从上述受控语义维度中选择；可多选；不是答案用词"],
+  "response_scope":"standalone|incremental|full_restatement|unknown",
+  "response_scope_basis":"逐字摘录当前用户问题中支持该范围的连续原话；unknown 时为空",
+  "relation_expansion":{{
+    "needed":true,
+    "relation_kind":"relation_path|structural_cause_chain|impact_propagation",
+    "reference_mode":"current_query|selected_anchor",
+    "basis":"逐字摘录当前用户问题中的连续原话",
+    "selected_anchor_ids":["selected_anchor 时只能从上方锚点选择"],
+    "reason":"为什么本轮确实需要关系边或多跳路径"
+  }},
+  "calculation_authorizations":[{{
+    "operation":"fta_cut_sets|fta_probability|rbd_reliability",
+    "mode":"calculate|explain|read_document",
+    "target":"fta|rbd",
+    "basis":"逐字摘录当前用户问题中的连续原话；无相关请求则不生成该项"
+  }}],
   "diagnostic_closure":{{
-    "required":false,
-    "reason":"当前实际异常需要证据闭环时的简短理由；否则为空字符串"
+    "required":true,
+    "required_dimensions":["从 required_answer_fields 规范字段中选择闭环所需维度"],
+    "basis":"逐字摘录当前用户问题中的连续原话",
+    "reason":"为什么本轮需要这些闭环维度；可为空字符串"
+  }},
+  "response_mode":{{
+    "mode":"structure_only|focused|diagnostic|explanation|unknown",
+    "basis":"逐字摘录当前用户问题中的连续原话"
   }},
   "topology_dependency":{{
     "required":false,
     "subject":"明确命名的路径类对象；无则为空字符串",
     "subject_kind":"path|channel|branch|supply_path|power_path|data_path|signal_path|redundant_leg|unknown",
     "failure_state":"用户已经描述的失效状态；无则为空字符串",
-    "question_aspects":["impact"]
+    "question_aspects":["impact"],
+    "basis":"同时包含 subject 与 failure_state 的当前用户问题连续原话；不能共同摘录时为空",
+    "subject_basis":"basis 为空时，包含 subject 的当前原话连续片段",
+    "failure_state_basis":"basis 为空时，包含 failure_state 的当前原话连续片段"
   }},
-  "coverage_scope":"complete_collection|focused_detail|relation_path|unknown",
-  "collection_subject":"需要闭合核验的集合主体；无则为空字符串",
-  "collection_member_kind":"failure_mode|cause|component|module|subsystem|record|unknown",
+  "typed_record_fields":{{
+    "fmeca":{{"failure_mode":"仅当用户本轮原话完整给出该字段值时填写，否则省略"}}
+  }},
+  "subject_bindings":[{{
+    "doc_type":"rbd",
+    "kind":"component|module|function|path|channel|branch|supply_path|power_path|data_path|signal_path|redundant_leg",
+    "value":"用户本轮明确写出的工程对象",
+    "basis":"包含该对象的用户本轮原话片段"
+  }}],
+  "requested_sources":[{{
+    "doc_type":"function_locator|hmc|fta|rbd|fmeca|mfl|fault_history",
+    "basis":"逐字摘录当前用户问题中的连续原话",
+    "requested_fields":["该资料下本轮明确要求的规范字段；没有字段要求则为空数组"],
+    "question_role":"evidence|capability|limitation|comparison"
+  }}],
+  "coverage_request":{{
+    "scope":"complete_collection|focused_detail|relation_path",
+    "subject":"当前问题明确写出的集合主体，或所选锚点中的主体",
+    "member_kind":"failure_mode|cause|component|module|subsystem|record",
+    "reference_mode":"current_query|selected_anchor",
+    "basis":"逐字摘录当前用户问题中的连续原话",
+    "selected_anchor_ids":["reference_mode=selected_anchor 时只能从上方锚点选择"]
+  }},
+  "architecture_roles":[{{
+    "role":"source|receiver|converter|processor|validator|upstream|downstream|destination|responsible_component",
+    "subject":"用户本轮明确写出的对象",
+    "basis":"逐字摘录当前用户问题中的连续原话"
+  }}],
+  "comparison_subjects":[{{
+    "kind":"failure_mode|component|module|path|record",
+    "value":"用户本轮明确写出的比较对象",
+    "basis":"逐字摘录当前用户问题中的连续原话"
+  }}],
+  "missing_input_requirements":[{{
+    "slot":"状态机槽名",
+    "basis":"逐字摘录当前用户问题中的连续原话"
+  }}],
+  "payload_contract":{{
+    "kind":"data_flow|signal_flow|unknown",
+    "direction":"external_to_system|system_to_external|internal|unknown",
+    "source_role":"当前原话中的载荷来源对象；unknown 可为空",
+    "destination_role":"当前原话中的载荷去向对象；unknown 可为空",
+    "basis":"包含非空角色的当前用户问题连续原话；unknown 可为空"
+  }},
+  "coverage_scope":"仅兼容审计；执行范围以通过校验的 coverage_request 为准",
+  "collection_subject":"仅兼容审计；不单独产生集合义务",
+  "collection_member_kind":"仅兼容审计；不单独产生集合义务",
   "context_used":true,
   "context_status":"standalone|resolved|ambiguous|missing",
   "selected_anchor_ids":["只能从上方证据锚点的 anchor_id 中选择"]
@@ -194,174 +442,96 @@ COLLECTION_TARGET_REPAIR_PROMPT = """你负责修正一个未通过结构校验�
   "subjects":["本轮集合主体"],
   "requested_facets":["用户实际要求的维度"],
   "required_answer_fields":["closed_collection_members","仅当用户明确要求时才增加的其他规范字段"],
-  "coverage_scope":"complete_collection",
-  "collection_subject":"被枚举成员所属的父系统、模块、功能或记录",
-  "collection_member_kind":"failure_mode|cause|component|module|subsystem|record",
+  "coverage_request":{{
+    "scope":"complete_collection",
+    "subject":"被枚举成员所属的父系统、模块、功能或记录",
+    "member_kind":"failure_mode|cause|component|module|subsystem|record",
+    "reference_mode":"current_query|selected_anchor",
+    "basis":"逐字摘录当前用户问题中支持完整集合的连续原话",
+    "selected_anchor_ids":["selected_anchor 时只能使用已提供锚点"]
+  }},
   "context_used":false,
   "context_status":"standalone|resolved|ambiguous|missing",
   "selected_anchor_ids":[]
 }}
 
 校验规则：
-1. collection_subject、collection_member_kind 和 closed_collection_members 均不能为空；不要把集合中的某一成员写成父主体。
+1. coverage_request.subject、member_kind、basis 和 closed_collection_members 均不能为空；不要把集合中的某一成员写成父主体。
 2. required_answer_fields 只保留用户明确要求展示的内容。仅要求“全部有哪些成员”时只填 closed_collection_members；不要自动增加原因、影响、严酷度、检测、维修或历史。
 3. 若主体确实无法从问题或历史唯一确定，context_status=ambiguous；不得猜测另一个对象。
 4. 成员类型按语义判断，不依赖用户是否使用英文 ID 或内部文档术语。
 """
 
-PLAN_PROMPT = """你是 ICP 航空电子系统故障诊断的检索规划器。
-用户通常只能描述模糊故障现象，不一定知道模块名或 HMC。你的任务是补全检索表达并规划七类知识工具。
-只识别用户这一轮实际询问的任务，不预测用户下一步可能还想问什么，也不为了“更全面”主动扩展任务范围。
-
-可用知识工具：
-- function_locator：查询系统、子系统、模块、功能、接口和上下游关系；也可将故障现象映射到功能
-- hybrid_search：在七类文档中做关键词 + 向量混合召回
-- hmc_query：按 LCN/HAMC/HSC 或故障描述查 HMC 和维修方法
-- fmeca_query：查故障模式、原因、影响、严酷度、检测方法
-- fta_query：查顶事件、原因链和 AND/OR 逻辑
-- rbd_query：查可靠性框图、串并联结构、成功判据和参数
-- mfl_query：查模块/SUR板/功能电路故障、API 和维修定位
-- fault_history_query：查历史排故案例、步骤、根因和最终方案
-- graph_traversal：以前述工具返回的明确业务ID为起点，查询经 PostgreSQL 再授权的跨文档关系路径
-- fault_reasoning：融合证据、排序候选、判断是否需要追问
-
-用户问题：{query}
-对话历史：{history}
-指代消解结果（仅用于检索，不是已确认事实）：{dialogue_context}
-会话记忆：{memory}
+PLAN_PROMPT = """你是 ICP 检索规划器。只把已解析任务转换为查询，不重新解释用户目标。
+当前原问题：{query}
+唯一任务合同（对象、分问、来源和授权由任务理解阶段负责）：{dialogue_context}
+会话材料（只用于核对条件，不能新增对象或授权）：{history}
+记忆（不是工程事实）：{memory}
 系统设定：{system_prompt}
 
-输出严格 JSON，不要输出其他内容：
+可用查询工具：
+function_locator（架构/功能）、hmc_query（报码）、fmeca_query（模式/原因/影响/检测）、
+fta_query（原因结构）、rbd_query（成功判据/结构）、mfl_query（维修/状态接口）、
+fault_history_query（历史条件/处理/验证）、hybrid_search（语义发现）。
+工具执行范围仍由程序根据任务合同校验。
+
+只输出 JSON：
 {{
-  "intent": "exact_code|symptom_diagnosis|architecture_query|entity_profile|function_location|cause_analysis|impact_analysis|maintenance_query|reliability_query|history_query|hybrid",
-  "query_targets": [
-    {{"intent": "cause_analysis", "source": "llm", "reason": "用户需要了解故障原因"}}
-  ],
-  "relation_expansion": {{
-    "needed": true,
-    "reason": "完整回答是否需要把不同文档中的实体和事实串联起来"
+  "entity_keywords": ["任务中对象的检索短语"],
+  "type_keywords": [],
+  "query_frame": {{
+    "symptoms": ["用户实际描述的现象"],
+    "operating_stage": "未知",
+    "operating_stage_basis": "",
+    "temporal_pattern": "未知",
+    "temporal_pattern_basis": "",
+    "constraints": ["用户给定的条件"],
+    "normalized_terms": ["不改变对象和含义的检索短语"]
   }},
-  "answer_mode": "architecture_knowledge|knowledge_explanation|fault_diagnosis|maintenance_guidance|exact_code_lookup",
-  "rewritten_query": "面向检索的完整问题；诊断保留告警码/阶段/现象，架构问答保留系统/模块/接口/链路名称",
-  "entity_keywords": ["设备/模块/功能/故障现象/告警码"],
-  "type_keywords": ["原因|影响|维修|可靠性|历史等"],
-    "query_frame": {{
-    "entities": ["系统/模块/部件"],
-    "symptoms": ["用户描述的原始现象"],
-    "operating_stage": "上电|初始化|运行中|高负载|持续运行后|未知",
-    "operating_stage_basis": "支持该阶段判断的用户原话短句；无则为空字符串",
-    "temporal_pattern": "重复发生|间歇发生|持续发生|首次发生|未知",
-    "temporal_pattern_basis": "支持该发生规律判断的用户原话短句；无则为空字符串",
-    "coverage_scope": "complete_collection|focused_detail|relation_path|unknown",
-    "collection_subject": "complete_collection 时填写父主体，否则为空字符串",
-    "collection_member_kind": "failure_mode|cause|component|module|subsystem|record|unknown",
-    "requested_facets": ["名称|类型|所属位置|职责|组成|接口|原因|影响|维修|历史|可靠性"],
-    "required_answer_fields": ["只从规范字段中选择本轮必须回答的字段"],
-    "diagnostic_closure": {{"required": false, "reason": "当前实际异常需要有限证据闭环时的理由"}},
-    "constraints": ["构型/版本/任务时间等已知限制"],
-    "normalized_terms": ["从上下文规范化得到的检索短语，不作为事实"]
-  }},
-  "tool_queries": {{
-    "function_locator": ["面向该工具的完整语义检索句"],
-    "fta_query": ["面向该工具的原因链语义检索句"],
-    "hybrid_search": ["保留用户完整语义的跨文档检索句"]
-  }},
-  "tools_plan": [
-    {{"tool": "function_locator", "reason": "为什么需要该工具"}},
-    {{"tool": "hybrid_search", "reason": "为什么需要该工具"}}
-  ],
-  "reasoning": "30-100字，说明检索规划，不输出未经证据支持的诊断结论"
+  "tool_queries": {{"hybrid_search": ["带对象、现象和本轮分问的完整检索句"]}},
+  "tools_plan": [{{"tool": "hybrid_search", "reason": "需要找到支持本轮分问的材料"}}],
+  "reasoning": "简短说明检索选择"
 }}
 
-规划要求：
-1. 用户直接问系统架构、组成、层级、职责、功能、接口、输入输出、上下游、数据流或信号链路时：
-   intent=architecture_query，使用 function_locator + hybrid_search，且 hybrid_search 只检索 function_locator。
-   这类问题是知识查询，不规划 fault_reasoning，不生成故障置信度，也不提出故障诊断式追问。
-1.1 用户询问某个实体或业务编号“是什么、叫什么、属于什么类型、基本功能/职责是什么”时，intent=entity_profile。系统/子系统/模块/功能/接口由 function_locator 查询；FMECA、MFL、故障历史等业务记录由其对应结构化工具查询。无法判断记录族时可先 hybrid_search 发现来源，再按业务 ID 回读 PostgreSQL。ID、名称、缩写和自然语言描述只影响实体定位，不产生不同意图；不要因为问题包含业务 ID 就改成 exact_code，exact_code 只用于 HMC/LCN/HAMC/HSC。
-2. 出现完整或近似 HMC/LCN/HAMC/HSC：intent=exact_code，必须包含 hmc_query。
-3. 仅有模糊现象：intent=symptom_diagnosis；先选择能直接定位现象的最小工具集，后续系统会按该意图补齐原因、处置和可比历史证据。
-4. 若用户语义上在询问成因，不论是否出现“为什么/原因”等字样，query_targets 都包含 cause_analysis；查询 FTA/FMECA，但只有用户明确要求概率或最小原因组合时才计算。
-4.1 当用户要的不是一条直接原因，而是“哪些上游异常会共同造成、如何一路导致、哪些底层条件会触发”的结构原因链时，query_frame.required_answer_fields 必须包含 structural_cause_chain；这会保留 FTA 查询及其 FTA-only 语义补查，不能让一条 FMECA 原因字段提前结束。
-5. 若用户语义上在询问后果、严重程度或危害，query_targets 包含 impact_analysis，且优先用 fmeca_query 查直接影响。只有当问题还要回答影响如何沿故障结构传播、会牵连哪些功能或模块时，才按需增加 fta_query、function_locator 和 graph_traversal；不得因为是“影响”问题就固定全查。
-5.1 上述传播问题的 query_frame.required_answer_fields 必须包含 impact_propagation；relation_expansion.needed=true。它是语义上需要关系链，不要求用户说“关系、路径、图谱”。
-6. 若用户语义上需要检查、维修或 API 定位，包含 hmc_query、mfl_query；需要过往处理经验时增加 fault_history_query。
-6.1 用户问“哪块板、哪个 SUR、哪个功能子电路、从哪个状态/API 定位”同样属于维修定位；分别使用 maintenance_locator 或 maintenance_api，不能降级为普通 function_location。
-7. 若用户关心冗余结构、某路径失效后能否工作或任务成功可能性，query_targets 包含 reliability_query，不要求用户知道 RBD 名称或采用示例词语。指代消解结果中的 topology_dependency.required=true 是已经完成的结构化语义判断：必须保留 impact_analysis + reliability_query，查 fmeca_query + rbd_query，并回答单路失效能力边界与成功判据。普通元件或非路径模块的影响问题不因此查 RBD；没有明确数值要求时不得调用 rbd_calculator。
-8. 若用户需要过往案例和处理经验，query_targets 包含 history_query，不依赖“历史/以前”等固定词。
-9. 理解自然表达的语义，不要求用户说出 FTA、RBD、FMECA、MFL 等内部文档术语；不得只按关键词字面分类。
-10. 不得把“故障”一词本身当作有区分度的实体关键词；优先抽取现象、阶段、告警文字和设备名。
-11. 有指代词时必须结合对话历史补全 rewritten_query。
-11.1 指代消解结果已给出时，rewritten_query、entity_keywords、query_frame 和 tool_queries 必须保留其当前对象与 requested_facets；不要让“它、这种情况”单独进入检索。
-12. “某部件已出现某状态，会有什么影响/后果”属于 impact_analysis 知识解释，不是要求系统猜测唯一故障；不要规划诊断式追问。但该对象已经被目标识别器确定为命名的路/通道/支路/供电路径时，还必须保留 reliability_query，不能按普通部件影响降级。
-13. 一个问题可有多个 query_targets，例如“为什么发生、怎么修、以前如何处理”同时包含 cause_analysis、maintenance_query、history_query，不得只保留一个目标。
-13.1 当前真实异常即使只问“哪里有问题/为什么”，也可在 diagnostic_closure.required=true 时由后续有限补查补齐已存在的维修和历史证据；这不是把维修或历史伪装成用户明确提问。抽象定义、单个字段、已知部件的一般影响解释不设置该合同。
-13.2 dialogue_context 已给出 diagnostic_closure、结构原因链、故障定位或传播字段时必须保留；不能为了让计划更短而删掉它们。
-14. 只为本轮实际计划调用的查询工具生成 tool_queries，不要枚举未使用的工具；它们只用于召回，不能添加用户未提供的事实、代码、参数或计算要求。
-15. answer_mode 只是回答形态建议，最终由系统根据 intent 确定性映射；不得让知识问答套用完整故障诊断报告模板。
-16. 查询工具可以扩大召回；FTA/RBD 计算授权只能来自用户原始问题，不能在 rewritten_query 或 tool_queries 中替用户增加“计算概率/可靠度”。
-17. query_targets 只表达用户当前明确提出的信息需求。询问“哪里出了问题/可能是什么问题”属于 cause_analysis；系统随后自动补查维修和历史资料属于答案证据补全，不得伪装成用户明确提出了 maintenance_query 或 history_query。
-18. relation_expansion 独立判断“完整回答是否需要查询一条跨文档实体边或多跳路径”，不得根据用户有没有说“关系、路径、关联、图谱”等术语判断。需要回答明确的上下游、层级、故障→功能→模块、FTA→故障模式→维修/历史路径时设 needed=true。仅仅要同时引用原因、处置和历史，不等于需要图；同一条历史记录已经包含现象、根因和最终方案时设 false；FMECA 已直接记载某部件的影响时也设 false。架构数据流、接口去向和跨文档因果链即使是静态知识，也可能需要图，应设 true。不得凭名称或相似文字生成图实体ID。
-19. rewritten_query、entity_keywords 和 tool_queries 必须保留用户给出的数据方向、载荷类型和阶段，不能凭空指定模块。特别是“外围仪器/便携仪器”不等于“显示器”，“记录数据未同步到便携终端”不得擅自改写成显示接口故障。
-20. coverage_scope 是通用的回答覆盖范围：用户要求完整/全部成员、完整清单或整体组成时为 complete_collection；只问某个对象的说明、原因、影响或职责时为 focused_detail；询问上下游、传播链或多跳连接时为 relation_path；无法确定时为 unknown。不得把普通 Top-K 候选当成 complete_collection；只有权威结构化查询能够证明集合闭合时，后续系统才会执行逐项完整性校验。
-21. query_frame.required_answer_fields 使用与目标识别器相同的规范字段，只表达用户本轮明确要求；“严重等级”只填 severity，“局部和最终影响”填 local_impact、final_impact，“原因、怎么修、以前如何处理”分别填 fault_cause、maintenance_action 以及相应 history_* 字段。不得把可能有用的补充材料写成必答字段。
-22. operating_stage 表示故障发生所处阶段，temporal_pattern 只表示故障现象的发生频次/节律。部件“用久后、老化、逐渐退化、性能变差”描述的是寿命或演化过程，本身不等于故障“持续发生”；没有明确发生频次时 temporal_pattern=未知。两个槽只要不是“未知”，都必须分别在对应 basis 字段摘录当前用户原话作为依据，不得引用 rewritten_query 中新增的词。
-23. 用户同时询问多个当前对象时，query_frame.entities 和各工具的检索句必须逐个保留这些对象；不要因为上轮只查到其中一个，就把本轮多对象问题收缩成那一个。没有用户给出或资料明确的对象名称/ID 时，不得擅自把“多路”改写为具体 A/B 编号。
-24. 用户问多个已命名路/通道/模块为何共同不可用、哪些条件让它们一起失效时，保留 cause_analysis，并设置 structural_cause_chain 与 relation_expansion.needed=true；规划 FMECA、FTA、Function Locator 和后续可绑定的图关系查询。除非用户还问剩余路径是否继续承担任务，不得据此自行调用 RBD 计算器或输出可靠度数值。
-
-语义示例：
-- “测量值突然跳变、外接表计读数也异常，可能哪里有问题”直接目标是 cause_analysis；检索主路径查 HMC/FMECA/FTA，系统可在后续补齐有明确关联的维修和历史证据，但不查询无关 RBD，也无需用户说“顶事件”。
-- “接插件接触电阻增大会有什么影响”是影响解释，不应改写成唯一故障诊断或要求用户补全一套告警信息。
-- “若某传感器激励支路断开，会有什么影响”虽未说 RBD、冗余或另一路，仍然是命名支路失效后的影响与能力边界，查 FMECA + RBD；不自动计算可靠度。
-- “某温度采集模块性能下降会影响什么功能”是普通模块影响，除非另有命名路径/通道语义或继续工作问题，否则只按影响目标处理，不自动查 RBD。
-- “一路异常、另一路正常，继续运行有什么风险”同时包含 impact_analysis 和 reliability_query；查 FMECA 影响与 RBD 成功判据，但用户没有要求数值时不调用 rbd_calculator。
-- “基准电压慢慢漂移会牵连哪些测量”是 impact_analysis；可以按需联合 FTA 传播结构、Function Locator 功能层级与 graph_traversal，relation_expansion=true，不因此增加 reliability_query。
-- “为什么测量越限、怎么处理、以前有没有类似记录”同时包含原因、维修和历史三个目标。
-- “双路备份坏了一路还能继续工作吗”是可靠性结构/成功判据查询；无需用户说“RBD”。
-- “以前同类设备更换传感器后仍然超差，最终怎么解决”若一条历史记录可完整回答，relation_expansion=false。
-- “远程维护指令由谁接收、在哪一步校验、之后交到哪里执行”需要明确上下游数据流，relation_expansion=true。
-- “外部进来的内容先被谁接收、在哪一步变成内部格式、随后交给哪个处理单元”是接口→转换→处理的数据流架构问题；追问“解释不对该看哪一段”时保留同一条链路的对象词。
-- “MOD-PWR-PSUA 是什么”和“电源 A 模块是什么”都是 entity_profile；应先返回名称、类型、所属位置和资料记载的职责，不把名称埋在证据标题中。
-- 上一轮对象是 MOD-PWR-PSUA，本轮“它重要吗”必须保留该对象，同时查职责/依赖与有证据的失效影响；不得套用完整故障诊断模板。
+不要输出 intent、query_targets、requested_facets、实体绑定、来源约束或计算/图授权；它们由唯一任务合同提供。
+只选择支持本轮分问的最小查询集，不因为资料有某列就扩展问题。不得猜测 ID、报码、根因或案例。
+每条查询均保留已消解对象、故障现象和区分条件；不要把“相近案例”变成泛化的历史检索。
+工况及频次 basis 只能引用当前用户原话或任务合同中已选用户输入；部件老化不等于异常持续发生。
+没有有效任务合同时只用原问题进行 hybrid_search，不自行恢复另一套语义合同。
 """
 
 
-def _format_history(messages, max_turns=6):
-    if not messages:
-        return "无"
-    recent = messages[-max_turns * 2:] if len(messages) > max_turns * 2 else messages
-    parts = []
-    for message in recent:
-        role = message.get("role", "")
-        content = (message.get("content") or "")[:500]
-        if role == "user":
-            parts.append(f"用户: {content}")
-        elif role == "assistant":
-            # 引用编号只在产生它的回答内有效，不能进入下一轮规划并被
-            # 误当成本轮新证据编号。
-            content = re.sub(r"\[\^\d+\]", "", content)
-            parts.append(f"助手: {content}")
-        elif role == "system":
-            parts.append(f"系统: {content}")
-    return "\n".join(parts) if parts else "无"
+def _format_history(messages, max_turns=8):
+    from backend.agent.answer_context_binding import conversation_review_context
+    context = conversation_review_context({"messages": messages}, max_messages=max_turns * 2)
+    for message in context["messages"]:
+        namespace = message["message_id"]
+        message["content"] = re.sub(
+            r"\[\^(\d+)\]", lambda match: f"〔历史引用 {namespace}:{match.group(1)}〕",
+            message["content"],
+        )
+    return json.dumps(context["messages"], ensure_ascii=False) if context["messages"] else "无"
 
 
 def _offered_conversation_anchors(
     messages: Any,
     *,
-    max_messages: int = 4,
     limit: int = 12,
 ) -> List[Dict[str, Any]]:
-    """Collect only bounded, answer-used citation anchors from recent turns."""
+    """Offer bounded used identities across the server-provided history window.
+
+    An unrelated/capability turn carries no engineering anchor and must not
+    evict an older identity while the anchor budget still has room. This does
+    not recover messages already outside the bounded server history window.
+    """
 
     if not isinstance(messages, list):
         return []
     collected: List[Dict[str, Any]] = []
     seen: set[str] = set()
-    assistant_count = 0
     for message in reversed(messages):
         if not isinstance(message, dict) or message.get("role") != "assistant":
             continue
-        assistant_count += 1
         for raw_anchor in message.get("conversation_anchors") or []:
             if not isinstance(raw_anchor, dict):
                 continue
@@ -369,11 +539,15 @@ def _offered_conversation_anchors(
             if not anchor_id or anchor_id in seen:
                 continue
             seen.add(anchor_id)
-            collected.append(dict(raw_anchor))
+            anchor = dict(raw_anchor)
+            origin_message_id = str(
+                message.get("message_id") or message.get("id") or ""
+            ).strip()
+            if origin_message_id:
+                anchor["origin_message_id"] = origin_message_id
+            collected.append(anchor)
             if len(collected) >= limit:
                 return collected
-        if assistant_count >= max_messages:
-            break
     return collected
 
 
@@ -456,145 +630,9 @@ def _anchor_subjects(anchors: List[Dict[str, Any]]) -> List[str]:
     return _merge_text_lists(values, limit=20, item_limit=300)
 
 
-# These are discourse-level quantifiers, not ICP vocabulary or a domain alias
-# table.  They only provide a safety override when the model tries to narrow
-# an explicit closed-set question into a Top-K detail lookup.
-_COLLECTION_CLOSURE_QUESTION = re.compile(
-    r"(?:"
-    r"唯一(?:的)?(?:一(?:个|种|项|条))?|"
-    r"只有.{0,20}(?:吗|么|\?|？)|"
-    r"仅有|仅此|"
-    r"总数.{0,20}(?:是|为|有)?\s*(?:多少|几(?:个|种|项|条|块))|"
-    r"(?:漏掉|遗漏|少了|缺少).{0,20}(?:吗|么|没有|哪些|什么|部分)?|"
-    r"(?:还有|有无).{0,12}(?:其他|别的|剩余|更多)|"
-    r"(?:其他|别的|剩余).{0,12}(?:吗|呢|哪些|什么)|"
-    r"(?:全部|所有|完整|全量).{0,16}(?:哪些|什么|列表|清单|包括|包含|列出)|"
-    r"(?:都|一共).{0,16}(?:有哪些|有什么|多少|几种|几项|几条)"
-    r")"
-)
-# A closed collection is a user-facing coverage promise, not a retrieval
-# optimization.  The target model may see several FMECA rows and incorrectly
-# label an ordinary “what can cause X?” question as exhaustive.  Only these
-# explicit quantifiers in the user's own turn can authorize the N-of-N answer
-# contract.  Follow-up references such as “还有别的吗” are included because
-# `_apply_collection_followup_safety` can then bind them to an already cited,
-# unambiguous parent collection.
-_EXPLICIT_COLLECTION_COVERAGE_REQUEST = re.compile(
-    r"(?:"
-    r"(?:全部|所有|完整|全量).{0,24}(?:故障|模式|原因|成员|模块|子系统|功能域|记录|哪些|什么|列表|清单)|"
-    r"(?:故障|模式|原因|成员|模块|子系统|记录).{0,24}(?:全部|所有|完整|全量)|"
-    r"总数.{0,20}(?:是|为|有)?\s*(?:多少|几(?:个|种|项|条|块))|"
-    r"(?:一共|总共|共计|共有|有多少|有几种|有几项|有几条|有几块|多少块|几块).{0,24}(?:故障|模式|原因|成员|模块|子系统|功能域|记录)?|"
-    r"(?:列出|给出|说明|告诉我).{0,12}(?:全部|所有|完整|全量).{0,12}(?:列表|清单|成员|模块|子系统|功能域|记录)?|"
-    r"(?:唯一|仅有|只有).{0,24}(?:吗|么|？|\?)|"
-    r"(?:还有|有无).{0,16}(?:其他|别的|剩余|更多)|"
-    r"(?:其他|别的|剩余).{0,16}(?:吗|呢|哪些|什么)|"
-    r"(?:漏掉|遗漏|少了|缺少).{0,20}(?:吗|么|没有|哪些|什么|部分)?"
-    r")"
-)
-_PRIOR_SCOPE_REFERENCE = re.compile(
-    r"(?:这(?:个|些|种|类|一)|该(?:范围|集合|类)|上述|前述|上文|上面|"
-    r"上一轮|刚才|其中|范围里|它们|那些)"
-)
 _COLLECTION_MEMBER_KINDS = {
     "failure_mode", "cause", "component", "module", "subsystem", "record",
 }
-
-# A user asking for a previous case often describes it without naming the
-# ``fault_history`` document family (for example “以前的相近案例怎么验证恢复”).
-# This is a narrow discourse safeguard used only to preserve an explicit
-# history answer contract when the small target model under-selects it.  It is
-# not used to infer a diagnosis or to widen ordinary cause questions.
-_EXPLICIT_HISTORY_REQUEST = re.compile(
-    r"(?:"
-    r"(?:以前|曾经|此前|以往|过去|既往|相近|相似).{0,28}(?:案例|记录|经验|处理|处置|验证|恢复|复发|发生|出现)|"
-    r"(?:现场|实际).{0,12}(?:用过|处理过|排过故障)|"
-    r"(?:处理|处置|维修|验证)后.{0,16}(?:恢复|复发|验证|结果)|"
-    r"(?:有没有|是否有|有无).{0,18}(?:类似|相近|相似|历史).{0,12}(?:案例|记录|经验|处理)?"
-    r")"
-)
-
-
-def _query_explicitly_requests_history(query: Any) -> bool:
-    """Whether this turn explicitly asks for prior cases or past handling."""
-
-    text = " ".join(str(query or "").split())
-    return bool(_EXPLICIT_HISTORY_REQUEST.search(text))
-
-
-def _query_explicitly_requests_collection_coverage(query: Any) -> bool:
-    """Whether the user, rather than a planner, asked for an exhaustive set."""
-
-    return bool(_EXPLICIT_COLLECTION_COVERAGE_REQUEST.search(" ".join(str(query or "").split())))
-
-
-def _promote_explicit_architecture_collection(
-    decision: Dict[str, Any],
-    *,
-    query: Any,
-) -> Dict[str, Any]:
-    """Recover an exhaustive architecture contract when the planner narrows it.
-
-    Small local models occasionally classify “系统有几块功能域，请列出
-    全部” as a focused architecture explanation.  The user's explicit
-    exhaustive wording is a safety obligation, not an inferred diagnostic
-    intent, so promote only architecture queries and leave all other targets
-    untouched.  The authoritative inventory resolver still decides whether a
-    complete set can actually be proved.
-    """
-
-    if not _query_explicitly_requests_collection_coverage(query):
-        return decision
-    targets = {
-        str(item.get("intent") or "")
-        for item in (decision.get("query_targets") or [])
-        if isinstance(item, Mapping)
-    }
-    targets.add(str(decision.get("primary_intent") or decision.get("intent") or ""))
-    if "architecture_query" not in targets:
-        return decision
-    upgraded = dict(decision)
-    upgraded["coverage_scope"] = "complete_collection"
-    fields = list(
-        normalize_answer_fields(
-            decision.get("required_answer_fields"),
-            requested_facets=decision.get("requested_facets") or [],
-        )
-    )
-    if "closed_collection_members" not in fields:
-        fields.append("closed_collection_members")
-    upgraded["required_answer_fields"] = fields
-    query_text = " ".join(str(query or "").split())
-    subject = " ".join(str(decision.get("collection_subject") or "").split())
-    subjects = [
-        " ".join(str(value or "").split())
-        for value in (decision.get("subjects") or [])
-        if " ".join(str(value or "").split())
-    ]
-    if not subject and subjects:
-        # Prefer an explicit engineering ID/system name over generic nouns
-        # such as “功能域” or “模块”.
-        subject = next(
-            (value for value in subjects if not re.fullmatch(r"(?:功能域|模块|子系统|系统)", value)),
-            subjects[0],
-        )
-    upgraded["collection_subject"] = subject
-    member_kind = str(decision.get("collection_member_kind") or "").strip()
-    if member_kind in {"", "unknown"}:
-        if re.search(r"功能域|子系统|系统(?:的|中|由|包含|组成|构成)|总体架构", query_text):
-            member_kind = "subsystem"
-        elif re.search(r"模块|组件", query_text):
-            member_kind = "module"
-        elif re.search(r"故障模式|模式", query_text):
-            member_kind = "failure_mode"
-        elif re.search(r"原因|成因", query_text):
-            member_kind = "cause"
-        elif re.search(r"记录|案例", query_text):
-            member_kind = "record"
-        else:
-            member_kind = "component"
-    upgraded["collection_member_kind"] = member_kind
-    return upgraded
 
 
 def _downgrade_unrequested_collection_contract(
@@ -612,9 +650,15 @@ def _downgrade_unrequested_collection_contract(
     can prove its parent scope.
     """
 
+    del query  # compatibility parameter; raw wording is never an authority.
+    request = decision.get("coverage_request")
+    if str(decision.get("coverage_scope") or "") != "complete_collection":
+        return decision
     if (
-        str(decision.get("coverage_scope") or "") != "complete_collection"
-        or _query_explicitly_requests_collection_coverage(query)
+        isinstance(request, Mapping)
+        and str(request.get("scope") or "") == "complete_collection"
+        and str(request.get("subject") or "").strip()
+        and str(request.get("member_kind") or "") in _COLLECTION_MEMBER_KINDS
     ):
         return decision
     downgraded = dict(decision)
@@ -635,133 +679,6 @@ def _downgrade_unrequested_collection_contract(
         if str(value or "").strip() not in {"完整性", "完整清单", "全部"}
     ]
     return downgraded
-
-
-def _unique_collection_scope_from_anchors(
-    anchors: Any,
-) -> Optional[Dict[str, Any]]:
-    """Return one unambiguous cited collection scope, otherwise ``None``.
-
-    A citation can identify both a member record and the authoritative parent
-    collection it came from.  We only inherit the parent when every usable
-    anchor agrees on the same parent and member kind; mixed collections are
-    deliberately left to the semantic model or a clarification turn.
-    """
-
-    groups: Dict[tuple[str, str], Dict[str, Any]] = {}
-    for raw_anchor in anchors if isinstance(anchors, list) else []:
-        if not isinstance(raw_anchor, dict):
-            continue
-        fields = raw_anchor.get("answer_fields")
-        if not isinstance(fields, dict):
-            continue
-        parent_id = " ".join(str(fields.get("collection_parent_id") or "").split())[:240]
-        parent_name = " ".join(str(fields.get("collection_parent_name") or "").split())[:300]
-        member_kind = str(fields.get("collection_member_kind") or "").strip()
-        if member_kind not in _COLLECTION_MEMBER_KINDS or not (parent_id or parent_name):
-            continue
-        parent_identity = (parent_id or parent_name).casefold()
-        key = (parent_identity, member_kind)
-        group = groups.setdefault(
-            key,
-            {
-                "parent_id": parent_id,
-                "parent_name": parent_name,
-                "member_kind": member_kind,
-                "anchor_ids": [],
-            },
-        )
-        if not group["parent_id"] and parent_id:
-            group["parent_id"] = parent_id
-        if not group["parent_name"] and parent_name:
-            group["parent_name"] = parent_name
-        anchor_id = str(raw_anchor.get("anchor_id") or "").strip()
-        if anchor_id and anchor_id not in group["anchor_ids"]:
-            group["anchor_ids"].append(anchor_id)
-    return next(iter(groups.values())) if len(groups) == 1 else None
-
-
-def _latest_assistant_collection_scope(messages: Any) -> Optional[Dict[str, Any]]:
-    """Read collection identity only from the immediately preceding answer."""
-
-    for message in reversed(messages if isinstance(messages, list) else []):
-        if not isinstance(message, dict) or message.get("role") != "assistant":
-            continue
-        return _unique_collection_scope_from_anchors(
-            message.get("conversation_anchors") or []
-        )
-    return None
-
-
-def _apply_collection_followup_safety(
-    *,
-    query: Any,
-    messages: Any,
-    dialogue_context: Dict[str, Any],
-    selected_anchors: Any = None,
-) -> bool:
-    """Preserve a cited closed-set scope for an explicit exhaustive follow-up.
-
-    This is intentionally a narrow safety contract.  It does not infer ICP
-    entities, fault semantics or aliases from text.  It recognizes only an
-    explicit coverage question plus a reference to prior context, then copies
-    an unambiguous parent/kind identity that was already exposed in citations.
-    PostgreSQL must still re-read that identity and prove collection closure.
-    """
-
-    text = " ".join(str(query or "").split())
-    if not _COLLECTION_CLOSURE_QUESTION.search(text):
-        return False
-    if str(dialogue_context.get("status") or "").strip() == "ambiguous":
-        return False
-    context_used = bool(dialogue_context.get("context_used"))
-    selected_ids = list(dialogue_context.get("selected_anchor_ids") or [])
-    if not (context_used or selected_ids or _PRIOR_SCOPE_REFERENCE.search(text)):
-        return False
-
-    scope = _unique_collection_scope_from_anchors(selected_anchors)
-    if scope is None:
-        scope = _latest_assistant_collection_scope(messages)
-    if scope is None:
-        return False
-
-    parent_id = str(scope.get("parent_id") or "").strip()
-    parent_name = str(scope.get("parent_name") or "").strip()
-    # Architecture collection subjects are best carried by the stable system
-    # ID (the count contract must not drift to a same-named local component).
-    # Failure-mode collections, however, are presented to users by their
-    # readable subsystem name; their exact parent ID is still retained in the
-    # selected citation anchors and used by the PostgreSQL resolver.
-    parent_subject = (
-        parent_id
-        if str(scope.get("member_kind") or "") == "subsystem"
-        else (parent_name or parent_id)
-    )
-    dialogue_context["coverage_scope"] = "complete_collection"
-    dialogue_context["collection_subject"] = parent_subject
-    dialogue_context["collection_member_kind"] = scope["member_kind"]
-    dialogue_context["context_used"] = True
-    dialogue_context["status"] = "resolved"
-    dialogue_context["subjects"] = _merge_text_lists(
-        [parent_name, parent_id], dialogue_context.get("subjects"), limit=12
-    )
-    dialogue_context["requested_facets"] = _merge_text_lists(
-        dialogue_context.get("requested_facets"), ["完整性"], limit=12
-    )
-    dialogue_context["required_answer_fields"] = normalize_answer_fields(
-        [
-            *(dialogue_context.get("required_answer_fields") or []),
-            "closed_collection_members",
-        ]
-    )
-    dialogue_context["selected_anchor_ids"] = _merge_text_lists(
-        scope.get("anchor_ids"), selected_ids, limit=12, item_limit=160
-    )
-    contextualized = str(dialogue_context.get("contextualized_query") or text).strip()
-    if parent_subject and parent_subject not in contextualized:
-        contextualized = f"关于{parent_subject}：{text}"
-    dialogue_context["contextualized_query"] = contextualized[:1200]
-    return True
 
 
 def _extract_json_object(text: Any) -> Optional[Dict[str, Any]]:
@@ -811,7 +728,123 @@ def _merge_text_lists(*values: Any, limit: int, item_limit: int = 240) -> List[s
     return _bounded_text_list(flattened, limit=limit, item_limit=item_limit)
 
 
-def _parse_topology_dependency(value: Any) -> Dict[str, Any]:
+def _literal_identity_text(value: Any, *, limit: int = 500) -> str:
+    """Normalize presentation only, preserving identity punctuation."""
+
+    return " ".join(
+        unicodedata.normalize("NFKC", str(value or "")).split()
+    )[:limit]
+
+
+def _typed_record_field_shape(value: Any) -> Dict[str, Dict[str, str]]:
+    """Bound the model-authored typed-record shape before grounding it."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    result: Dict[str, Dict[str, str]] = {}
+    for raw_doc_type, raw_fields in value.items():
+        doc_type = str(raw_doc_type or "").strip()
+        allowed_fields = _TYPED_RECORD_FIELD_SCHEMA.get(doc_type)
+        if not allowed_fields or not isinstance(raw_fields, Mapping):
+            continue
+        fields: Dict[str, str] = {}
+        for raw_field, raw_value in raw_fields.items():
+            field = str(raw_field or "").strip()
+            rendered = _literal_identity_text(raw_value)
+            if field in allowed_fields and rendered:
+                fields[field] = rendered
+        if fields:
+            result[doc_type] = fields
+    return result
+
+
+def _ground_typed_record_fields(
+    value: Any, *, raw_user_query: Any
+) -> Dict[str, Dict[str, str]]:
+    """Keep only typed table values literally present in the current turn."""
+
+    query = _literal_identity_text(raw_user_query, limit=4000).casefold()
+    if not query:
+        return {}
+    result: Dict[str, Dict[str, str]] = {}
+    for doc_type, fields in _typed_record_field_shape(value).items():
+        grounded = {
+            field: rendered
+            for field, rendered in fields.items()
+            if len(rendered) >= 2 and rendered.casefold() in query
+        }
+        if grounded:
+            result[doc_type] = grounded
+    return result
+
+
+def _subject_binding_shape(value: Any) -> List[Dict[str, str]]:
+    """Validate the closed RBD subject-binding schema without trusting it."""
+
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return []
+    result: List[Dict[str, str]] = []
+    for raw in value[:12]:
+        if not isinstance(raw, Mapping):
+            continue
+        doc_type = str(raw.get("doc_type") or "").strip().casefold()
+        kind = str(raw.get("kind") or "").strip().casefold()
+        rendered = _literal_identity_text(
+            raw.get("value") or raw.get("subject") or raw.get("name"),
+            limit=300,
+        )
+        basis = _literal_identity_text(raw.get("basis"), limit=500)
+        if (
+            doc_type == "rbd"
+            and kind in _SUBJECT_BINDING_KINDS
+            and rendered
+            and basis
+        ):
+            result.append(
+                {
+                    "doc_type": "rbd",
+                    "kind": kind,
+                    "value": rendered,
+                    "basis": basis,
+                }
+            )
+    return result
+
+
+def _ground_subject_bindings(
+    value: Any, *, raw_user_query: Any
+) -> List[Dict[str, Any]]:
+    """Authorize subject identity only from a verbatim current-turn span."""
+
+    query = _literal_identity_text(raw_user_query, limit=4000).casefold()
+    if not query:
+        return []
+    result: List[Dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in _subject_binding_shape(value):
+        rendered = item["value"].casefold()
+        basis = item["basis"].casefold()
+        if basis not in query or rendered not in basis:
+            continue
+        identity = (item["kind"], rendered)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        result.append(
+            {
+                **item,
+                "grounded": True,
+                "source": "current_query",
+            }
+        )
+    return result
+
+
+def _parse_topology_dependency(
+    value: Any,
+    *,
+    raw_user_query: Any,
+) -> Dict[str, Any]:
     """Validate the target model's topology-dependent impact classification.
 
     This deliberately consumes a structured semantic decision instead of
@@ -823,17 +856,33 @@ def _parse_topology_dependency(value: Any) -> Dict[str, Any]:
 
     if not isinstance(value, dict):
         return {}
-    raw_required = value.get("required")
-    requested = raw_required is True or str(raw_required or "").strip().casefold() in {
-        "1",
-        "true",
-        "yes",
-    }
+    requested = value.get("required") is True
     subject = " ".join(str(value.get("subject") or "").split())[:300]
     subject_kind = str(value.get("subject_kind") or "").strip().casefold()
     if subject_kind not in _TOPOLOGY_SUBJECT_KINDS:
         subject_kind = "unknown"
     failure_state = " ".join(str(value.get("failure_state") or "").split())[:300]
+    shared_basis = _literal_current_span(value.get("basis"), raw_user_query)
+    subject_basis = _literal_current_span(
+        value.get("subject_basis"), raw_user_query
+    )
+    failure_state_basis = _literal_current_span(
+        value.get("failure_state_basis"), raw_user_query
+    )
+    grounded_subject = bool(
+        subject
+        and (
+            subject in shared_basis
+            or subject in subject_basis
+        )
+    )
+    grounded_failure = bool(
+        failure_state
+        and (
+            failure_state in shared_basis
+            or failure_state in failure_state_basis
+        )
+    )
     aspects: List[str] = []
     for raw_aspect in _bounded_text_list(
         value.get("question_aspects"), limit=5, item_limit=48
@@ -843,21 +892,32 @@ def _parse_topology_dependency(value: Any) -> Dict[str, Any]:
             aspects.append(aspect)
     required = bool(
         requested
-        and subject
+        and grounded_subject
         and subject_kind in _TOPOLOGY_SUBJECT_KINDS
-        and failure_state
+        and grounded_failure
         and aspects
     )
-    return {
+    result = {
         "required": required,
         "subject": subject,
         "subject_kind": subject_kind,
         "failure_state": failure_state,
         "question_aspects": aspects,
     }
+    if required:
+        if shared_basis and subject in shared_basis and failure_state in shared_basis:
+            result["basis"] = shared_basis
+        else:
+            result["subject_basis"] = subject_basis
+            result["failure_state_basis"] = failure_state_basis
+    return result
 
 
-def _parse_diagnostic_closure(value: Any) -> Dict[str, Any]:
+def _parse_diagnostic_closure(
+    value: Any,
+    *,
+    raw_user_query: Any,
+) -> Dict[str, Any]:
     """Validate the target model's current-incident closure contract.
 
     This is deliberately independent from the primary intent: an observed
@@ -867,22 +927,346 @@ def _parse_diagnostic_closure(value: Any) -> Dict[str, Any]:
     knowledge lookup.
     """
 
-    if not isinstance(value, dict):
-        return {"required": False, "reason": ""}
-    requested = value.get("required") is True or str(
-        value.get("required") or ""
-    ).strip().casefold() in {"1", "true", "yes"}
-    reason = " ".join(str(value.get("reason") or "").split())[:360]
-    return {
-        "required": bool(requested and reason),
-        "reason": reason if requested else "",
+    return normalize_diagnostic_closure(
+        value,
+        raw_user_query=raw_user_query,
+    )
+
+
+def _parse_response_mode(
+    value: Any,
+    *,
+    raw_user_query: Any,
+) -> Dict[str, str]:
+    """Validate the target model's response-breadth protocol."""
+
+    return normalize_response_mode(value, raw_user_query=raw_user_query)
+
+
+def _literal_current_span(value: Any, raw_user_query: Any, *, limit: int = 500) -> str:
+    """Return an exact current-turn span, or ``""`` when provenance fails."""
+
+    span = str(value or "").strip()[:limit]
+    query = str(raw_user_query or "")
+    return span if span and span in query else ""
+
+
+def _parse_response_scope(
+    value: Any,
+    basis_value: Any,
+    *,
+    raw_user_query: Any,
+) -> tuple[str, str]:
+    """Validate continuation breadth without inferring it from history use."""
+
+    scope = str(value or "").strip().casefold()
+    if scope == "unknown":
+        return "unknown", ""
+    basis = _literal_current_span(basis_value, raw_user_query)
+    if scope not in _RESPONSE_SCOPES or not basis:
+        return "unknown", ""
+    return scope, basis
+
+
+def _parse_requested_sources(
+    value: Any,
+    *,
+    raw_user_query: Any,
+) -> List[Dict[str, Any]]:
+    """Validate explicit source requests without recognizing source names in text."""
+
+    if not isinstance(value, list):
+        return []
+    result: List[Dict[str, Any]] = []
+    seen: set[tuple[str, str, str, tuple[str, ...]]] = set()
+    for raw in value[:16]:
+        if not isinstance(raw, Mapping):
+            continue
+        doc_type = str(raw.get("doc_type") or "").strip()
+        question_role = str(raw.get("question_role") or "").strip()
+        basis = _literal_current_span(raw.get("basis"), raw_user_query)
+        if (
+            doc_type not in _ICP_DOCUMENT_TYPES
+            or question_role not in _SOURCE_QUESTION_ROLES
+            or not basis
+        ):
+            continue
+        requested_fields = normalize_answer_fields(raw.get("requested_fields"))
+        identity = (doc_type, basis, question_role, tuple(requested_fields))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        result.append(
+            {
+                "doc_type": doc_type,
+                "basis": basis,
+                "requested_fields": requested_fields,
+                "question_role": question_role,
+            }
+        )
+    return result
+
+
+def _parse_coverage_request(
+    value: Any,
+    *,
+    raw_user_query: Any,
+    offered_anchor_ids: Any,
+) -> Optional[Dict[str, Any]]:
+    """Validate a model-authored coverage contract and discard fact claims."""
+
+    if not isinstance(value, Mapping):
+        return None
+    scope = str(value.get("scope") or "").strip()
+    member_kind = str(value.get("member_kind") or "").strip()
+    reference_mode = str(value.get("reference_mode") or "").strip()
+    subject = str(value.get("subject") or "").strip()[:300]
+    basis = _literal_current_span(value.get("basis"), raw_user_query)
+    if (
+        scope not in _COVERAGE_SCOPES
+        or member_kind not in _COLLECTION_MEMBER_KINDS
+        or reference_mode not in _COVERAGE_REFERENCE_MODES
+        or not subject
+        or not basis
+    ):
+        return None
+
+    request: Dict[str, Any] = {
+        "scope": scope,
+        "subject": subject,
+        "member_kind": member_kind,
+        "reference_mode": reference_mode,
+        "basis": basis,
     }
+    if reference_mode == "current_query":
+        if not _literal_current_span(subject, raw_user_query, limit=300):
+            return None
+        return request
+
+    offered = {
+        str(item or "").strip()
+        for item in offered_anchor_ids or []
+        if str(item or "").strip()
+    }
+    selected = [
+        item
+        for item in _bounded_text_list(
+            value.get("selected_anchor_ids"), limit=12, item_limit=160
+        )
+        if item in offered
+    ]
+    if not selected:
+        return None
+    request["selected_anchor_ids"] = selected
+    return request
+
+
+def _parse_architecture_roles(
+    value: Any,
+    *,
+    raw_user_query: Any,
+) -> List[Dict[str, str]]:
+    """Validate role labels and literal object provenance only."""
+
+    if not isinstance(value, list):
+        return []
+    result: List[Dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw in value[:24]:
+        if not isinstance(raw, Mapping):
+            continue
+        role = str(raw.get("role") or "").strip()
+        subject = _literal_current_span(raw.get("subject"), raw_user_query, limit=300)
+        basis = _literal_current_span(raw.get("basis"), raw_user_query)
+        if (
+            role not in _ARCHITECTURE_ROLES
+            or not subject
+            or not basis
+            or subject not in basis
+        ):
+            continue
+        identity = (role, subject)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        result.append({"role": role, "subject": subject, "basis": basis})
+    return result
+
+
+def _parse_comparison_subjects(
+    value: Any,
+    *,
+    raw_user_query: Any,
+) -> List[Dict[str, str]]:
+    """Validate explicitly enumerated comparison subjects."""
+
+    if not isinstance(value, list):
+        return []
+    result: List[Dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw in value[:16]:
+        if not isinstance(raw, Mapping):
+            continue
+        kind = str(raw.get("kind") or "").strip()
+        subject = _literal_current_span(raw.get("value"), raw_user_query, limit=300)
+        basis = _literal_current_span(raw.get("basis"), raw_user_query)
+        if (
+            kind not in _COMPARISON_SUBJECT_KINDS
+            or not subject
+            or not basis
+            or subject not in basis
+        ):
+            continue
+        identity = (kind, subject)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        result.append({"kind": kind, "value": subject, "basis": basis})
+    return result
+
+
+def _parse_missing_input_requirements(
+    value: Any,
+    *,
+    raw_user_query: Any,
+) -> List[Dict[str, str]]:
+    """Validate only the model's semantic request; state owns missing slots."""
+
+    if not isinstance(value, list):
+        return []
+    result: List[Dict[str, str]] = []
+    seen: set[str] = set()
+    for raw in value[:16]:
+        if not isinstance(raw, Mapping):
+            continue
+        slot = str(raw.get("slot") or "").strip()[:160]
+        basis = _literal_current_span(raw.get("basis"), raw_user_query)
+        if not slot or not basis or slot in seen:
+            continue
+        seen.add(slot)
+        result.append({"slot": slot, "basis": basis})
+    return result
+
+
+def _parse_payload_contract(
+    value: Any,
+    *,
+    raw_user_query: Any,
+) -> Optional[Dict[str, str]]:
+    """Validate a direction contract without turning roles into identities."""
+
+    if not isinstance(value, Mapping):
+        return None
+    kind = str(value.get("kind") or "").strip()
+    direction = str(value.get("direction") or "").strip()
+    if kind not in _PAYLOAD_KINDS or direction not in _PAYLOAD_DIRECTIONS:
+        return None
+    source_role = str(value.get("source_role") or "").strip()[:300]
+    destination_role = str(value.get("destination_role") or "").strip()[:300]
+    basis = str(value.get("basis") or "").strip()[:500]
+    if kind == "unknown" and direction == "unknown":
+        if not source_role and not destination_role and not basis:
+            return {
+                "kind": kind,
+                "direction": direction,
+                "source_role": "",
+                "destination_role": "",
+                "basis": "",
+            }
+    if (
+        not source_role
+        or not destination_role
+        or not _literal_current_span(basis, raw_user_query)
+        or source_role not in basis
+        or destination_role not in basis
+    ):
+        return None
+    return {
+        "kind": kind,
+        "direction": direction,
+        "source_role": source_role,
+        "destination_role": destination_role,
+        "basis": basis,
+    }
+
+
+def _machine_missing_input_requirements(
+    model_requirements: Any,
+    state: Mapping[str, Any],
+) -> List[Dict[str, Any]]:
+    """Materialize a missing-input answer solely from state-machine slots.
+
+    The target model supplies only the discourse decision that this turn asks
+    about missing inputs.  It cannot add a slot: at least one grounded model
+    item must name a currently missing slot, after which every current machine
+    slot is returned so the answer cannot silently omit one.
+    """
+
+    modeled = [
+        item for item in (model_requirements or []) if isinstance(item, Mapping)
+    ]
+    if not modeled:
+        return []
+
+    machine: List[tuple[str, str, Any]] = []
+    seen: set[str] = set()
+    for source in ("missing_parameters", "unresolved_identity_slots"):
+        raw_values = state.get(source)
+        values = raw_values if isinstance(raw_values, (list, tuple, set)) else []
+        for raw in values:
+            if isinstance(raw, Mapping):
+                slot = str(raw.get("slot") or raw.get("name") or "").strip()
+            else:
+                slot = str(raw or "").strip()
+            slot = slot[:160]
+            if not slot or slot in seen:
+                continue
+            seen.add(slot)
+            machine.append((slot, source, raw))
+    if not machine:
+        return []
+
+    modeled_by_slot = {
+        str(item.get("slot") or "").strip(): str(item.get("basis") or "").strip()
+        for item in modeled
+        if str(item.get("slot") or "").strip()
+        and str(item.get("basis") or "").strip()
+    }
+    if not set(modeled_by_slot).intersection(slot for slot, _, _ in machine):
+        return []
+    common_basis = next(iter(modeled_by_slot.values()))
+    requirements: List[Dict[str, Any]] = []
+    for slot, source_name, raw in machine:
+        kind = (
+            "calculation_parameter"
+            if source_name == "missing_parameters"
+            else "identity_slot"
+        )
+        raw_identity = raw.get("identity") if isinstance(raw, Mapping) else None
+        identity = normalize_clarification_identity(raw_identity)
+        if identity is None:
+            identity = make_clarification_identity(
+                fields={"parameter" if kind == "calculation_parameter" else "slot": slot}
+            )
+        requirements.append(
+            make_missing_input_requirement(
+                kind=kind,
+                slot=slot,
+                source_kind="state",
+                source_name=source_name,
+                identity=identity,
+                basis=modeled_by_slot.get(slot) or common_basis,
+            )
+        )
+    return unique_contract_items(requirements)
 
 
 def _parse_target_response(
     text: Any,
     *,
     offered_anchor_ids: Any = (),
+    raw_user_query: Any = "",
+    offered_user_context: Any = (),
 ) -> Optional[Dict[str, Any]]:
     """Parse the model-only goal and conversational-reference classification.
 
@@ -905,10 +1289,16 @@ def _parse_target_response(
             targets.append(intent)
 
     topology_dependency = _parse_topology_dependency(
-        parsed.get("topology_dependency")
+        parsed.get("topology_dependency"),
+        raw_user_query=raw_user_query,
     )
     diagnostic_closure = _parse_diagnostic_closure(
-        parsed.get("diagnostic_closure")
+        parsed.get("diagnostic_closure"),
+        raw_user_query=raw_user_query,
+    )
+    response_mode = _parse_response_mode(
+        parsed.get("response_mode"),
+        raw_user_query=raw_user_query,
     )
     if topology_dependency.get("required"):
         # A named path failure with an impact/continuity question has two answer
@@ -957,33 +1347,77 @@ def _parse_target_response(
         )
         if value in offered
     ]
-    coverage_scope = str(parsed.get("coverage_scope") or "").strip()
-    if coverage_scope not in {
-        "complete_collection",
-        "focused_detail",
-        "relation_path",
-        "unknown",
-    }:
-        coverage_scope = "unknown"
-    collection_member_kind = str(
-        parsed.get("collection_member_kind") or ""
-    ).strip()
-    if collection_member_kind not in {
-        "failure_mode",
-        "cause",
-        "component",
-        "module",
-        "subsystem",
-        "record",
-        "unknown",
-    }:
-        collection_member_kind = "unknown"
+    coverage_request = _parse_coverage_request(
+        parsed.get("coverage_request"),
+        raw_user_query=raw_user_query,
+        offered_anchor_ids=offered,
+    )
+    if coverage_request:
+        selected_anchor_ids = _merge_text_lists(
+            selected_anchor_ids,
+            coverage_request.get("selected_anchor_ids") or [],
+            limit=12,
+            item_limit=160,
+        )
+    relation_expansion_present = "relation_expansion" in parsed
+    relation_expansion = normalize_relation_expansion_contract(
+        parsed.get("relation_expansion"),
+        raw_user_query=raw_user_query,
+        offered_anchor_ids=offered,
+    )
+    if relation_expansion_present and not relation_expansion:
+        # A malformed positive object is an explicit fail-closed decision. This
+        # also prevents the later retrieval planner from replacing it with an
+        # ungrounded graph request.
+        relation_expansion = {
+            "needed": False,
+            "relation_kind": "",
+            "reference_mode": "",
+            "basis": "",
+            "selected_anchor_ids": [],
+            "reason": "",
+        }
+    if relation_expansion.get("needed") is True:
+        selected_anchor_ids = _merge_text_lists(
+            selected_anchor_ids,
+            relation_expansion.get("selected_anchor_ids") or [],
+            limit=12,
+            item_limit=160,
+        )
+    # Legacy scalar fields are retained only in the raw model trace.  They are
+    # not authority for a closed set or an expanded answer window: that
+    # requires a grounded ``coverage_request`` object.
+    coverage_scope = "unknown"
+    collection_member_kind = "unknown"
+    if coverage_request:
+        coverage_scope = str(coverage_request["scope"])
+        collection_member_kind = str(coverage_request["member_kind"])
     requested_facets = _bounded_text_list(
         parsed.get("requested_facets"), limit=12
     )
     required_fields = normalize_answer_fields(
         parsed.get("required_answer_fields"),
         requested_facets=requested_facets,
+    )
+    if not coverage_request or coverage_request.get("scope") != "complete_collection":
+        required_fields = [
+            field for field in required_fields
+            if field != "closed_collection_members"
+        ]
+    question_semantics = str(
+        parsed.get("question_semantics") or "unknown"
+    ).strip().casefold()
+    if question_semantics not in _QUESTION_SEMANTICS:
+        question_semantics = "unknown"
+    response_focus: List[str] = []
+    for raw_focus in parsed.get("response_focus") or []:
+        focus = str(raw_focus or "").strip().casefold()
+        if focus in _RESPONSE_FOCUSES and focus not in response_focus:
+            response_focus.append(focus)
+    response_scope, response_scope_basis = _parse_response_scope(
+        parsed.get("response_scope"),
+        parsed.get("response_scope_basis"),
+        raw_user_query=raw_user_query,
     )
     if topology_dependency.get("required"):
         required_fields = normalize_answer_fields(
@@ -1027,8 +1461,9 @@ def _parse_target_response(
         intents=targets,
     )
     if (
-        coverage_scope == "complete_collection"
-        and str(parsed.get("collection_subject") or "").strip()
+        coverage_request
+        and coverage_scope == "complete_collection"
+        and str(coverage_request.get("subject") or "").strip()
         and collection_member_kind in _COLLECTION_MEMBER_KINDS
         and "closed_collection_members" not in required_fields
     ):
@@ -1053,27 +1488,80 @@ def _parse_target_response(
     ]
     if normalized_query_targets and required_fields:
         normalized_query_targets[0]["required_fields"] = list(required_fields)
-    return {
+    result: Dict[str, Any] = {
         "primary_intent": primary,
         "query_targets": normalized_query_targets,
         "contextualized_query": contextualized_query,
         "subjects": _bounded_text_list(parsed.get("subjects"), limit=12),
         "requested_facets": requested_facets,
         "required_answer_fields": required_fields,
+        "question_semantics": question_semantics,
+        "response_focus": response_focus,
+        "response_scope": response_scope,
         "topology_dependency": topology_dependency,
-        "diagnostic_closure": diagnostic_closure,
+        "typed_record_fields": _typed_record_field_shape(
+            parsed.get("typed_record_fields")
+        ),
+        "subject_bindings": _subject_binding_shape(
+            parsed.get("subject_bindings")
+        ),
+        # Grounding against the current raw turn happens only when this target
+        # decision is reconciled with the independent retrieval planner.
+        "calculation_authorizations": normalize_calculation_authorizations(
+            parsed.get("calculation_authorizations")
+        ),
         # This is an LLM-authored discourse contract, not a keyword
         # classifier. Later nodes only use it to decide whether an
         # authoritative query can prove a closed set.
         "coverage_scope": coverage_scope,
-        "collection_subject": " ".join(
-            str(parsed.get("collection_subject") or "").split()
-        )[:300],
+        "collection_subject": (
+            str(coverage_request.get("subject") or "")
+            if coverage_request
+            else ""
+        ),
         "collection_member_kind": collection_member_kind,
         "context_used": context_used,
         "status": context_status,
         "selected_anchor_ids": selected_anchor_ids,
     }
+    if context_used and context_status == "resolved":
+        user_bindings = validate_user_context_bindings(parsed.get("user_context_bindings"), offered_user_context)
+        if user_bindings:
+            result["user_context_bindings"] = user_bindings
+    if diagnostic_closure:
+        result["diagnostic_closure"] = diagnostic_closure
+    if response_mode:
+        result["response_mode"] = response_mode
+    if response_scope_basis:
+        result["response_scope_basis"] = response_scope_basis
+    if "requested_sources" in parsed:
+        result["requested_sources"] = _parse_requested_sources(
+            parsed.get("requested_sources"), raw_user_query=raw_user_query
+        )
+    if "coverage_request" in parsed and coverage_request:
+        result["coverage_request"] = coverage_request
+    if relation_expansion_present:
+        result["relation_expansion"] = relation_expansion
+    if "architecture_roles" in parsed:
+        result["architecture_roles"] = _parse_architecture_roles(
+            parsed.get("architecture_roles"), raw_user_query=raw_user_query
+        )
+    if "comparison_subjects" in parsed:
+        result["comparison_subjects"] = _parse_comparison_subjects(
+            parsed.get("comparison_subjects"), raw_user_query=raw_user_query
+        )
+    if "missing_input_requirements" in parsed:
+        result["missing_input_requirements"] = _parse_missing_input_requirements(
+            parsed.get("missing_input_requirements"),
+            raw_user_query=raw_user_query,
+        )
+    if "payload_contract" in parsed:
+        payload_contract = _parse_payload_contract(
+            parsed.get("payload_contract"), raw_user_query=raw_user_query
+        )
+        if payload_contract:
+            result["payload_contract"] = payload_contract
+    return result
 
 
 def _parse_json_response(text: str) -> dict:
@@ -1122,6 +1610,7 @@ def _parse_json_response(text: str) -> dict:
             "type_keywords": [],
             "query_frame": {},
             "tool_queries": {},
+            "calculation_authorizations": [],
             "tools_plan": [
                 {"tool": "hybrid_search", "reason": "从七类文档执行语义召回"},
             ],
@@ -1147,31 +1636,38 @@ def _prepare_plan_model(model):
         prepared["reasoning"] = False
         prepared["temperature"] = 0.0
         prepared["format"] = "json"
-    return prepared
+    return bounded_model_transport(prepared, PLAN_LLM_TIMEOUT_SECONDS)
 
 
 def _prepare_target_model(model):
-    """Use the same local LLM with a tiny deterministic classification budget."""
+    """Reserve enough bounded output for the complete turn contract."""
 
     if not model:
         return model
     prepared = dict(model)
     prepared["num_predict"] = TARGET_MAX_PREDICTION_TOKENS
+    prepared["max_tokens"] = TARGET_MAX_PREDICTION_TOKENS
     if prepared.get("provider") == "ollama":
         prepared["reasoning"] = False
         prepared["temperature"] = 0.0
         prepared["format"] = "json"
-    return prepared
+    prepared["stream"] = False
+    return bounded_model_transport(prepared, TARGET_LLM_TIMEOUT_SECONDS)
 
 
 def _valid_complete_collection_contract(decision: Any) -> bool:
     if not isinstance(decision, dict):
         return False
+    request = decision.get("coverage_request")
+    if not isinstance(request, Mapping):
+        return False
+    if str(request.get("scope") or "") != "complete_collection":
+        return False
     if str(decision.get("coverage_scope") or "") != "complete_collection":
         return False
-    if not str(decision.get("collection_subject") or "").strip():
+    if not str(request.get("subject") or "").strip():
         return False
-    if str(decision.get("collection_member_kind") or "") not in _COLLECTION_MEMBER_KINDS:
+    if str(request.get("member_kind") or "") not in _COLLECTION_MEMBER_KINDS:
         return False
     return "closed_collection_members" in normalize_answer_fields(
         decision.get("required_answer_fields"),
@@ -1214,19 +1710,6 @@ async def _repair_complete_collection_contract(
     return repaired if _valid_complete_collection_contract(repaired) else None
 
 
-# 用户在前一轮知识查询后问“继续查还需要我提供什么信息”是对上一轮未满足
-# 输入的元问题：正确答案是从对话上下文说明缺失字段，而不是再次检索。
-# 目标分类模型曾把该问句判成实体画像并触发全量工具扫描，答案退化成维
-# 修措施转储。这里用确定性规则识别并短路到澄清路径：不调用规划模型、
-# 不授权任何工具，直接渲染上一轮缺失的最少输入清单。
-_MISSING_INPUT_REQUEST_PATTERN = re.compile(
-    r"(?:最少|至少)?还需要(?:我)?(?:提供|补充|给出)(?:什么|哪些)(?:原始)?"
-    r"(?:信息|资料|输入|线索)"
-)
-
-_MISSING_INPUT_PRIOR_MISS_PATTERN = re.compile(r"未找到|无匹配|未命中|没有找到")
-
-
 def _prior_turn_texts(
     messages: Any, current_query: str
 ) -> Tuple[str, str]:
@@ -1260,21 +1743,6 @@ def _prior_turn_texts(
     return prior_user, prior_assistant
 
 
-# 续轮来源延续。用户在本轮不再引入新资料，而是要求按上一轮已查到的证据
-# 界定结论边界（“只根据已经查到的资料回答：哪些结论能说、哪些不能说”）。
-# 这类边界元问题没有可绑定的新对象，规划模型常漂移成泛型混合检索，把上一
-# 轮实际引用过的权威来源从执行集里丢掉。这里只把上一轮回答真正引用过的
-# doc_type 对应的查询工具延续进本轮执行集，并顺带上一轮已公开的对象身份
-# 作为检索词；不引入相似度、别名或跨文档猜测，也不授权任何计算器。
-_PRIOR_EVIDENCE_DEPENDENCE = re.compile(
-    r"已经?查到|查到.{0,8}资料|上面(?:查到|说的)"
-    r"|只(?:按|根据|依据|按)"
-    r"|已经?得到(?:的)?(?:资料|证据|结果)"
-)
-_BOUNDARY_META_QUESTION = re.compile(
-    r"哪些结论|结论边界|能说|不能说|不能作为|不能给出|不能下结论|边界"
-    r"|能证明|不能证明|证明力|能得出|不能替代|不能代替|证明什么|验证什么"
-)
 _TOOL_BY_DOC_TYPE = {
     str(doc_type): tool for tool, doc_type in DOC_TYPE_BY_TOOL.items()
 }
@@ -1346,205 +1814,190 @@ def _prior_delivered_fields(messages: Any) -> List[str]:
     return []
 
 
-# 追问/独立问题的问题语义形态，只影响答案组织方式（叙述/排序/对比/确认/
-# 处置），不改变工具授权与义务字段集合。它在 answer prompt 中用于规避
-# “字段驱动平铺”：同一字段域下的“为什么重要/最先影响哪个/验证方法”不再被
-# 当作“再枚举一遍字段”处理。判定是确定性关键词，先命中更明确的操作性
-# 语义（排序、确认、对比、处置），再退到解释；未命中时不注入任何提示。
-_SEMANTICS_PATTERNS: Sequence[tuple] = (
-    (
-        "rank",
-        re.compile(
-            r"最先|优先|优先级|按.*顺序|先后|哪个先|最先影响|次序|重要性排序|先看|首当其冲",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "verify",
-        re.compile(
-            r"确认|对不对|对吗|是不是|能否证明|能不能证明|能证明|已证明|证实|核实|复核|验证一下",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "compare",
-        re.compile(
-            r"区别|对比|差异|相同|一样吗|是不是一样|相比|谁更|更能|替代|代替|换成|换个|不能代替",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "act",
-        re.compile(
-            r"怎么处理|怎么办|如何处置|怎么处置|怎么查|怎么修|怎么验证|如何验证|复测|更换|测量|排除|处置办法|处理办法|处理步骤",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "explain",
-        re.compile(
-            r"为什么|为何|什么原因|原理|机制|怎么解释|如何理解|怎么会|导致|根因",
-            re.IGNORECASE,
-        ),
-    ),
-)
+def _selected_anchor_delivery_contracts(
+    messages: Any,
+    dialogue_context: Mapping[str, Any],
+    selected_anchors: Sequence[Mapping[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Read natural goal progress for the selected evidence and source turn.
+
+    Legacy field manifests are read-only compatibility. Progress describes
+    what was delivered or left unresolved, not an engineering fact or a rule
+    to suppress a deeper question about an already discussed dimension.
+    """
+
+    if (
+        not isinstance(messages, list)
+        or not isinstance(dialogue_context, Mapping)
+        or not bool(dialogue_context.get("context_used"))
+        or not selected_anchors
+    ):
+        return []
+
+    selected_evidence_ids = {
+        str(anchor.get("evidence_id") or anchor.get("anchor_id") or "").strip()
+        for anchor in selected_anchors
+        if str(anchor.get("evidence_id") or anchor.get("anchor_id") or "").strip()
+    }
+    selected_record_ids = {
+        str(anchor.get("record_id") or "").strip().upper()
+        for anchor in selected_anchors
+        if str(anchor.get("record_id") or "").strip()
+    }
+    selected_origin_ids = {
+        str(anchor.get("origin_message_id") or "").strip()
+        for anchor in selected_anchors
+        if str(anchor.get("origin_message_id") or "").strip()
+    }
+    selected_subject_ids: set[str] = set(selected_record_ids)
+    for anchor in selected_anchors:
+        fields = anchor.get("answer_fields")
+        if not isinstance(fields, Mapping):
+            continue
+        for key, raw in fields.items():
+            normalized_key = str(key or "").strip().lower()
+            if not (
+                normalized_key.endswith("_id")
+                or normalized_key.endswith("_code")
+                or normalized_key in {"abbreviation", "hmc_code", "record_code"}
+            ):
+                continue
+            values = raw if isinstance(raw, (list, tuple, set)) else [raw]
+            selected_subject_ids.update(
+                str(value or "").strip().upper()
+                for value in values
+                if str(value or "").strip()
+            )
+
+    result: List[Dict[str, Any]] = []
+    seen_entries: set[tuple[str, str]] = set()
+    for message in reversed(messages):
+        if not isinstance(message, Mapping) or message.get("role") != "assistant":
+            continue
+        message_id = str(message.get("message_id") or message.get("id") or "").strip()
+        if selected_origin_ids and message_id not in selected_origin_ids:
+            continue
+        manifest = message.get("answer_delivery_manifest")
+        if not isinstance(manifest, list):
+            continue
+        for raw_entry in manifest:
+            if not isinstance(raw_entry, Mapping):
+                continue
+            is_goal = raw_entry.get("kind") == "goal_delivery"
+            field = str(raw_entry.get("goal" if is_goal else "field") or "").strip()
+            entry_key = (message_id, field)
+            if not field or entry_key in seen_entries:
+                continue
+            if is_goal and raw_entry.get("status") not in {"answered", "partial", "unanswered"}:
+                continue
+            evidence_ids = {
+                str(value or "").strip()
+                for value in (raw_entry.get("evidence_ids") or [])
+                if str(value or "").strip()
+            }
+            record_ids = {
+                str(value or "").strip().upper()
+                for value in (raw_entry.get("record_ids") or [])
+                if str(value or "").strip()
+            }
+            subject_ids = {
+                str(value or "").strip().upper()
+                for value in (raw_entry.get("subject_ids") or [])
+                if str(value or "").strip()
+            }
+            matches = bool(evidence_ids & selected_evidence_ids)
+            if is_goal:
+                # An unresolved goal can have no engineering citation. Keep
+                # it only from the very turn selected now, never as a fact.
+                matches = matches or (not evidence_ids and message_id in selected_origin_ids)
+            else:
+                matches = matches or bool(record_ids & selected_record_ids or subject_ids & selected_subject_ids)
+            if not matches:
+                continue
+            entry = dict(raw_entry)
+            if message_id:
+                entry["origin_message_id"] = message_id
+            result.append(entry)
+            seen_entries.add(entry_key)
+    return result
 
 
-def _detect_question_semantics(query: Any) -> str:
-    text = " ".join(str(query or "").split())
-    if not text:
-        return ""
-    for semantics, pattern in _SEMANTICS_PATTERNS:
-        if pattern.search(text):
-            return semantics
-    return ""
+def _contextual_prior_delivered_fields(
+    messages: Any,
+    dialogue_context: Mapping[str, Any],
+    selected_anchors: Sequence[Mapping[str, Any]] | None = None,
+) -> List[str]:
+    """Return prior delivery metadata only for a resolved continuation.
+
+    Field names shape a follow-up but do not identify an engineering object by
+    themselves. Carrying them into an unrelated new question could suppress a
+    legitimately requested field merely because the preceding turn happened
+    to answer the same dimension.
+    """
+
+    if not isinstance(dialogue_context, Mapping) or not bool(
+        dialogue_context.get("context_used")
+    ):
+        return []
+    if selected_anchors is not None:
+        return [
+            str(entry.get("field") or "").strip()
+            for entry in _selected_anchor_delivery_contracts(
+                messages, dialogue_context, selected_anchors
+            )
+            if str(entry.get("field") or "").strip()
+        ]
+    # Compatibility for pre-manifest callers and stored sessions. Production
+    # planning always supplies ``selected_anchors`` and therefore never applies
+    # a field-only delivery to a different object.
+    return _prior_delivered_fields(messages)
 
 
 def _continuation_source_tools(
     *,
     query: str,
     messages: Any,
-    prior_doc_types: Sequence[str],
+    prior_doc_types: Sequence[str] = (),
+    selected_anchors: Sequence[Mapping[str, Any]] = (),
+    context_used: bool = False,
+    response_focus: Sequence[str] = (),
+    current_requested_sources: Sequence[Mapping[str, Any]] = (),
 ) -> List[str]:
-    """Source tools to keep from the prior answer's cited document families."""
+    """Source tools for a boundary follow-up on explicitly selected citations.
 
-    if not prior_doc_types:
+    The nearest answer can cite several unrelated families. Only anchors the
+    target stage selected for this turn may be re-read; the prior answer's whole
+    citation set, prose, and document list are never execution authority.
+    """
+
+    # Compatibility parameters remain for saved tests/callers, but neither raw
+    # prose nor an unscoped prior document list grants source access.
+    del query, messages, prior_doc_types
+    # 用户本轮的结构化来源合同优先，不叠加延续来源。
+    if current_requested_sources:
         return []
-    # 用户本轮已点名新来源时以用户为准，不叠加延续来源。
-    if detect_explicit_source_tools(query):
+    if context_used is not True or not selected_anchors:
         return []
-    text = str(query or "")
-    # 只有问句本身把回答依据限定为上一轮已查证据、或要求给出结论边界时
-    # 才延续来源；单纯换了考察维度（历史/维修等）不会因上一轮引用而自动
-    # 附带旧来源，避免把新问题扩成上一批资料的转储。
-    if not (
-        _PRIOR_EVIDENCE_DEPENDENCE.search(text)
-        or _BOUNDARY_META_QUESTION.search(text)
-    ):
+    # The target model, rather than a fixed phrase list, decides whether this
+    # is a source-capability/boundary follow-up.  A plain change of dimension
+    # (history, repair, impact, ...) must not drag the old source family along.
+    focuses = {
+        str(value or "").strip() for value in response_focus
+        if str(value or "").strip()
+    }
+    if not focuses & {"source_capability", "source_limitation"}:
         return []
-    tools = [
-        _TOOL_BY_DOC_TYPE.get(doc_type)
-        for doc_type in prior_doc_types
-        if doc_type in _TOOL_BY_DOC_TYPE
-    ]
-    return list(dict.fromkeys(tool for tool in tools if tool))
-
-
-def _missing_input_guidance_question(query: str, messages: Any) -> str:
-    """Render the minimum user inputs still missing for the prior turn."""
-
-    if not _MISSING_INPUT_REQUEST_PATTERN.search(str(query or "")):
-        return ""
-    if not _has_prior_knowledge_turn(messages, query):
-        return ""
-    prior_user, prior_assistant = _prior_turn_texts(messages, query)
-    components = extract_hmc_components(prior_user) if prior_user else {}
-    requested: List[str] = []
-    if components:
-        known = "、".join(
-            f"{label} {components[key]}"
-            for label, key in (("LCN", "lcn"), ("HAMC", "hamc"), ("HSC", "hsc"))
-            if str(components.get(key) or "")
+    cited_tools = [
+        _TOOL_BY_DOC_TYPE.get(str(anchor.get("doc_type") or "").strip())
+        for anchor in selected_anchors
+        if isinstance(anchor, Mapping)
+        and any(
+            str(anchor.get(key) or "").strip()
+            for key in ("anchor_id", "record_id", "evidence_id")
         )
-        missing = [
-            label
-            for label, key in (("LCN", "lcn"), ("HAMC", "hamc"), ("HSC", "hsc"))
-            if not str(components.get(key) or "")
-        ]
-        if missing:
-            requested.append(
-                "完整 HMC 故障码（当前已提供 "
-                + (known or "部分字段")
-                + "，还缺 "
-                + "、".join(missing)
-                + "）"
-            )
-        else:
-            requested.append("HMC 故障码字段已齐全，请核对字段值与原始告警是否一致")
-    else:
-        requested.append("具体模块或功能名称（或 FUNC/HMC 业务编号）")
-        requested.append("完整 HMC 故障码（LCN+HAMC+HSC）")
-    requested.append("原始告警或故障现象的完整文字")
-    requested.append("适用构型或机型")
-    lines = ["为了继续排查，请补充以下最少信息："]
-    lines.extend(f"- {item}；" for item in requested)
-    guidance = "\n".join(lines).rstrip("；") + "。"
-    if prior_assistant and _MISSING_INPUT_PRIOR_MISS_PATTERN.search(prior_assistant):
-        guidance += "\n上一轮按现有字段查询未命中，请同时核对已提供字段是否抄录准确。"
-    return guidance
-
-
-def _missing_input_guidance_plan(
-    state: Mapping[str, Any],
-    guidance: str,
-    conversation_anchors: List[Dict[str, Any]],
-    memory_context: str,
-) -> Dict[str, Any]:
-    """Plan update for a missing-input meta question: no retrieval this turn."""
-
-    query = str(state.get("query") or "")
-    target = {
-        "intent": "missing_input_guidance",
-        "source": "deterministic",
-        "reason": "用户询问继续排查所需的最少输入，本轮直接说明缺失字段",
-    }
-    return {
-        "scope_route": "clarification",
-        "clarification_question": guidance,
-        "clarification_kind": "missing_input",
-        "intent": "missing_input_guidance",
-        "query_targets": [target],
-        "calculation_requests": [],
-        "relation_expansion": {"needed": False, "reason": "本轮不执行工程资料检索"},
-        "answer_mode": "clarification",
-        "rewritten_query": query,
-        "entity_keywords": [],
-        "type_keywords": [],
-        "query_frame": {},
-        "requested_source_tools": [],
-        "dialogue_context": {
-            "contextualized_query": query,
-            "subjects": [],
-            "requested_facets": [],
-            "required_answer_fields": [],
-            "topology_dependency": {},
-            "diagnostic_closure": {"required": False, "reason": ""},
-            "coverage_scope": "unknown",
-            "collection_subject": "",
-            "collection_member_kind": "unknown",
-            "context_used": True,
-            "status": "resolved",
-            "selected_anchor_ids": [],
-        },
-        "conversation_anchors": conversation_anchors,
-        "selected_conversation_anchors": [],
-        "task_profile": {
-            "primary_goal": "missing_input_guidance",
-            "goals": ["missing_input_guidance"],
-            "entities": [],
-            "requested_facets": [],
-            "required_answer_fields": [],
-            "coverage_scope": "unknown",
-            "collection_subject": "",
-            "collection_member_kind": "unknown",
-            "relation_required": False,
-            "diagnostic_closure_required": False,
-            "dialogue_context_used": True,
-            "context_status": "resolved",
-            "selected_anchor_count": 0,
-            "requested_source_tools": [],
-        },
-        "normalized_terms": [],
-        "tool_queries": {},
-        "tools_plan": [],
-        "authorized_tools": [],
-        "allowed_tools": [],
-        "authorized_doc_types": [],
-        "hybrid_doc_types": [],
-        "plan_reasoning": "继续排查所需输入是对话元问题：按上一轮缺失字段直接说明，未启动检索",
-        "memory_context": memory_context,
-        "iteration": int(state.get("iteration") or 0) + 1,
-    }
+    ]
+    cited_tools = list(dict.fromkeys(tool for tool in cited_tools if tool))
+    return cited_tools
 
 
 async def _classify_explicit_targets(
@@ -1553,6 +2006,7 @@ async def _classify_explicit_targets(
     history: str,
     conversation_anchors: List[Dict[str, Any]],
     model: Optional[Dict[str, Any]],
+    user_context: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[Dict[str, Any]]:
     prompt = TARGET_PROMPT.format(
         query=query,
@@ -1561,30 +2015,59 @@ async def _classify_explicit_targets(
             conversation_anchors, ensure_ascii=False, default=str
         ),
     )
+    prompt += "\n\n" + document_semantics_prompt()
+    if user_context:
+        prompt += ("\n\n可引用的先前用户原始输入（未确认、不是证据或计算授权）：\n"
+                   + json.dumps(user_context, ensure_ascii=False)
+                   + '\n当本轮仍指向这些输入、但此前未命中记录或没有引用锚点时，可设置context_used=true、context_status=resolved，并输出user_context_bindings=[{"message_id":"给出的消息ID","quote":"相关用户消息中的连续原文"}]。'
+                   "只选择本轮仍适用的输入；不选择助手结论、不复制旧计算授权、不跨话题自动继承。"
+                   "用户追问还需哪些原始资料时，仍保留原待查对象，而非改查不相干故障。无法明确指代时保持缺少或歧义状态。")
+    offered_anchor_ids = [
+        str(item.get("anchor_id") or "") for item in conversation_anchors
+        if isinstance(item, dict) and str(item.get("anchor_id") or "")
+    ]
+    decision = None
+    deadline = time.monotonic() + TARGET_LLM_TIMEOUT_SECONDS
     try:
-        response = await asyncio.wait_for(
-            asyncio.to_thread(
-                llm_service.call_model,
-                [{"role": "user", "content": prompt}],
-                _prepare_target_model(model),
-            ),
-            timeout=TARGET_LLM_TIMEOUT_SECONDS,
-        )
+        for attempt in range(2):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise asyncio.TimeoutError
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    llm_service.call_model,
+                    [{"role": "user", "content": prompt}],
+                    bounded_model_transport(_prepare_target_model(model), remaining),
+                    template_name="explicit_target_contract",
+                ),
+                timeout=remaining,
+            )
+            decision = _parse_target_response(
+                response, offered_anchor_ids=offered_anchor_ids, raw_user_query=query,
+                offered_user_context=user_context or [],
+            )
+            if decision:
+                break
+            _record_target_failure(f"invalid_contract; response_chars={len(str(response))}")
+            raw_response = str(response or "").strip()
+            if attempt or not raw_response.startswith("{"):
+                break
+            # Retry malformed form within the original budget, never infer a
+            # permission from planner prose or a vocabulary match.
+            prompt += ("\n合同校正：上次输出没有有效信息目标。请重新返回完整JSON，"
+                       "primary_intent和targets的值必须来自：" + ", ".join(sorted(_TARGET_INTENTS))
+                       + "。字段名称、计算操作名称不是意图值，不能放入targets。"
+                       "计算请求只在calculation_authorizations中按operation/mode/target/basis表达；"
+                       "指代选择仍只从上方anchor_id选取。省略未使用的可选对象，避免复述规则以免截断。"
+                       "仍只依据同一个原始问题和同一组候选锚点判断，不增加用户未要求的计算授权。")
     except asyncio.TimeoutError:
         logger.warning("Explicit target classification exceeded %.1fs", TARGET_LLM_TIMEOUT_SECONDS)
+        _record_target_failure("timeout")
         return None
     except Exception as exc:
         logger.warning("Explicit target classification failed: %s", exc)
+        _record_target_failure(type(exc).__name__)
         return None
-    offered_anchor_ids = [
-        str(item.get("anchor_id") or "")
-        for item in conversation_anchors
-        if isinstance(item, dict) and str(item.get("anchor_id") or "")
-    ]
-    decision = _parse_target_response(
-        response,
-        offered_anchor_ids=offered_anchor_ids,
-    )
     if decision:
         # The small target model is allowed to recognize information goals,
         # but it cannot invent an exhaustive-answer obligation from a broad
@@ -1623,6 +2106,15 @@ async def _classify_explicit_targets(
     return decision
 
 
+def _record_target_failure(detail: str) -> None:
+    logger.warning("Target contract unavailable: %s", detail)
+    try:
+        from backend.agent.tracing import record_degradation
+        record_degradation("target_contract", detail=detail)
+    except Exception:
+        logger.debug("Unable to record target-contract degradation", exc_info=True)
+
+
 async def _generate_plan_response(prompt: str, model, stream_queue) -> str:
     messages = [{"role": "user", "content": prompt}]
     if stream_queue is None:
@@ -1636,6 +2128,51 @@ async def _generate_plan_response(prompt: str, model, stream_queue) -> str:
         except Exception:
             pass
     return response
+
+
+def _bind_retrieval_plan(parsed, target, dialogue, query):
+    """Project retrieval hints onto the single validated semantic contract.
+
+    Empty target fields are meaningful: a query writer cannot fill them with
+    different goals, identities or permissions. Its observation slots still
+    undergo raw-user provenance validation in build_query_frame.
+    """
+    if not target:
+        fallback = _parse_json_response("")
+        fallback["rewritten_query"] = query
+        if parsed.get("_planner_failed") and parsed.get("reasoning"):
+            fallback["reasoning"] = parsed["reasoning"]
+        return fallback
+    result = {key: parsed.get(key) for key in (
+        "tool_queries", "tools_plan", "type_keywords", "reasoning", "_planner_failed",
+    )}
+    raw_frame = parsed.get("query_frame")
+    raw_frame = raw_frame if isinstance(raw_frame, Mapping) else {}
+    frame = {key: raw_frame[key] for key in (
+        "symptoms", "operating_stage", "operating_stage_basis", "temporal_pattern",
+        "temporal_pattern_basis", "constraints", "normalized_terms",
+    ) if key in raw_frame}
+    for key in (
+        "requested_facets", "required_answer_fields", "question_semantics",
+        "response_focus", "response_scope", "response_scope_basis",
+        "coverage_request", "coverage_scope", "collection_subject",
+        "collection_member_kind", "topology_dependency", "diagnostic_closure",
+        "response_mode", "typed_record_fields", "subject_bindings",
+        "requested_sources", "architecture_roles", "comparison_subjects",
+        "missing_input_requirements", "payload_contract",
+    ):
+        if key in dialogue:
+            frame[key] = dialogue[key]
+    frame["entities"] = list(dialogue.get("subjects") or [])
+    result.update(
+        intent=target["primary_intent"], query_targets=target["query_targets"],
+        rewritten_query=dialogue.get("contextualized_query") or query,
+        entity_keywords=list(dialogue.get("subjects") or []),
+        query_frame=frame,
+        relation_expansion=dialogue.get("relation_expansion") or {},
+        calculation_authorizations=target.get("calculation_authorizations") or [],
+    )
+    return result
 
 
 async def plan_node(state, config=None) -> Dict:
@@ -1676,27 +2213,25 @@ async def plan_node(state, config=None) -> Dict:
 
     formatted_history = _format_history(messages)
     conversation_anchors = _offered_conversation_anchors(messages)
-    missing_input_guidance = _missing_input_guidance_question(query, messages)
-    if missing_input_guidance:
-        # 元问题短路：本轮答案就是缺失输入清单本身，无需目标分类、检索
-        # 改写或任何工具授权。scope_router 已给出 knowledge_base 路由，
-        # 这里走既有 clarification 通道直接回答。
-        return _missing_input_guidance_plan(
-            state, missing_input_guidance, conversation_anchors, memory_context
-        )
     explicit_target_decision = await _classify_explicit_targets(
         query=query,
         history=formatted_history,
         conversation_anchors=conversation_anchors,
         model=model,
+        user_context=offered_user_inputs(state),
     )
     dialogue_context: Dict[str, Any] = {
         "contextualized_query": query,
         "subjects": [],
         "requested_facets": [],
         "required_answer_fields": [],
+        "question_semantics": "unknown",
+        "response_focus": [],
+        "response_scope": "unknown",
+        "response_scope_basis": "",
         "topology_dependency": {},
-        "diagnostic_closure": {"required": False, "reason": ""},
+        "typed_record_fields": {},
+        "subject_bindings": [],
         "coverage_scope": "unknown",
         "collection_subject": "",
         "collection_member_kind": "unknown",
@@ -1717,11 +2252,26 @@ async def plan_node(state, config=None) -> Dict:
             "required_answer_fields": list(
                 explicit_target_decision.get("required_answer_fields") or []
             ),
+            "question_semantics": str(
+                explicit_target_decision.get("question_semantics") or "unknown"
+            ),
+            "response_focus": list(
+                explicit_target_decision.get("response_focus") or []
+            ),
+            "response_scope": str(
+                explicit_target_decision.get("response_scope") or "unknown"
+            ),
+            "response_scope_basis": str(
+                explicit_target_decision.get("response_scope_basis") or ""
+            ),
             "topology_dependency": dict(
                 explicit_target_decision.get("topology_dependency") or {}
             ),
-            "diagnostic_closure": dict(
-                explicit_target_decision.get("diagnostic_closure") or {}
+            "typed_record_fields": dict(
+                explicit_target_decision.get("typed_record_fields") or {}
+            ),
+            "subject_bindings": list(
+                explicit_target_decision.get("subject_bindings") or []
             ),
             "coverage_scope": str(
                 explicit_target_decision.get("coverage_scope") or "unknown"
@@ -1738,20 +2288,29 @@ async def plan_node(state, config=None) -> Dict:
                 explicit_target_decision.get("selected_anchor_ids") or []
             ),
         }
-    selected_anchor_ids = set(dialogue_context["selected_anchor_ids"])
-    initially_selected_anchors = [
-        dict(item)
-        for item in conversation_anchors
-        if str(item.get("anchor_id") or "") in selected_anchor_ids
-    ]
-    collection_followup_safety = _apply_collection_followup_safety(
-        query=query,
-        messages=messages,
-        dialogue_context=dialogue_context,
-        selected_anchors=initially_selected_anchors,
-    )
-    # The safety resolver may select every cited member from one collection
-    # after the semantic classifier overlooked the follow-up reference.
+        for key in (
+            "requested_sources",
+            "coverage_request",
+            "architecture_roles",
+            "comparison_subjects",
+            "missing_input_requirements",
+            "payload_contract",
+            "diagnostic_closure",
+            "response_mode",
+            "relation_expansion",
+            "user_context_bindings",
+        ):
+            if key not in explicit_target_decision:
+                continue
+            value = explicit_target_decision[key]
+            dialogue_context[key] = (
+                dict(value) if isinstance(value, Mapping) else list(value or [])
+            )
+    # Selected citation IDs come only from the target model and are already
+    # intersected with the server-offered set. Do not complete a diagram family
+    # from a count phrase in the user's prose: any additional FTA/RBD member
+    # must itself be named by ``selected_anchor_ids`` (or a future typed group
+    # contract with explicit origin/document/cardinality validation).
     selected_anchor_ids = set(dialogue_context["selected_anchor_ids"])
     selected_conversation_anchors = [
         dict(item)
@@ -1778,6 +2337,7 @@ async def plan_node(state, config=None) -> Dict:
         memory=memory_context or "无",
         system_prompt=system_prompt or "ICP 故障诊断",
     )
+    prompt += "\n\n" + document_semantics_prompt()
 
     stream_queue = None
     if config and isinstance(config, dict):
@@ -1800,177 +2360,53 @@ async def plan_node(state, config=None) -> Dict:
         parsed["rewritten_query"] = query
         parsed["reasoning"] = f"规划模型不可用，采用 ICP 默认混合检索流程：{exc}"
 
-    if explicit_target_decision:
-        parsed["intent"] = explicit_target_decision["primary_intent"]
-        parsed["query_targets"] = explicit_target_decision["query_targets"]
-
-    if explicit_target_decision or collection_followup_safety:
-        # A contextualized follow-up is safer than sending an isolated pronoun
-        # such as "它" or "这种异常" to every backend. It remains a
-        # retrieval hint: PostgreSQL/source evidence must still prove all facts.
-        if dialogue_context["contextualized_query"]:
-            parsed["rewritten_query"] = dialogue_context["contextualized_query"]
-
-        planner_frame = (
-            dict(parsed.get("query_frame"))
-            if isinstance(parsed.get("query_frame"), dict)
-            else {}
-        )
-        planner_frame["entities"] = _merge_text_lists(
-            dialogue_context["subjects"],
-            planner_frame.get("entities"),
-            limit=16,
-        )
-        target_facets = list(dialogue_context.get("requested_facets") or [])
-        planner_facets = list(planner_frame.get("requested_facets") or [])
-        planner_frame["requested_facets"] = target_facets or planner_facets
-        target_required_fields = normalize_answer_fields(
-            dialogue_context.get("required_answer_fields") or [],
-            requested_facets=target_facets,
-        )
-        # The target classifier owns the user-facing answer contract.  The
-        # retrieval planner may choose queries and tools, but cannot broaden
-        # “list the modes” into causes, impacts or repair merely because those
-        # columns are available in the same row.  Its fields are used only if
-        # the target stage could not establish any explicit dimension.
-        planner_frame["required_answer_fields"] = (
-            target_required_fields
-            if target_required_fields
-            else normalize_answer_fields(
-                planner_frame.get("required_answer_fields") or [],
-                requested_facets=planner_facets,
-            )
-        )
-        # The compact target classifier is responsible for the user-facing
-        # coverage contract. A larger retrieval planner may choose a more
-        # convenient Top-K recall wording, but must not silently weaken an
-        # explicit "is this all?" obligation into a focused answer.
-        target_coverage_scope = str(
-            dialogue_context.get("coverage_scope") or "unknown"
-        )
-        if target_coverage_scope != "unknown":
-            planner_frame["coverage_scope"] = target_coverage_scope
-        collection_subject = str(
-            dialogue_context.get("collection_subject") or ""
-        ).strip()
-        if collection_subject:
-            planner_frame["collection_subject"] = collection_subject
-        collection_member_kind = str(
-            dialogue_context.get("collection_member_kind") or "unknown"
-        ).strip()
-        if collection_member_kind and collection_member_kind != "unknown":
-            planner_frame["collection_member_kind"] = collection_member_kind
-        topology_dependency = dialogue_context.get("topology_dependency")
-        if isinstance(topology_dependency, dict) and topology_dependency.get("required"):
-            # This object has already passed ``_parse_topology_dependency``.
-            # Keep the typed subject in the durable query frame so the answer
-            # layer can distinguish "this RBD contains PSU-A" from "this
-            # success criterion actually describes PSU-A's redundant group".
-            planner_frame["topology_dependency"] = dict(topology_dependency)
-        diagnostic_closure = dialogue_context.get("diagnostic_closure")
-        if isinstance(diagnostic_closure, dict) and diagnostic_closure.get("required"):
-            planner_frame["diagnostic_closure"] = dict(diagnostic_closure)
-        parsed["query_frame"] = planner_frame
-        parsed["entity_keywords"] = _merge_text_lists(
-            dialogue_context["subjects"],
-            parsed.get("entity_keywords"),
-            limit=16,
-        )
-        if parsed.get("_planner_failed"):
-            parsed["reasoning"] = "检索改写不可用，已按已解析的本轮目标使用原问题召回"
+    # Only retrieval hints survive the query writer. Semantic ownership never
+    # falls through to a second model, even when target parsing is unavailable.
+    parsed = _bind_retrieval_plan(parsed, explicit_target_decision, dialogue_context, query)
 
     final_frame = (
         dict(parsed.get("query_frame"))
         if isinstance(parsed.get("query_frame"), dict)
         else {}
     )
-    final_collection_decision = {
-        "primary_intent": str(parsed.get("intent") or "hybrid"),
-        "query_targets": list(parsed.get("query_targets") or []),
-        "contextualized_query": str(parsed.get("rewritten_query") or query),
-        "subjects": list(final_frame.get("entities") or []),
-        "requested_facets": list(final_frame.get("requested_facets") or []),
-        "required_answer_fields": list(
-            final_frame.get("required_answer_fields") or []
-        ),
-        "coverage_scope": str(final_frame.get("coverage_scope") or "unknown"),
-        "collection_subject": str(final_frame.get("collection_subject") or ""),
-        "collection_member_kind": str(
-            final_frame.get("collection_member_kind") or "unknown"
-        ),
-    }
-    # The retrieval planner is free to use a broad query frame, but it cannot
-    # invent an exhaustive-answer promise.  Target classification normally
-    # performs this guard earlier; repeat it here for planner-only/fallback
-    # turns so a spurious ``complete_collection`` cannot suppress ordinary
-    # cause, repair and history routing.
-    final_collection_decision = _downgrade_unrequested_collection_contract(
-        final_collection_decision,
-        query=query,
+    validated_coverage_request = _parse_coverage_request(
+        final_frame.get("coverage_request"),
+        raw_user_query=query,
+        offered_anchor_ids=[
+            str(item.get("anchor_id") or "")
+            for item in conversation_anchors
+            if isinstance(item, Mapping) and str(item.get("anchor_id") or "")
+        ],
     )
-    final_collection_decision = _promote_explicit_architecture_collection(
-        final_collection_decision,
-        query=query,
-    )
-    if final_collection_decision["coverage_scope"] != "complete_collection":
-        final_frame["coverage_scope"] = final_collection_decision["coverage_scope"]
-        final_frame["collection_subject"] = ""
-        final_frame["collection_member_kind"] = "unknown"
-        final_frame["required_answer_fields"] = list(
-            final_collection_decision["required_answer_fields"]
+    if validated_coverage_request:
+        final_frame["coverage_request"] = validated_coverage_request
+        final_frame["coverage_scope"] = str(validated_coverage_request["scope"])
+        final_frame["collection_subject"] = str(
+            validated_coverage_request["subject"]
         )
-        parsed["query_frame"] = final_frame
-    if (
-        final_collection_decision["coverage_scope"] == "complete_collection"
-        and not _valid_complete_collection_contract(final_collection_decision)
-    ):
-        repaired = await _repair_complete_collection_contract(
-            query=query,
-            history=formatted_history,
-            decision=final_collection_decision,
-            offered_anchor_ids=[
-                str(item.get("anchor_id") or "")
-                for item in conversation_anchors
-                if isinstance(item, dict) and str(item.get("anchor_id") or "")
-            ],
-            model=model,
+        final_frame["collection_member_kind"] = str(
+            validated_coverage_request["member_kind"]
         )
-        if repaired:
-            parsed["intent"] = repaired["primary_intent"]
-            parsed["query_targets"] = repaired["query_targets"]
-            parsed["rewritten_query"] = (
-                repaired.get("contextualized_query")
-                or parsed.get("rewritten_query")
-                or query
-            )
-            final_frame["entities"] = _merge_text_lists(
-                repaired.get("subjects"), final_frame.get("entities"), limit=16
-            )
-            final_frame["requested_facets"] = list(
-                repaired.get("requested_facets") or []
-            )
-            final_frame["required_answer_fields"] = list(
-                repaired.get("required_answer_fields") or []
-            )
-            final_frame["coverage_scope"] = "complete_collection"
-            final_frame["collection_subject"] = str(
-                repaired.get("collection_subject") or ""
-            )
-            final_frame["collection_member_kind"] = str(
-                repaired.get("collection_member_kind") or "unknown"
-            )
-            parsed["entity_keywords"] = _merge_text_lists(
-                repaired.get("subjects"), parsed.get("entity_keywords"), limit=16
-            )
-            parsed["query_frame"] = final_frame
-        else:
+        if validated_coverage_request["scope"] == "complete_collection":
             final_frame["required_answer_fields"] = normalize_answer_fields(
                 [
                     *(final_frame.get("required_answer_fields") or []),
                     "closed_collection_members",
                 ]
             )
-            parsed["query_frame"] = final_frame
+    else:
+        final_frame.pop("coverage_request", None)
+        final_frame["coverage_scope"] = "unknown"
+        final_frame["collection_subject"] = ""
+        final_frame["collection_member_kind"] = "unknown"
+        final_frame["required_answer_fields"] = [
+            field
+            for field in normalize_answer_fields(
+                final_frame.get("required_answer_fields") or []
+            )
+            if field != "closed_collection_members"
+        ]
+    parsed["query_frame"] = final_frame
 
     # Keep the planner's frame coherent with its structured targets before the
     # focused-tool policy runs.  In particular, an older planner may preserve a
@@ -1981,37 +2417,60 @@ async def plan_node(state, config=None) -> Dict:
         if isinstance(parsed.get("query_frame"), dict)
         else {}
     )
-    # Preserve a history obligation stated in the user's own turn even when
-    # the compact target classifier chose only the primary cause/impact goal.
-    # Without this bridge the adaptive completion stage sees no history slots,
-    # so a question such as “以前的相近案例最后怎么验证恢复” can silently
-    # return only current FMECA/HMC candidates.  This adds the explicit
-    # information target; it does not manufacture a historical match.
-    if _query_explicitly_requests_history(query):
-        raw_targets = parsed.get("query_targets")
-        targets = [
-            dict(item) for item in (raw_targets or [])
-            if isinstance(item, dict)
-        ]
-        if not any(str(item.get("intent") or "") == "history_query" for item in targets):
-            targets.append(
-                {
-                    "intent": "history_query",
-                    "source": "explicit_history_request",
-                    "reason": "用户明确询问相近案例、过去处理或验证结果",
-                }
-            )
-            parsed["query_targets"] = targets
-        policy_frame["required_answer_fields"] = normalize_answer_fields(
-            [
-                *(policy_frame.get("required_answer_fields") or []),
-                "history_time",
-                "history_root",
-                "history_steps",
-                "history_solution",
-                "history_result",
-            ]
+    # Retrieval-planner JSON is untrusted even when the target stage is absent.
+    # Keep only field-level closure and response breadth contracts grounded in
+    # this exact turn; invalid legacy flags do not cross the policy boundary.
+    validated_diagnostic_closure = normalize_diagnostic_closure(
+        policy_frame.get("diagnostic_closure"),
+        raw_user_query=query,
+    )
+    validated_response_mode = normalize_response_mode(
+        policy_frame.get("response_mode"),
+        raw_user_query=query,
+    )
+    policy_frame.pop("diagnostic_closure", None)
+    policy_frame.pop("response_mode", None)
+    if validated_diagnostic_closure:
+        policy_frame["diagnostic_closure"] = validated_diagnostic_closure
+    if validated_response_mode:
+        policy_frame["response_mode"] = validated_response_mode
+    # Open discourse dimensions come from the structured target classifier.
+    # They are validated enums, not a keyword match over the user's wording.
+    response_focus = [
+        str(value or "").strip()
+        for value in (
+            policy_frame.get("response_focus")
+            or dialogue_context.get("response_focus")
+            or []
         )
+        if str(value or "").strip() in _RESPONSE_FOCUSES
+    ]
+    question_semantics = str(
+        policy_frame.get("question_semantics")
+        or dialogue_context.get("question_semantics")
+        or "unknown"
+    ).strip().casefold()
+    if question_semantics not in _QUESTION_SEMANTICS:
+        question_semantics = "unknown"
+    response_scope, response_scope_basis = _parse_response_scope(
+        policy_frame.get("response_scope")
+        or dialogue_context.get("response_scope"),
+        policy_frame.get("response_scope_basis")
+        or dialogue_context.get("response_scope_basis"),
+        raw_user_query=query,
+    )
+    # ``response_focus`` is an answer-organization contract. It must not be
+    # converted into evidence fields here: the target model owns the explicit
+    # ``required_answer_fields`` list, and diagnostic additions must arrive via
+    # grounded ``diagnostic_closure.required_dimensions``.
+    if response_focus:
+        policy_frame["response_focus"] = response_focus
+    policy_frame["question_semantics"] = question_semantics
+    policy_frame["response_scope"] = response_scope
+    if response_scope_basis:
+        policy_frame["response_scope_basis"] = response_scope_basis
+    else:
+        policy_frame.pop("response_scope_basis", None)
     policy_intents = [
         str(item.get("intent") or "")
         for item in (parsed.get("query_targets") or [])
@@ -2026,18 +2485,37 @@ async def plan_node(state, config=None) -> Dict:
     )
     parsed["query_frame"] = policy_frame
 
-    raw_relation_expansion = parsed.get("relation_expansion")
-    raw_relation_needed = (
-        raw_relation_expansion.get("needed")
-        if isinstance(raw_relation_expansion, dict)
-        else False
+    selected_relation_anchor_ids = [
+        str(anchor.get("anchor_id") or "").strip()
+        for anchor in selected_conversation_anchors
+        if isinstance(anchor, Mapping) and str(anchor.get("anchor_id") or "").strip()
+    ]
+    # Retrieval hints never supply missing graph authority.
+    raw_relation_expansion = dialogue_context.get("relation_expansion")
+    relation_expansion = normalize_relation_expansion_contract(
+        raw_relation_expansion,
+        raw_user_query=query,
+        offered_anchor_ids=selected_relation_anchor_ids,
     )
-    relation_expansion_required = (
-        raw_relation_needed is True
-        or str(raw_relation_needed or "").strip().casefold() in {"1", "true", "yes"}
-        or bool({"impact_propagation", "structural_cause_chain"} & set(
-            policy_frame.get("required_answer_fields") or []
-        ))
+    if not relation_expansion:
+        relation_expansion = {
+            "needed": False,
+            "relation_kind": "",
+            "reference_mode": "",
+            "basis": "",
+            "selected_anchor_ids": [],
+            "reason": "",
+        }
+
+    # One semantic owner, followed by raw-turn provenance and domain checks.
+    # The query writer neither grants nor vetoes a calculation request.
+    calculation_authorizations = normalize_calculation_authorizations(
+        (
+            explicit_target_decision.get("calculation_authorizations")
+            if isinstance(explicit_target_decision, dict)
+            else []
+        ),
+        raw_user_query=query,
     )
 
     policy = resolve_tool_policy(
@@ -2070,7 +2548,24 @@ async def plan_node(state, config=None) -> Dict:
             if isinstance(parsed.get("query_frame"), dict)
             else {}
         ),
-        relation_expansion_required=relation_expansion_required,
+        relation_expansion=relation_expansion,
+        selected_anchor_ids=selected_relation_anchor_ids,
+        selected_anchor_doc_types=[
+            str(anchor.get("doc_type") or "")
+            for anchor in selected_conversation_anchors
+            if isinstance(anchor, Mapping) and str(anchor.get("doc_type") or "")
+        ],
+        calculation_authorizations=calculation_authorizations,
+        requested_sources=policy_frame.get("requested_sources") or [],
+        user_context_state={
+            **state,
+            "query": query,
+            "dialogue_context": dialogue_context,
+            "query_frame": {
+                "user_input_query": query,
+                "user_context_bindings": dialogue_context.get("user_context_bindings") or [],
+            },
+        },
     )
     query_frame = build_query_frame(
         query=query,
@@ -2079,6 +2574,75 @@ async def plan_node(state, config=None) -> Dict:
         query_targets=policy["query_targets"],
         planner_frame=parsed.get("query_frame"),
     )
+    identity_frame = (
+        parsed.get("query_frame")
+        if isinstance(parsed.get("query_frame"), Mapping)
+        else {}
+    )
+    typed_record_fields = _ground_typed_record_fields(
+        identity_frame.get("typed_record_fields"),
+        raw_user_query=query,
+    )
+    if typed_record_fields:
+        query_frame["typed_record_fields"] = typed_record_fields
+
+    subject_candidates = list(identity_frame.get("subject_bindings") or [])
+    topology_for_identity = dialogue_context.get("topology_dependency")
+    if (
+        isinstance(topology_for_identity, Mapping)
+        and topology_for_identity.get("required") is True
+        and str(topology_for_identity.get("subject") or "").strip()
+    ):
+        # Topology classification may guide retrieval, but its object becomes
+        # an identity selector only when the value is literally grounded in
+        # this user turn.  The common validator below adds the provenance flag.
+        subject_candidates.append(
+            {
+                "doc_type": "rbd",
+                "kind": topology_for_identity.get("subject_kind"),
+                "value": topology_for_identity.get("subject"),
+                "basis": topology_for_identity.get("subject"),
+            }
+        )
+    subject_bindings = _ground_subject_bindings(
+        subject_candidates,
+        raw_user_query=query,
+    )
+    if subject_bindings:
+        query_frame["subject_bindings"] = subject_bindings
+
+    # These objects have already passed enum and current-turn/anchor
+    # provenance validation in the target stage.  The generic query-frame
+    # builder intentionally knows nothing about their open-language meaning.
+    for key in ("requested_sources", "architecture_roles", "comparison_subjects"):
+        if key in dialogue_context:
+            query_frame[key] = list(dialogue_context.get(key) or [])
+    coverage_request = policy_frame.get("coverage_request")
+    if isinstance(coverage_request, Mapping):
+        query_frame["coverage_request"] = dict(coverage_request)
+    payload_contract = dialogue_context.get("payload_contract")
+    if isinstance(payload_contract, Mapping):
+        query_frame["payload_contract"] = dict(payload_contract)
+    if validated_diagnostic_closure:
+        query_frame["diagnostic_closure"] = dict(validated_diagnostic_closure)
+    else:
+        query_frame.pop("diagnostic_closure", None)
+    if validated_response_mode:
+        query_frame["response_mode"] = dict(validated_response_mode)
+    if "missing_input_requirements" in dialogue_context:
+        query_frame["missing_input_requirements"] = _machine_missing_input_requirements(
+            dialogue_context.get("missing_input_requirements"), state
+        )
+
+    current_hmc_components = extract_hmc_components(query)
+    if current_hmc_components:
+        # This is a deterministic parse of the raw turn, not a model-created
+        # identity.  Downstream nodes verify the source tag and round trip.
+        query_frame["hmc_components"] = current_hmc_components
+        query_frame["hmc_components_source"] = "current_query"
+    if dialogue_context.get("user_context_bindings"):
+        query_frame["user_context_bindings"] = list(dialogue_context["user_context_bindings"])
+        query_frame["user_input_query"] = query
     # A user can explicitly ask us to check one named document family while
     # asking a different semantic question (for example “why did it fail—go
     # check RBD”).  Keep this as a source-coverage obligation rather than
@@ -2086,27 +2650,69 @@ async def plan_node(state, config=None) -> Dict:
     # compact, evidence-backed contribution from that source when it exists.
     source_coverage_tools = list(policy.get("requested_source_tools") or [])
     source_coverage_fields = list(policy.get("source_coverage_fields") or [])
-    # 续轮来源延续：用户把结论依据限定为上一轮已查资料（“哪些能说、哪些
-    # 不能说”）时，上一轮真正引用过的来源不得从执行集里消失。延续工具按
-    # 上一轮锚点的 doc_type 派生，语义等同用户点名该来源：进入来源覆盖字段
-    # 并强制进入执行工具集，检索词优先复用上一轮已公开的对象身份。
-    prior_doc_types = _prior_answer_doc_types(messages)
+    # 续轮来源延续只读取目标阶段本轮明确选择的证据锚点。最近一答可能同时
+    # 引用多个资料族；未选引用不得因“哪些能说/不能说”的开放语义而获得执行
+    # 权限、成为检索词或扩大回答来源边界。
     continued_tools = _continuation_source_tools(
         query=query,
         messages=messages,
-        prior_doc_types=prior_doc_types,
+        selected_anchors=selected_conversation_anchors,
+        context_used=bool(dialogue_context.get("context_used")),
+        response_focus=response_focus,
+        current_requested_sources=policy.get("requested_sources") or [],
     )
     continued_subjects: List[str] = []
     if continued_tools:
-        continued_subjects = _prior_answer_anchor_subjects(messages)
+        boundary_focuses = {"source_capability", "source_limitation"}
+        pure_source_boundary = bool(response_focus) and set(
+            response_focus
+        ).issubset(boundary_focuses)
+        if pure_source_boundary:
+            # This turn asks what the explicitly selected citations can or
+            # cannot establish. A retrieval proposal based only on the broad
+            # entity/profile intent must not pull in an unselected neighbour
+            # source from the previous answer (or from planner preference).
+            # Re-read the selected PostgreSQL owner(s) only; an independently
+            # requested business dimension is not a pure boundary turn and is
+            # therefore handled by the normal field/source contracts above.
+            selected_source_set = set(continued_tools)
+            removed_query_tools = {
+                tool
+                for tool in policy.get("authorized_tools") or []
+                if tool in QUERY_TOOL_NAMES and tool not in selected_source_set
+            }
+            policy["allowed_tools"] = [
+                tool
+                for tool in policy.get("allowed_tools") or []
+                if tool not in QUERY_TOOL_NAMES or tool in selected_source_set
+            ]
+            policy["authorized_tools"] = [
+                tool
+                for tool in policy.get("authorized_tools") or []
+                if tool not in QUERY_TOOL_NAMES or tool in selected_source_set
+            ]
+            policy["tools_plan"] = [
+                item
+                for item in policy.get("tools_plan") or []
+                if not isinstance(item, Mapping)
+                or str(item.get("tool") or "") not in QUERY_TOOL_NAMES
+                or str(item.get("tool") or "") in selected_source_set
+            ]
+            policy["authorized_doc_types"] = list(dict.fromkeys(
+                DOC_TYPE_BY_TOOL[tool]
+                for tool in policy["authorized_tools"]
+                if tool in DOC_TYPE_BY_TOOL
+            ))
+            policy["hybrid_doc_types"] = []
+            policy["rejected_tools"] = list(dict.fromkeys([
+                *(policy.get("rejected_tools") or []),
+                *sorted(removed_query_tools),
+            ]))
+        continued_subjects = _anchor_subjects(selected_conversation_anchors)
         for tool in continued_tools:
             if tool in source_coverage_tools:
                 continue
             source_coverage_tools.append(tool)
-            source_coverage_fields = normalize_answer_fields([
-                *source_coverage_fields,
-                *_SOURCE_COVERAGE_FIELDS.get(tool, ()),
-            ])
             if tool not in policy["allowed_tools"]:
                 policy["allowed_tools"].append(tool)
             if tool not in policy["authorized_tools"]:
@@ -2137,30 +2743,82 @@ async def plan_node(state, config=None) -> Dict:
             *source_coverage_fields,
         ])
     query_frame["requested_source_tools"] = source_coverage_tools
-    # 追问轮已交付消融：上一轮真正交付的必答字段随消息落库，本轮仅在
-    # query_frame 透传（供 answer 生成“不重复上轮已交付内容”的提示），
-    # 不删除义务字段本身——删除会让 focused 契约退化，也会把“为什么重要/
-    # 最先影响哪个/验证方法”这类同一字段域的新维度误当成已交付维度。
-    # 问题的语义形态（解释/排序/确认/对比/处置）同样只影响答案组织方式，
-    # 不改变工具授权与义务字段集合。
-    prior_delivered_fields = _prior_delivered_fields(messages)
+    if source_coverage_tools:
+        # Keep source coverage as facet-scoped obligations.  It is tempting to
+        # turn a source-boundary question into a whole-turn document lock, but
+        # that drops a second, explicitly requested goal in questions such as
+        # “按 FMECA 说明影响，同时给出历史复测结果”.  Downstream nodes may
+        # narrow a *pure* source-meta turn, while mixed turns retain every
+        # independently requested field and its own evidence family.
+        obligations = [
+            dict(item)
+            for item in (policy.get("source_obligations") or [])
+            if isinstance(item, Mapping)
+        ]
+        obligated_tools = {
+            str(item.get("tool") or "").strip() for item in obligations
+        }
+        for tool in continued_tools:
+            if tool in obligated_tools or not DOC_TYPE_BY_TOOL.get(tool):
+                continue
+            obligations.append(
+                {
+                    "tool": tool,
+                    "doc_type": DOC_TYPE_BY_TOOL[tool],
+                    "fields": [],
+                    "question_role": "capability",
+                    "basis": "selected_anchor",
+                }
+            )
+        query_frame["source_obligations"] = obligations
+        if set(response_focus) & {"source_capability", "source_limitation"}:
+            explicit_target_fields = set(
+                normalize_answer_fields(
+                    dialogue_context.get("required_answer_fields") or []
+                )
+            )
+            source_fields = set(source_coverage_fields)
+            permitted_fields = explicit_target_fields | source_fields
+            query_frame["required_answer_fields"] = normalize_answer_fields(
+                field
+                for field in (query_frame.get("required_answer_fields") or [])
+                if field in permitted_fields
+            )
+    query_frame["target_contract_status"] = "valid" if explicit_target_decision else "unavailable"
+    # Prior natural goals stay turn-bound conversational progress. They do
+    # not rewrite this turn's goals, remove retrieval fields or grant tools.
+    prior_delivery_contracts = _selected_anchor_delivery_contracts(
+        messages, dialogue_context, selected_conversation_anchors
+    )
+    prior_delivered_fields = _contextual_prior_delivered_fields(
+        messages, dialogue_context, selected_conversation_anchors
+    )
+    if prior_delivery_contracts:
+        query_frame["prior_delivery_contracts"] = prior_delivery_contracts
     if prior_delivered_fields:
         query_frame["prior_delivered_fields"] = prior_delivered_fields
-    question_semantics = _detect_question_semantics(query)
-    if question_semantics:
+    if question_semantics != "unknown":
         query_frame["question_semantics"] = question_semantics
+    if response_focus:
+        query_frame["response_focus"] = response_focus
+    query_frame["response_scope"] = response_scope
+    if response_scope_basis:
+        query_frame["response_scope_basis"] = response_scope_basis
+    else:
+        query_frame.pop("response_scope_basis", None)
     # 边界/元问题（“RBD 能证明什么”“哪些结论不能说”）把回答依据限定在
     # 上一轮已批准来源族。answer 端据此把答案窗口锁到这些 doc_type，
     # 防止 function_locator 等强语义邻居跨域顶替上一轮对象自身的记录。
     # 仅追问轮（上轮确有引用记录）且命中边界表述时锁定；用户本轮显式点名
     # 新来源时以用户为准（requested_source_tools 会使其失去锁定效果）。
-    locked_doc_types = _prior_answer_doc_types(messages)
+    locked_doc_types = list(dict.fromkeys(
+        DOC_TYPE_BY_TOOL.get(tool, "")
+        for tool in continued_tools
+        if DOC_TYPE_BY_TOOL.get(tool, "")
+    ))
     if (
         locked_doc_types
-        and (
-            _BOUNDARY_META_QUESTION.search(" ".join(str(query or "").split()))
-            or _PRIOR_EVIDENCE_DEPENDENCE.search(" ".join(str(query or "").split()))
-        )
+        and bool(set(response_focus) & {"source_capability", "source_limitation"})
     ):
         query_frame["evidence_domain_locked"] = True
         query_frame["locked_doc_types"] = locked_doc_types
@@ -2205,38 +2863,17 @@ async def plan_node(state, config=None) -> Dict:
     if policy.get("notes"):
         reasoning = f"{reasoning}；策略校验：{'；'.join(policy['notes'])}".strip("；")
 
-    raw_relation_expansion = parsed.get("relation_expansion")
-    if isinstance(raw_relation_expansion, dict):
-        raw_relation_needed = raw_relation_expansion.get("needed")
-        relation_needed = (
-            raw_relation_needed is True
-            or str(raw_relation_needed or "").strip().casefold() in {"1", "true", "yes"}
-        )
-        relation_reason = str(raw_relation_expansion.get("reason") or "").strip()
-    else:
-        relation_needed = False
-        relation_reason = ""
-    if "graph_traversal" in policy["allowed_tools"]:
-        relation_needed = True
-        relation_reason = relation_reason or "规划模型选择了跨文档图扩展"
-    semantic_relation_fields = {
-        str(value or "").strip()
-        for value in (query_frame.get("required_answer_fields") or [])
-        if str(value or "").strip()
-    }
-    # ``impact_propagation`` and ``structural_cause_chain`` are semantic
-    # answer requirements, not requests for a particular UI or database.
-    # Once the target model has established that the user needs a propagation
-    # or joint-cause chain, keep graph hand-off enabled even if the larger
-    # retrieval planner omitted ``relation_expansion``. Execution still needs
-    # a traceable PostgreSQL-backed entity seed before HugeGraph runs.
-    if {"impact_propagation", "structural_cause_chain"} & semantic_relation_fields:
-        relation_needed = True
-        relation_reason = relation_reason or "语义合同要求补全跨文档结构链"
-    relation_expansion = {
-        "needed": relation_needed,
-        "reason": relation_reason[:500],
-    }
+    # The policy boundary re-validates the object and returns the exact
+    # executable contract. Do not reconstruct it from selected tools, coarse
+    # intent, or answer fields after that boundary.
+    relation_expansion = dict(policy.get("relation_expansion") or {
+        "needed": False,
+        "relation_kind": "",
+        "reference_mode": "",
+        "basis": "",
+        "selected_anchor_ids": [],
+        "reason": "",
+    })
     task_profile = {
         "primary_goal": policy["intent"],
         "goals": [
@@ -2249,12 +2886,22 @@ async def plan_node(state, config=None) -> Dict:
         "required_answer_fields": list(
             query_frame.get("required_answer_fields") or []
         ),
+        "question_semantics": str(
+            query_frame.get("question_semantics") or "unknown"
+        ),
+        "response_focus": list(query_frame.get("response_focus") or []),
+        "response_scope": str(
+            query_frame.get("response_scope") or "unknown"
+        ),
+        "response_mode": str(
+            (query_frame.get("response_mode") or {}).get("mode") or "unknown"
+        ) if isinstance(query_frame.get("response_mode"), Mapping) else "unknown",
         "coverage_scope": str(query_frame.get("coverage_scope") or "unknown"),
         "collection_subject": str(query_frame.get("collection_subject") or ""),
         "collection_member_kind": str(
             query_frame.get("collection_member_kind") or "unknown"
         ),
-        "relation_required": relation_needed,
+        "relation_required": relation_expansion.get("needed") is True,
         "diagnostic_closure_required": bool(
             (query_frame.get("diagnostic_closure") or {}).get("required")
             if isinstance(query_frame.get("diagnostic_closure"), dict)
@@ -2267,51 +2914,65 @@ async def plan_node(state, config=None) -> Dict:
     }
 
     context_status = str(dialogue_context.get("status") or "standalone")
-    context_clarification = ""
-    if context_status == "ambiguous":
-        context_clarification = (
-            "上文中有多个可能对象，请说明你指的是哪个系统、"
-            "模块、代码或故障候选。"
+    missing_requirements = normalize_missing_input_requirements(
+        query_frame.get("missing_input_requirements")
+    )
+    unresolved_identity_slots = [
+        item
+        for item in missing_requirements
+        if item.get("kind") == "identity_slot"
+    ]
+    clarification_reasons: List[Dict[str, Any]] = []
+    if context_status in {"ambiguous", "missing"}:
+        clarification_reasons.append(
+            make_clarification_reason(
+                kind=(
+                    "ambiguous_identity"
+                    if context_status == "ambiguous"
+                    else "unresolved_identity"
+                ),
+                source_kind="query_frame",
+                source_name="dialogue_context",
+                blocked_claims=["resolved_conversation_subject"],
+            )
         )
-    elif context_status == "missing":
-        context_clarification = (
-            "我还无法确定你指的对象，请补充相关系统、模块、"
-            "FUNC/HMC 编号或故障现象。"
-        )
-    if context_clarification:
-        # An unresolved pronoun must not become a broad FMECA/OpenSearch scan.
+    clarification_required = bool(missing_requirements or clarification_reasons)
+    clarification_fallback = make_clarification_fallback(
+        required=bool(clarification_reasons and not missing_requirements)
+    )
+    if clarification_required:
+        # A structured gap must not become a broad FMECA/OpenSearch scan.  Keep
+        # the normal answer path, though: the answer model owns the natural
+        # question and its only model-failure fallback is domain-neutral.
         policy["authorized_tools"] = []
         policy["allowed_tools"] = []
         policy["authorized_doc_types"] = []
         policy["hybrid_doc_types"] = []
         policy["tools_plan"] = []
+        policy["calculation_authorizations"] = []
         policy["calculation_requests"] = []
         tool_queries = {}
-        relation_expansion = {"needed": False, "reason": ""}
+        relation_expansion = {
+            "needed": False,
+            "relation_kind": "",
+            "reference_mode": "",
+            "basis": "",
+            "selected_anchor_ids": [],
+            "reason": "",
+        }
         task_profile["relation_required"] = False
 
-    # A user can describe a real, currently occurring abnormality while asking
-    # it as a "cause" or "impact" question. In that case a bare knowledge
-    # explanation is the wrong public contract: the answer must reserve room
-    # for an evidence-backed location, handling action and (when genuinely
-    # related) prior case. The target model supplies the semantic contract;
-    # this deterministic mapping only chooses the presentation shape and does
-    # not create facts or expand tool authority.
-    diagnostic_closure_required = bool(
-        (query_frame.get("diagnostic_closure") or {}).get("required")
-        if isinstance(query_frame.get("diagnostic_closure"), dict)
-        else False
-    )
-    answer_mode = (
-        "fault_diagnosis"
-        if diagnostic_closure_required
-        else answer_mode_for_intent(policy["intent"])
-    )
+    # Keep the legacy state key for downstream compatibility, but derive it
+    # from the validated model contract.  Intent is deliberately absent: it is
+    # an execution ceiling, not authority to widen the answer.
+    answer_mode = _answer_mode_from_contract(query_frame)
 
     return {
-        "scope_route": "clarification" if context_clarification else "knowledge_base",
+        "scope_route": "knowledge_base",
+        "clarification_kind": "",
         "intent": policy["intent"],
         "query_targets": policy["query_targets"],
+        "calculation_authorizations": policy["calculation_authorizations"],
         "calculation_requests": policy["calculation_requests"],
         "relation_expansion": relation_expansion,
         "answer_mode": answer_mode,
@@ -2335,14 +2996,18 @@ async def plan_node(state, config=None) -> Dict:
         "authorized_doc_types": policy["authorized_doc_types"],
         "hybrid_doc_types": policy["hybrid_doc_types"],
         "plan_reasoning": reasoning,
-        "clarification_question": context_clarification,
+        "missing_input_requirements": missing_requirements,
+        "unresolved_identity_slots": unresolved_identity_slots,
+        "clarification_reasons": unique_contract_items(clarification_reasons),
+        "clarification_fallback": clarification_fallback,
+        "clarification_question": "",
         "memory_context": memory_context,
         "iteration": state.get("iteration", 0) + 1,
     }
 
 
 def route_after_plan(state: Dict[str, Any]) -> str:
-    """Stop before retrieval when conversational reference resolution failed."""
+    """Route legacy clarification states; new plan gaps use the answer path."""
 
     return (
         "direct_response"

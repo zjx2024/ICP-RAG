@@ -1,0 +1,187 @@
+{
+  "version": "2026-09-05",
+  "description": "语义裁判校准；仅使用这里明确给出的虚构事实，不是航空维修依据。正反例检验新增维度、对象保持、证据边界及合理复述。",
+  "cases": [
+    {
+      "id": "mixed-valid-boundary-wrong-owner",
+      "question": "对当前故障编号，维修清单给了处理办法或读取状态的接口吗？",
+      "reference_context": [{"source": "来源核验", "text": "HMC故障代码手册的K-57行记载检查输入接线。MFL维修清单的M-28行记载同类现象和read_input()接口，但两表没有显式代码关联，不能认定M-28属于K-57。"}],
+      "criteria": [{"id": "source_fidelity", "criterion": "全部事实的来源归属必须正确，不能把HMC动作称作MFL维修清单提供。未确认跨表关联不等于没有接口；正确的边界免责声明不能抵消另一句错误归属。"}],
+      "answers": [
+        {"id": "good", "text": "已知的检查输入接线来自HMC手册；不能将它说成维修清单提供。当前未确认该编号与MFL记录的显式关联，因此清单是否提供对应处理或接口还不能确定，也不意味着MFL没有接口。", "expected": {"source_fidelity": true}},
+        {"id": "bad", "text": "维修清单给出了检查输入接线这一明确处理办法。当前HMC与MFL没有权威显式关联，所以无法确认该编号对应的状态接口，不能混入相近报码。", "expected": {"source_fidelity": false}}
+      ]
+    },
+    {
+      "id": "stage-qualification-not-implied",
+      "question": "如果模板模块暂时不可用，任务侧最先影响什么？目前没有提供任务阶段。",
+      "reference_context": [{"source": "架构流程", "text": "仅记载启动阶段先从模板模块载入配置，再进入运行。未记载已经进入运行后的暂时模块不可用会产生何种顺序影响。"}],
+      "criteria": [{"id": "source_fidelity", "criterion": "若以启动加载受阻回答最先影响，必须显式限定启动阶段，并说明运行期顺序没有资料不能确定；不能替未给任务阶段的用户直接作无条件最先影响判断。"}],
+      "answers": [
+        {"id": "good", "text": "若处于启动阶段，最先受阻的是配置加载；已运行之后的影响顺序未记载。你尚未提供任务阶段，因此不能把这条启动结论无条件套用。", "expected": {"source_fidelity": true}},
+        {"id": "bad", "text": "它保存关键启动模板与配置，所以非常重要。暂时不可用时，任务侧最先受影响的是配置加载与初始化。", "expected": {"source_fidelity": false}}
+      ]
+    },
+    {
+      "id": "per-mode-protocol-ownership",
+      "question": "这两个候选模式分别怎么读取状态，读到异常可以确定根因吗？",
+      "reference_context": [{"source": "维修接口表", "text": "模式N-3为输出中断：read_view()每两秒轮询，查看状态位4；模式N-4为格式错误：read_view()订阅事件，查看状态位7。表格未声称异常状态能唯一确定根因或授权更换模块。"}],
+      "criteria": [{"id": "source_fidelity", "criterion": "分别绑定N-3的轮询/位4和N-4的订阅/位7，并保留状态异常不能唯一确定根因的边界；不能把同名API的两种调用方式和位混成任意可选组合。"}],
+      "answers": [
+        {"id": "good", "text": "N-3按两秒轮询read_view()并查看位4；N-4使用同一接口订阅事件并看位7。状态异常只是记录的定位信息，不能据此唯一确定根因，更不构成更换授权。", "expected": {"source_fidelity": true}},
+        {"id": "bad", "text": "两个模式均可用read_view()，两秒轮询或订阅事件，查看位4或7；状态异常即可确认模块故障并安排更换。", "expected": {"source_fidelity": false}}
+      ]
+    },
+    {
+      "id": "priority",
+      "question": "那它为什么重要？暂时不可用时最先影响什么？",
+      "prior_turns": [{"question": "这个模块做什么？", "answer": "模块保存任务模板；任务初始化先读取模板，再启动显示。"}],
+      "criteria": [{"id": "relevance", "criterion": "基于历史给出的先后关系，解释模板模块的重要性，并说明最先阻断任务初始化；不能只重列用途或凭空优先判显示中断。"}],
+      "answers": [
+        {"id": "good", "text": "它提供初始化所需的模板，所以是后续任务启动的前提。暂时不可用时，最先受阻的是初始化读取模板；显示启动属于后续影响。", "expected": {"relevance": true}},
+        {"id": "bad", "text": "局部影响：模板不可用。最终影响：显示不可用。模板、初始化、显示均相关。", "expected": {"relevance": false}}
+      ]
+    },
+    {
+      "id": "history-dimensions",
+      "question": "相近案例是在什么条件下出现，最后怎么确认恢复？",
+      "prior_turns": [{"question": "找一个相近案例。", "answer": "案例甲：持续高负载后链路间歇断开；清洁连接器后，在同负载下连续运行三小时未复现。"}],
+      "criteria": [{"id": "relevance", "criterion": "回答必须交付本案例的触发条件（持续高负载）和恢复验证结果（同负载三小时未复现）。只说清洁、更换或重列候选不合格；允许复述历史中必要的事实。"}],
+      "answers": [
+        {"id": "good", "text": "出现条件是持续高负载。处理后仍使用相同负载连续验证三小时，期间没有复现；这个结果是该案例的恢复依据，并非所有设备通用放行标准。", "expected": {"relevance": true}},
+        {"id": "bad", "text": "候选一是连接器异常，候选二是板卡故障。建议检查连接器、清洁触点，必要时换板。", "expected": {"relevance": false}}
+      ]
+    },
+    {
+      "id": "exact-code",
+      "question": "刚才这个报码的清单给了状态接口吗？不要混相似码。",
+      "prior_turns": [{"question": "核对报码 K-17。", "answer": "K-17 的清单只有外观检查，没有状态接口。相邻的 K-18 才记载 status_read()。"}],
+      "criteria": [{"id": "relevance", "criterion": "应承接 K-17 并说明所给资料未记载其状态接口；不能把 K-18 的 status_read() 归给 K-17。解释二者区别不算混码。"}],
+      "answers": [
+        {"id": "good", "text": "没有查到 K-17 的状态接口记载。这条清单只给出外观检查；status_read() 属于 K-18，不能用于回答当前报码的接口能力。", "expected": {"relevance": true}},
+        {"id": "bad", "text": "这个报码可以调用 status_read() 查看状态，同时做外观检查。", "expected": {"relevance": false}}
+      ]
+    },
+    {
+      "id": "source-boundary",
+      "question": "这份 RBD 能证明什么，又不能替代什么？",
+      "prior_turns": [{"question": "框图里记录了什么？", "answer": "该 RBD 记录功能块连接关系、成功条件和给定参数；未记载具体维修步骤。"}],
+      "criteria": [{"id": "relevance", "criterion": "必须解释该 RBD 能支持的结构/成功条件分析及其参数条件，并说明不能替代故障根因证据或正式维修程序；不能改答模块职责。"}],
+      "answers": [
+        {"id": "good", "text": "它可用于核对成功条件以及块之间的连接，数值结论还取决于参数和适用假设。它没有给出维修步骤，也不能单凭框图认定实际根因或替代正式维修程序。", "expected": {"relevance": true}},
+        {"id": "bad", "text": "模块主要负责网络接入、时钟同步和热管理，对系统可靠性很重要。", "expected": {"relevance": false}}
+      ]
+    },
+    {
+      "id": "fmeca-row",
+      "question": "这个故障模式要怎么验证，再决定是否更换？",
+      "prior_turns": [{"question": "滤波性能退化是什么原因？", "answer": "模式 F-21 的原因是电容容量下降，检测栏要求对比容量与纹波。另一行 F-22 是采样饱和，检测项是量程检查。资料没有给更换阈值。"}],
+      "criteria": [{"id": "relevance", "criterion": "验证对象保持 F-21，提及容量与纹波检查，并明确缺少更换阈值不能凭此直接决定更换；不得用 F-22 的量程检查替代本行检测方法。"}],
+      "answers": [
+        {"id": "good", "text": "先按 F-21 检测栏对比容量和纹波。资料没有给出可据以更换的阈值，所以还要核对适用维修标准，不能直接凭下降描述决定更换。", "expected": {"relevance": true}},
+        {"id": "bad", "text": "应验证采样是否饱和并检查量程；超出量程就更换采样板。", "expected": {"relevance": false}}
+      ]
+    },
+    {
+      "id": "history-exclusion",
+      "question": "这个案例靠什么排除了板卡？给了通用复测标准吗？",
+      "prior_turns": [{"question": "案例乙如何恢复？", "answer": "互换板卡后现象不随板卡转移；重新压接线束后恢复。同条件复测四小时未复现。只记录本案例结果。"}],
+      "criteria": [{"id": "relevance", "criterion": "用互换后现象不随板卡转移解释排除板卡的依据；区分该案例四小时未复现的结果与资料未提供的通用复测标准。"}],
+      "answers": [
+        {"id": "good", "text": "关键依据是互换板卡后故障没有随板卡转移。线束处理后四小时未复现支持该次恢复，但这是案例记录，不能当成通用复测或放行标准。", "expected": {"relevance": true}},
+        {"id": "bad", "text": "案例乙经过重新压接线束后恢复。以后统一运行四小时即可放行。", "expected": {"relevance": false}}
+      ]
+    },
+    {
+      "id": "necessary-repetition",
+      "question": "请再核对一次总数，是否包括供电和显示？",
+      "prior_turns": [{"question": "这份架构有几个子系统？", "answer": "该架构共六个子系统，供电和显示均包括在内。"}],
+      "criteria": [{"id": "relevance", "criterion": "明确核对总数为六且包括供电和显示；这轮要求复核，重复必要事实应通过，不应因没有新增资料或与历史重复而拒绝给分。"}],
+      "answers": [
+        {"id": "good", "text": "核对后仍是六个，供电和显示都已计入，没有漏掉这两部分。", "expected": {"relevance": true}},
+        {"id": "bad", "text": "供电很重要，显示也很重要。上一轮已经说过了，不再重复。", "expected": {"relevance": false}}
+      ]
+    },
+    {
+      "id": "scope-ownership",
+      "question": "模块甲为何重要，它负责哪些事？",
+      "reference_context": [{"source": "虚构架构原文", "text": "系统S负责计算、显示和存储。其子模块甲只缓存模板，并为初始化提供模板；计算和显示由其他子模块完成。"}],
+      "criteria": [{"id": "relevance", "criterion": "每项职责必须归于正确层级，解释甲缓存模板对初始化的意义；不得把父系统的计算、显示职责整体归给甲。"}],
+      "answers": [
+        {"id": "good", "text": "甲缓存并提供初始化所需模板，所以影响初始化准备；系统还负责计算和显示，但原文明确这些由其他子模块完成，不属于甲的职责。", "expected": {"relevance": true}},
+        {"id": "bad", "text": "甲很重要，作为系统S的一部分，它负责整个系统的计算、显示和存储。", "expected": {"relevance": false}}
+      ]
+    },
+    {
+      "id": "stage-overgeneralization",
+      "question": "模块甲暂时不能读取，会不会马上影响所有任务？",
+      "reference_context": [{"source": "虚构流程原文", "text": "仅描述冷启动：先从甲读取模板，再初始化计算。未记载运行期模板是否驻留内存、备用模板机制或暂时不可读时的运行后果。"}],
+      "criteria": [{"id": "relevance", "criterion": "区分冷启动条件和未知的运行期后果；不能把冷启动前提扩成任何时候立即全任务中断。可明确已知的启动受阻和需要确认的运行状态。"}],
+      "answers": [
+        {"id": "good", "text": "冷启动时甲不可读会阻碍后续初始化。正在运行的任务是否立即受影响，还取决于模板是否已加载及备用机制，当前资料没有这些信息，不能断言所有任务马上停止。", "expected": {"relevance": true}},
+        {"id": "bad", "text": "一定会。甲是启动前置条件，所以任何运行阶段暂时不可读都让所有计算和显示立即停止，任务完全无法继续。", "expected": {"relevance": false}}
+      ]
+    },
+    {
+      "id": "unresolved-relation",
+      "question": "报码 K-27 在维修表里有直接状态接口吗？",
+      "reference_context": [{"source": "虚构两份独立表", "text": "报码表：K-27 表示输入异常。维修表：记录M-81描述输入异常并有 read_input()。两表没有编码对应列或显式关联，不能按现象相同确认M-81属于K-27。"}],
+      "criteria": [{"id": "relevance", "criterion": "必须区分未确认两表关联与不存在接口。不能断言M-81的接口已属于K-27，也不能断言维修表没有任何接口；明确缺的是编码对应证据。"}],
+      "answers": [
+        {"id": "good", "text": "暂时不能确认 K-27 的直接状态接口：缺少它与维修记录的编码对应证据。这不表示维修表没有接口，只是不能把同现象记录的接口直接归给这个码。", "expected": {"relevance": true}},
+        {"id": "bad", "text": "维修表没有提供状态接口或调用方法，只能按报码表检查。", "expected": {"relevance": false}}
+      ]
+    },
+    {
+      "id": "topic-correction",
+      "question": "不是刚才那个，现在只看模块乙的原因。",
+      "prior_turns": [{"question": "模块甲和乙各有哪些记录？", "answer": "模块甲记录接触不良，模块乙记录配置丢失。"}],
+      "criteria": [{"id": "relevance", "criterion": "遵循当前纠正，仅回答模块乙的配置丢失，不继续把模块甲接触不良作为当前原因；可简短确认对象已切换。"}],
+      "answers": [
+        {"id": "good", "text": "切换到模块乙：对应记录中的原因是配置丢失。", "expected": {"relevance": true}},
+        {"id": "bad", "text": "它主要是接触不良导致，建议处理模块甲的连接器。", "expected": {"relevance": false}}
+      ]
+    },
+    {
+      "id": "inventory-versus-previous-omission",
+      "question": "总数到底是多少？刚才把存储和供能漏了没有？",
+      "prior_turns": [{"question": "请列出所有子系统。", "answer": "有计算、通信、显示三个子系统。"}],
+      "reference_context": [{"source": "虚构架构表", "text": "完整直接子系统共五个：计算、通信、显示、存储、供能。"}],
+      "criteria": [{"id": "relevance", "criterion": "同时给出当前总数五，并明确核对上轮确实漏掉存储和供能，补正遗漏。只重列完整清单或只说当前已包含两部分，不能代替对上轮遗漏的回答。"}],
+      "answers": [
+        {"id": "good", "text": "总数是五个。刚才只列了三个，确实漏掉了存储和供能，现在补上。", "expected": {"relevance": true}},
+        {"id": "bad", "text": "共有五个子系统：计算、通信、显示、存储、供能。存储和供能均包含在这个清单中。", "expected": {"relevance": false}}
+      ]
+    },
+    {
+      "id": "fabricated-conversation-count",
+      "question": "再核对完整故障模式，并说明刚才有没有列全。",
+      "prior_turns": [{"question": "这个模块做什么？", "answer": "它负责采集并归档运行状态。"}],
+      "criteria": [{"id": "history", "criterion": "任何关于上轮已列哪些故障或列了多少项的陈述必须与真实历史一致。上轮只介绍了职责，并没有列故障模式；不得虚构上轮曾列两项或遗漏一项。"}],
+      "answers": [
+        {"id": "good", "text": "刚才只介绍了职责，尚未列出故障模式，不能称为完整模式清单；需要以本轮查询的完整集合核对。", "expected": {"history": true}},
+        {"id": "bad", "text": "刚才只列了两项，确实漏掉一项，这次补成完整三项。", "expected": {"history": false}}
+      ]
+    },
+    {
+      "id": "boundary-with-unrelated-citation",
+      "question": "能确认这条报码对应哪一个状态接口吗？请区分证据依据。",
+      "reference_context": [{"source": "虚构数据源审计", "text": "报码表记录K-92输入异常；维修表记录M-45输入异常和read_state()，但两表没有显式关联，当前不能确认对应关系。报码表这一行只记载输入异常，并没有记载跨表关联缺失的审计结论。"}],
+      "criteria": [{"id": "support", "criterion": "应说明对应关系尚不能确认，并且不能用只描述输入异常的报码行作为跨表缺少关联这一结论的引用。可以把关联尚未确认说明为当前查询边界且不挂工程事实引用。"}],
+      "answers": [
+        {"id": "good", "text": "当前查询尚未确认这条报码与维修记录的对应关系，不能把相同现象记录中的接口直接归给它。这是当前查询的关联边界，不是报码行证明接口不存在。", "expected": {"support": true}},
+        {"id": "bad", "text": "这条报码与维修记录之间没有权威显式关联，不能据此认定存在对应的状态接口。[^1]", "citations": [{"id": 1, "doc_type": "hmc", "record_id": "K-92", "content": "K-92：输入异常。"}], "expected": {"support": false}}
+      ]
+    },
+    {
+      "id": "maintenance-and-interface-dimensions",
+      "question": "针对这条记录先怎么处置，还能通过什么接口读状态？",
+      "reference_context": [{"source": "虚构维修清单", "text": "记录Q-38：先保存现场日志，核对配置。状态接口read_snapshot()，调用方式无参数读取当前快照。"}],
+      "criteria": [{"id": "relevance", "criterion": "回答应同时交付本记录的处置办法及状态读取接口read_snapshot()和无参数读取快照的方式。完整回答处置部分不能抵消遗漏接口问题。"}],
+      "answers": [
+        {"id": "good", "text": "先保存现场日志并核对配置；读取状态时，无参数调用 read_snapshot() 获取当前快照。", "expected": {"relevance": true}},
+        {"id": "bad", "text": "先保存现场日志，再核对配置，结合结果安排后续检查。", "expected": {"relevance": false}}
+      ]
+    }
+  ]
+}

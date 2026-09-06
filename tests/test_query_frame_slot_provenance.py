@@ -50,7 +50,7 @@ class QueryFrameSlotProvenanceTests(unittest.TestCase):
         self.assertEqual("未知", frame["operating_stage"])
         self.assertEqual("未知", frame["temporal_pattern"])
 
-    def test_verbatim_but_semantically_mismatched_basis_is_discarded(self):
+    def test_semantic_slot_is_owned_by_the_planning_model(self):
         frame = build_query_frame(
             query="运行中反复出现短时掉电",
             planner_frame={
@@ -61,10 +61,12 @@ class QueryFrameSlotProvenanceTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual("未知", frame["operating_stage"])
-        self.assertEqual("", frame["operating_stage_basis"])
-        self.assertEqual("未知", frame["temporal_pattern"])
-        self.assertEqual("", frame["temporal_pattern_basis"])
+        # Python validates the enum and its verbatim provenance.  It does not
+        # maintain a second phrase dictionary to overrule the model's meaning.
+        self.assertEqual("高负载", frame["operating_stage"])
+        self.assertEqual("运行中", frame["operating_stage_basis"])
+        self.assertEqual("首次发生", frame["temporal_pattern"])
+        self.assertEqual("反复出现", frame["temporal_pattern_basis"])
 
     def test_single_character_basis_cannot_authorize_a_filter(self):
         frame = build_query_frame(
@@ -82,14 +84,14 @@ class QueryFrameSlotProvenanceTests(unittest.TestCase):
         self.assertEqual("未知", frame["temporal_pattern"])
         self.assertEqual("", frame["temporal_pattern_basis"])
 
-    def test_operating_duration_is_not_misread_as_occurrence_cadence(self):
+    def test_no_temporal_slot_is_inferred_from_operating_duration(self):
         frame = build_query_frame(
             query="设备持续运行后电容性能变差",
             planner_frame={
                 "operating_stage": "持续运行后",
                 "operating_stage_basis": "持续运行后",
-                "temporal_pattern": "持续发生",
-                "temporal_pattern_basis": "持续",
+                "temporal_pattern": "未知",
+                "temporal_pattern_basis": "",
             },
         )
 

@@ -3,7 +3,8 @@ import json
 import time
 import subprocess
 import requests
-from typing import Dict, List, Optional, Any, Tuple
+from collections import deque
+from typing import Dict, List, Optional, Any, Tuple, Mapping
 from backend.config.config import config
 import logging
 
@@ -69,6 +70,15 @@ DYNAMIC_EDGE_NULLABLE_KEYS = (
     "description_parts", "keywords_parts", "weight_parts",
 )
 
+# The legacy shortest-path HTTP route is intentionally bounded independently
+# of caller input.  HugeGraph is a projection and may grow over time; a public
+# lookup must never deserialize an unbounded graph or enumerate unbounded
+# paths in the application process.
+_SHORTEST_PATH_MAX_VERTICES = 10_000
+_SHORTEST_PATH_MAX_EDGES = 20_000
+_SHORTEST_PATH_MAX_HOPS = 32
+_PROJECTION_READ_PAGE_SIZE = 500
+
 class HugeGraphUnavailable(RuntimeError):
     """HugeGraph 服务不可用 / 响应异常（区别于「查询结果为空」）。
 
@@ -84,6 +94,7 @@ class HugeGraphClient:
         self.host = config.HUGEGRAPH_HOST
         self.port = config.HUGEGRAPH_PORT
         self.graph_name = config.HUGEGRAPH_GRAPH_NAME
+        self.graphspace = config.HUGEGRAPH_GRAPHSPACE
         self.base_url = f"http://{self.host}:{self.port}"
         self.session = requests.Session()
         self._mock_client = MockHugeGraph()
@@ -103,6 +114,25 @@ class HugeGraphClient:
     
     def _get_graph_url(self, endpoint: str) -> str:
         return f"{self.base_url}/graphs/{self.graph_name}/graph{endpoint}"
+
+    def _gremlin_aliases(self) -> Dict[str, str]:
+        """Return the configured server-side graph/traversal bindings.
+
+        HugeGraph 1.7 qualifies globals with the graphspace (the pinned image
+        exposes ``DEFAULT-hugegraph``).  Leaving ``HUGEGRAPH_GRAPHSPACE`` empty
+        deliberately selects the legacy unqualified binding names.
+        """
+
+        graphspace = str(getattr(self, "graphspace", "DEFAULT") or "").strip()
+        graph_name = str(self.graph_name).strip()
+        binding = f"{graphspace}-{graph_name}" if graphspace else graph_name
+        return {"graph": binding, "g": f"__g_{binding}"}
+
+    @staticmethod
+    def _compact_error(exc: Exception) -> str:
+        """Return a bounded, single-line capability error for health output."""
+
+        return " ".join(str(exc).split())[:240]
 
     @staticmethod
     def _raise_unavailable(response, context: str) -> None:
@@ -1558,35 +1588,350 @@ class HugeGraphClient:
             logger.error(f"Delete edge failed: {e}")
             return False
     
-    def execute_gremlin(self, gremlin_query: str) -> List[Dict]:
+    def _execute_gremlin(
+        self, gremlin_query: str, *, timeout: float
+    ) -> List[Any]:
+        """Execute one Gremlin request using HugeGraph's synchronous protocol.
+
+        HugeGraph exposes the graph and traversal source through configured
+        graphspace-qualified globals (or legacy unqualified globals when the
+        graphspace setting is empty).  ``session`` belongs to a different
+        TinkerPop request mode and must not be sent to this REST endpoint.
+        Successful REST responses use ``status.code``; older compatible
+        deployments may additionally expose ``success``.
+        """
+
+        response = self.session.post(
+            f"{self.base_url}/gremlin",
+            json={
+                "gremlin": gremlin_query,
+                "bindings": {},
+                "language": "gremlin-groovy",
+                "aliases": self._gremlin_aliases(),
+            },
+            timeout=timeout,
+        )
+        if response.status_code != 200:
+            self._raise_unavailable(response, "Gremlin query")
+
+        result = response.json()
+        if not isinstance(result, Mapping):
+            raise HugeGraphUnavailable("Gremlin query returned a non-object response")
+        status = result.get("status")
+        status_code = status.get("code") if isinstance(status, Mapping) else None
+        legacy_success = result.get("success")
+        if status_code is not None:
+            try:
+                succeeded = int(status_code) == 200
+            except (TypeError, ValueError):
+                succeeded = False
+        else:
+            succeeded = legacy_success is True
+        if not succeeded:
+            raise HugeGraphUnavailable(
+                f"Gremlin query returned an unsuccessful status: {str(result)[:200]}"
+            )
+
+        result_body = result.get("result")
+        data = result_body.get("data", []) if isinstance(result_body, Mapping) else []
+        if data is None:
+            return []
+        if not isinstance(data, list):
+            raise HugeGraphUnavailable("Gremlin query result.data is not a list")
+        return data
+
+    def execute_gremlin(self, gremlin_query: str) -> List[Any]:
         if self._use_mock:
             return self._mock_client.execute_gremlin(gremlin_query)
-        
+
         try:
-            response = self.session.post(
-                f"{self.base_url}/gremlin",
-                json={
-                    "gremlin": gremlin_query,
-                    "session": "",
-                    "bindings": {},
-                    "language": "gremlin-groovy",
-                    "aliases": {"g": "hugegraph"}
-                },
-                timeout=30
-            )
-            if response.status_code != 200:
-                self._raise_unavailable(response, "Gremlin query")
-            result = response.json()
-            if not result.get("success"):
-                raise HugeGraphUnavailable(
-                    f"Gremlin query returned success=false: {str(result)[:200]}"
-                )
-            return result.get("result", {}).get("data", [])
+            return self._execute_gremlin(gremlin_query, timeout=30)
         except Exception as e:
             if isinstance(e, HugeGraphUnavailable):
                 raise
             logger.error(f"Gremlin query failed: {e}")
             raise HugeGraphUnavailable(f"Gremlin query failed: {e}") from e
+
+    def capability_status(self, *, timeout: float = 3.0) -> Dict[str, Any]:
+        """Probe capabilities actually used by ICP graph traversal.
+
+        Formal ICP traversal reads the bounded graph projection through the
+        vertices and edges REST collections, then traverses it in Python.  A
+        healthy ``/graphs`` metadata endpoint alone does not prove those reads
+        work.  Native Gremlin is probed separately because it is retained only
+        for legacy callers and is not a readiness dependency.
+        """
+
+        if self._use_mock:
+            reason = "client is using the in-memory fallback"
+            return {
+                "ok": False,
+                "rest_projection_read": {
+                    "ok": False,
+                    "required": True,
+                    "error": reason,
+                },
+                "gremlin_query": {
+                    "ok": False,
+                    "required": False,
+                    "error": reason,
+                },
+            }
+
+        collection_errors: List[str] = []
+        for endpoint, response_key in (
+            ("/vertices", "vertices"),
+            ("/edges", "edges"),
+        ):
+            try:
+                response = self.session.get(
+                    self._get_graph_url(endpoint),
+                    params={"limit": 1},
+                    timeout=timeout,
+                )
+                self._raise_unavailable(
+                    response, f"HugeGraph {response_key} capability probe"
+                )
+                payload = response.json()
+                if not isinstance(payload, Mapping) or not isinstance(
+                    payload.get(response_key), list
+                ):
+                    raise HugeGraphUnavailable(
+                        f"HugeGraph {response_key} capability probe returned "
+                        "an invalid collection response"
+                    )
+            except Exception as exc:
+                collection_errors.append(
+                    f"{response_key}: {self._compact_error(exc)}"
+                )
+
+        rest_ok = not collection_errors
+        rest_status: Dict[str, Any] = {"ok": rest_ok, "required": True}
+        if collection_errors:
+            rest_status["error"] = "; ".join(collection_errors)[:500]
+
+        try:
+            # This is deliberately read-only and returns zero without scanning
+            # or serializing application vertices.
+            self._execute_gremlin("g.V().limit(0).count()", timeout=timeout)
+            gremlin_status: Dict[str, Any] = {"ok": True, "required": False}
+        except Exception as exc:
+            gremlin_status = {
+                "ok": False,
+                "required": False,
+                "error": self._compact_error(exc),
+            }
+
+        return {
+            # Only the projection collection reads are a hard dependency of
+            # the current LangGraph tool.  Gremlin remains visible as degraded
+            # capability without incorrectly forcing /readyz to 503.
+            "ok": rest_ok,
+            "rest_projection_read": rest_status,
+            "gremlin_query": gremlin_status,
+        }
+
+    def _read_projection_collection_bounded(
+        self,
+        endpoint: str,
+        response_key: str,
+        *,
+        max_items: int,
+        timeout: float = 10.0,
+    ) -> List[Dict[str, Any]]:
+        """Read a REST projection collection with a hard item ceiling.
+
+        HugeGraph's offset pagination stops advancing beyond an implementation
+        limit, while its opaque ``page`` cursor is designed for complete graph
+        scans.  Cursor paging cannot be combined with property filters, so the
+        bounded global collection is filtered by the caller after readback.
+        """
+
+        if max_items <= 0:
+            raise ValueError("max_items must be positive")
+        collected: Dict[str, Dict[str, Any]] = {}
+        page_token = ""
+        seen_tokens = set()
+        try:
+            while len(collected) <= max_items:
+                remaining_probe = max_items + 1 - len(collected)
+                page_limit = min(_PROJECTION_READ_PAGE_SIZE, remaining_probe)
+                query = {"limit": page_limit, "page": page_token}
+                response = self.session.get(
+                    self._get_graph_url(endpoint),
+                    params=query,
+                    timeout=timeout,
+                )
+                self._raise_unavailable(
+                    response, f"HugeGraph bounded {response_key} read"
+                )
+                payload = response.json()
+                page = payload.get(response_key) if isinstance(payload, Mapping) else None
+                if not isinstance(page, list):
+                    raise HugeGraphUnavailable(
+                        f"HugeGraph bounded {response_key} read returned "
+                        "an invalid collection response"
+                    )
+                for item in page:
+                    if not isinstance(item, Mapping) or not str(item.get("id") or ""):
+                        raise HugeGraphUnavailable(
+                            f"HugeGraph bounded {response_key} read returned "
+                            "an item without a stable id"
+                        )
+                    item_id = str(item["id"])
+                    if item_id not in collected:
+                        collected[item_id] = dict(item)
+                        if len(collected) > max_items:
+                            raise HugeGraphUnavailable(
+                                f"HugeGraph {response_key} exceeds bounded path limit "
+                                f"({max_items})"
+                            )
+                next_token = (
+                    str(payload.get("page") or "")
+                    if isinstance(payload, Mapping)
+                    else ""
+                )
+                if not next_token:
+                    break
+                if next_token == page_token or next_token in seen_tokens:
+                    raise HugeGraphUnavailable(
+                        f"HugeGraph {response_key} page cursor did not advance"
+                    )
+                seen_tokens.add(next_token)
+                page_token = next_token
+        except HugeGraphUnavailable:
+            raise
+        except Exception as exc:
+            raise HugeGraphUnavailable(
+                f"HugeGraph bounded {response_key} read failed: {exc}"
+            ) from exc
+        return list(collected.values())
+
+    @staticmethod
+    def _property_contains(properties: Mapping[str, Any], key: str, value: str) -> bool:
+        raw = properties.get(key)
+        if isinstance(raw, str):
+            candidates = [item for item in raw.split(",") if item]
+        elif isinstance(raw, (list, tuple, set, frozenset)):
+            candidates = [str(item) for item in raw]
+        else:
+            candidates = [str(raw)] if raw not in (None, "") else []
+        return value in candidates
+
+    @classmethod
+    def _shortest_path_from_projection(
+        cls,
+        vertices: List[Dict[str, Any]],
+        edges: List[Dict[str, Any]],
+        *,
+        kb_id: str,
+        source_name: str,
+        target_name: str,
+        max_hops: int = _SHORTEST_PATH_MAX_HOPS,
+    ) -> List[Dict[str, Any]]:
+        """Return one deterministic undirected shortest path from REST data."""
+
+        vertex_map: Dict[str, Dict[str, Any]] = {}
+        for vertex in vertices:
+            properties = vertex.get("properties") or {}
+            if not isinstance(properties, Mapping) or not cls._property_contains(
+                properties, "kb_id", kb_id
+            ):
+                continue
+            vertex_id = str(vertex.get("id") or "")
+            if vertex_id:
+                vertex_map[vertex_id] = vertex
+
+        source_ids = sorted(
+            vertex_id
+            for vertex_id, vertex in vertex_map.items()
+            if str((vertex.get("properties") or {}).get("name") or "")
+            == source_name
+        )
+        target_ids = sorted(
+            vertex_id
+            for vertex_id, vertex in vertex_map.items()
+            if str((vertex.get("properties") or {}).get("name") or "")
+            == target_name
+        )
+        if not source_ids or not target_ids:
+            return []
+
+        # The old endpoint selected one exact-name vertex.  Sorting makes that
+        # behavior deterministic when legacy data contains duplicate names.
+        source_id = source_ids[0]
+        target_id = target_ids[0]
+        edge_map: Dict[str, Dict[str, Any]] = {}
+        adjacency: Dict[str, List[Tuple[str, str]]] = {
+            vertex_id: [] for vertex_id in vertex_map
+        }
+        for edge in edges:
+            properties = edge.get("properties") or {}
+            if not isinstance(properties, Mapping) or not cls._property_contains(
+                properties, "kb_id", kb_id
+            ):
+                continue
+            edge_id = str(edge.get("id") or "")
+            out_v = str(edge.get("outV") or edge.get("source") or "")
+            in_v = str(edge.get("inV") or edge.get("target") or "")
+            if not edge_id or out_v not in vertex_map or in_v not in vertex_map:
+                continue
+            edge_map[edge_id] = edge
+            adjacency[out_v].append((in_v, edge_id))
+            adjacency[in_v].append((out_v, edge_id))
+        for neighbors in adjacency.values():
+            neighbors.sort()
+
+        parents: Dict[str, Tuple[Optional[str], Optional[str]]] = {
+            source_id: (None, None)
+        }
+        depths = {source_id: 0}
+        queue = deque([source_id])
+        while queue and target_id not in parents:
+            current = queue.popleft()
+            if depths[current] >= max_hops:
+                continue
+            for neighbor, edge_id in adjacency.get(current, []):
+                if neighbor in parents:
+                    continue
+                parents[neighbor] = (current, edge_id)
+                depths[neighbor] = depths[current] + 1
+                queue.append(neighbor)
+
+        if target_id not in parents:
+            return []
+
+        vertex_ids: List[str] = []
+        edge_ids: List[str] = []
+        current: Optional[str] = target_id
+        while current is not None:
+            vertex_ids.append(current)
+            parent, edge_id = parents[current]
+            if edge_id is not None:
+                edge_ids.append(edge_id)
+            current = parent
+        vertex_ids.reverse()
+        edge_ids.reverse()
+
+        path: List[Dict[str, Any]] = []
+        for index, vertex_id in enumerate(vertex_ids):
+            vertex = vertex_map[vertex_id]
+            properties = vertex.get("properties") or {}
+            item = {
+                "id": vertex_id,
+                "label": vertex.get("label"),
+                "name": properties.get("name"),
+            }
+            if index:
+                edge = edge_map[edge_ids[index - 1]]
+                edge_properties = edge.get("properties") or {}
+                item["relation"] = (
+                    edge.get("label")
+                    or edge_properties.get("relation_type")
+                    or ""
+                )
+            path.append(item)
+        return [path]
     
     def search_vertices_by_name(self, kb_id: str, name: str, limit: int = 20) -> List[Dict]:
         if self._use_mock:
@@ -1855,34 +2200,51 @@ class HugeGraphClient:
             return []
     
     def get_shortest_path(self, kb_id: str, source_name: str, target_name: str) -> List[Dict]:
-        gremlin = f"""
-            g.V().has('kb_id', '{kb_id}').has('name', '{source_name}')
-                 .shortestPath().to(g.V().has('kb_id', '{kb_id}').has('name', '{target_name}'))
-        """.strip()
-        results = self.execute_gremlin(gremlin)
-        
-        paths = []
-        for result in results:
-            if isinstance(result, dict):
-                nodes = result.get("objects", [])
-                labels = result.get("labels", [])
-                
-                path_info = []
-                for i, node in enumerate(nodes):
-                    if isinstance(node, dict):
-                        node_info = {
-                            "id": node.get("id"),
-                            "label": node.get("label"),
-                            "name": node.get("properties", {}).get("name")
-                        }
-                        if i < len(labels):
-                            node_info["relation"] = labels[i]
-                        path_info.append(node_info)
-                
-                if path_info:
-                    paths.append(path_info)
-        
-        return paths
+        if self._use_mock:
+            vertices = self._mock_client.get_vertices_by_kb_with_details(kb_id)
+            edges = self._mock_client.get_edges_by_kb_with_details(kb_id)
+            if len(vertices) > _SHORTEST_PATH_MAX_VERTICES:
+                raise HugeGraphUnavailable("mock vertices exceed bounded path limit")
+            if len(edges) > _SHORTEST_PATH_MAX_EDGES:
+                raise HugeGraphUnavailable("mock edges exceed bounded path limit")
+            return self._shortest_path_from_projection(
+                vertices,
+                edges,
+                kb_id=kb_id,
+                source_name=str(source_name),
+                target_name=str(target_name),
+            )
+
+        # User-provided names remain ordinary Python strings throughout this
+        # path.  They are never interpolated into Gremlin/Groovy source.
+        vertices = self._read_projection_collection_bounded(
+            "/vertices",
+            "vertices",
+            max_items=_SHORTEST_PATH_MAX_VERTICES,
+        )
+        available_names = {
+            str(properties.get("name") or "")
+            for vertex in vertices
+            if isinstance((properties := vertex.get("properties") or {}), Mapping)
+            and self._property_contains(properties, "kb_id", str(kb_id))
+        }
+        if (
+            str(source_name) not in available_names
+            or str(target_name) not in available_names
+        ):
+            return []
+        edges = self._read_projection_collection_bounded(
+            "/edges",
+            "edges",
+            max_items=_SHORTEST_PATH_MAX_EDGES,
+        )
+        return self._shortest_path_from_projection(
+            vertices,
+            edges,
+            kb_id=str(kb_id),
+            source_name=str(source_name),
+            target_name=str(target_name),
+        )
 
 GRAPH_FIELD_SEP = "<SEP>"
 

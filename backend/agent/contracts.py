@@ -52,6 +52,32 @@ AnswerMode = Literal[
     "maintenance_guidance",
     "exact_code_lookup",
 ]
+MatchType = Literal[
+    "keyword",
+    "semantic_candidate",
+    "hybrid_search",
+    "semantic_id_hydration",
+    "semantic_locator_hydration",
+    "candidate_seed_multihop_path",
+    "structured_query",
+    "verified_source_text",
+    "formal_multihop_path",
+    "exact_conversation_reference",
+    "exact_history_reference",
+    "exact_fta_reference",
+    "exact_record_identity",
+    "exact_structured_identity",
+    "exact_components",
+    "exact_code",
+]
+BindingBasis = Literal[
+    "specific_identity_overlap",
+    "identity_label_containment",
+    "explicit_branch_identity_overlap",
+    "exact_identity_label",
+    "same_row_module_function_chain",
+    "exact_business_id",
+]
 
 
 EVIDENCE_SOURCE_KINDS = {
@@ -95,6 +121,72 @@ ANSWER_MODES = {
     "maintenance_guidance",
     "exact_code_lookup",
 }
+
+# Query producers use these values in several stages (direct PostgreSQL
+# lookup, semantic hydration, conversation anchoring and graph hand-off).  The
+# ordering belongs in the shared evidence contract so a later reducer cannot
+# silently redefine which identity is stronger than the evidence gate or
+# answer boundary expects.
+MATCH_TYPE_PRECISION: Dict[str, int] = {
+    "keyword": 10,
+    "semantic_candidate": 10,
+    "hybrid_search": 10,
+    "semantic_id_hydration": 20,
+    "semantic_locator_hydration": 20,
+    "candidate_seed_multihop_path": 20,
+    "structured_query": 30,
+    "verified_source_text": 30,
+    "formal_multihop_path": 30,
+    "exact_conversation_reference": 40,
+    "exact_history_reference": 40,
+    "exact_fta_reference": 40,
+    "exact_record_identity": 50,
+    "exact_structured_identity": 50,
+    "exact_components": 50,
+    "exact_code": 50,
+}
+
+EXACT_MATCH_TYPES = frozenset(
+    match_type
+    for match_type in MATCH_TYPE_PRECISION
+    if match_type.startswith("exact_")
+)
+
+# A binding basis describes how confidently one Function Locator object was
+# selected, not how relevant its prose is.  Exact stored business IDs are the
+# strongest hand-off.  A same-row module/function chain is deterministic but
+# still derived from the selected row; increasingly broad text overlap ranks
+# below exact stored labels.
+BINDING_BASIS_PRECISION: Dict[str, int] = {
+    "specific_identity_overlap": 10,
+    "identity_label_containment": 20,
+    "explicit_branch_identity_overlap": 30,
+    "exact_identity_label": 40,
+    "same_row_module_function_chain": 50,
+    "exact_business_id": 60,
+}
+
+
+def match_type_precision(value: Any) -> int:
+    """Return the shared precision rank for an evidence match identity."""
+
+    return MATCH_TYPE_PRECISION.get(_clean_string(value), 0)
+
+
+def match_type_is_exact(value: Any) -> bool:
+    """Whether ``value`` is a registered exact-identity match type.
+
+    Checking the registry instead of ``startswith('exact_')`` makes newly
+    introduced labels fail closed until their semantics are reviewed.
+    """
+
+    return _clean_string(value) in EXACT_MATCH_TYPES
+
+
+def binding_basis_rank(value: Any) -> int:
+    """Return the authority rank of a structured-entity binding basis."""
+
+    return BINDING_BASIS_PRECISION.get(_clean_string(value), 0)
 
 
 def answer_mode_for_intent(intent: Any) -> AnswerMode:
@@ -197,6 +289,9 @@ def evidence_identity(
     source_ref: str = "",
     claim_type: str = "",
     content: str = "",
+    scope: Optional[Dict[str, Any]] = None,
+    revision_id: str = "",
+    variant_id: str = "",
 ) -> str:
     """生成稳定、不依赖返回顺序的证据 ID。
 
@@ -213,6 +308,18 @@ def evidence_identity(
         "source_ref": _clean_string(source_ref),
         "claim_type": _clean_string(claim_type),
     }
+    # Keep legacy IDs when no scope was supplied, but never collapse two
+    # explicitly different configurations/revisions/variants before the gate.
+    normalized_scope = {
+        key: _clean_string((scope or {}).get(key))
+        for key in ("system", "configuration", "document_number", "document_version")
+        if _clean_string((scope or {}).get(key))
+    }
+    if normalized_scope:
+        identity["scope"] = normalized_scope
+    for key, value in (("revision_id", revision_id), ("variant_id", variant_id)):
+        if _clean_string(value):
+            identity[key] = _clean_string(value)
     if not any(identity[key] for key in ("doc_id", "record_id", "chunk_id", "source_ref")):
         identity["content"] = _clean_string(content)
     canonical = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -276,6 +383,9 @@ def make_evidence(
         source_ref=source_ref,
         claim_type=claim_type,
         content=content,
+        scope=normalized_scope,
+        revision_id=(metadata or {}).get("revision_id", ""),
+        variant_id=(metadata or {}).get("variant_id", ""),
     )
 
     return {
@@ -349,7 +459,15 @@ def make_tool_result(
 
 
 def deduplicate_evidence(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """按 evidence_id 去重；保留首次出现顺序和最后一份完整内容。"""
+    """按 evidence_id 去重，并保留同一事实最强的查询身份。
+
+    ``evidence_registry`` 由 LangGraph 的追加 reducer 汇总。同一条 PostgreSQL
+    记录可能先由精确查询产生，随后又被自适应语义水合命中；两者的
+    ``evidence_id`` 相同。内容仍以最后一份为准，但不能让较弱的语义命中覆盖
+    ``exact_code`` / ``exact_components`` 等精确身份，否则 evidence gate 会把
+    已经精确命中的 HMC 记录误判为未命中。
+    """
+
     ordered_ids: List[str] = []
     by_id: Dict[str, Dict[str, Any]] = {}
     for item in items or []:
@@ -358,5 +476,13 @@ def deduplicate_evidence(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             continue
         if evidence_id not in by_id:
             ordered_ids.append(evidence_id)
-        by_id[evidence_id] = dict(item)
+            by_id[evidence_id] = dict(item)
+            continue
+        previous = by_id[evidence_id]
+        merged = dict(item)
+        previous_match = _clean_string(previous.get("match_type"))
+        current_match = _clean_string(merged.get("match_type"))
+        if match_type_precision(previous_match) > match_type_precision(current_match):
+            merged["match_type"] = previous_match
+        by_id[evidence_id] = merged
     return [by_id[evidence_id] for evidence_id in ordered_ids]

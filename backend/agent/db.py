@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 _CONVERSATION_ANCHOR_FIELD_NAMES = {
-    "record_code", "hmc_code", "lcn", "hamc", "hsc", "mfl_code",
+    "record_code", "variant_id", "hmc_code", "lcn", "hamc", "hsc", "mfl_code",
     "case_id", "component_id", "component_type", "component_name",
     "abbreviation", "parent_component_id", "function_id", "function_name",
     "system_name", "subsystem_name", "module_id", "module_name",
@@ -59,7 +59,7 @@ def _conversation_anchor_value(value: Any) -> Any:
     return None
 
 
-def _conversation_anchors(citations: Any, *, limit: int = 8) -> List[Dict[str, Any]]:
+def _conversation_anchors(citations: Any, *, limit: int = 12) -> List[Dict[str, Any]]:
     """Keep only answer-used evidence identities for the next turn.
 
     The full previous answer and evidence catalog remain available to the UI,
@@ -289,6 +289,14 @@ class AgentDB:
                 cur.execute("""
                     ALTER TABLE agent_messages
                     ADD COLUMN IF NOT EXISTS delivered_answer_fields JSONB
+                """)
+                # Object-scoped delivery ledger.  Unlike the compatibility
+                # field-name list above, every facet is tied to the evidence,
+                # record and structured subject IDs that supported it, so a
+                # later turn can safely refer back to an older object.
+                cur.execute("""
+                    ALTER TABLE agent_messages
+                    ADD COLUMN IF NOT EXISTS answer_delivery_manifest JSONB
                 """)
 
                 postgres_client.conn.commit()
@@ -818,7 +826,8 @@ class AgentDB:
                     tool_calls: List = None, citations: List = None,
                     thinking_events: List = None,
                     evidence_catalog: List = None,
-                    delivered_answer_fields: List = None) -> Dict:
+                    delivered_answer_fields: List = None,
+                    answer_delivery_manifest: List = None) -> Dict:
         msg_id = str(uuid.uuid4())
         tc_json = json.dumps(tool_calls, ensure_ascii=False) if tool_calls else None
         ci_json = json.dumps(citations, ensure_ascii=False) if citations else None
@@ -828,16 +837,21 @@ class AgentDB:
             json.dumps(delivered_answer_fields, ensure_ascii=False)
             if delivered_answer_fields else None
         )
+        adm_json = (
+            json.dumps(answer_delivery_manifest, ensure_ascii=False)
+            if answer_delivery_manifest else None
+        )
         with postgres_client.conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO agent_messages (
                     id, session_id, role, content, tool_calls, citations,
-                    thinking_events, evidence_catalog, delivered_answer_fields
+                    thinking_events, evidence_catalog, delivered_answer_fields,
+                    answer_delivery_manifest
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (
                 msg_id, session_id, role, content, tc_json, ci_json, te_json, ec_json,
-                daf_json,
+                daf_json, adm_json,
             ))
             postgres_client.conn.commit()
         # 更新会话计数
@@ -863,6 +877,7 @@ class AgentDB:
             "thinking_events": thinking_events,
             "evidence_catalog": evidence_catalog,
             "delivered_answer_fields": delivered_answer_fields,
+            "answer_delivery_manifest": answer_delivery_manifest,
         }
 
     def list_messages(self, session_id: str, limit: int = 100) -> List[Dict]:
@@ -870,7 +885,7 @@ class AgentDB:
             cur.execute("""
                 SELECT id, session_id, role, content, tool_calls, citations,
                        thinking_events, evidence_catalog, delivered_answer_fields,
-                       feedback, created_at
+                       answer_delivery_manifest, feedback, created_at
                 FROM agent_messages
                 WHERE session_id = %s
                 ORDER BY created_at DESC, id DESC
@@ -881,7 +896,10 @@ class AgentDB:
             result = []
             for r in rows:
                 d = {desc[0]: v for desc, v in zip(cur.description, r)}
-                for k in ("tool_calls", "citations", "thinking_events", "evidence_catalog", "delivered_answer_fields"):
+                for k in (
+                    "tool_calls", "citations", "thinking_events", "evidence_catalog",
+                    "delivered_answer_fields", "answer_delivery_manifest",
+                ):
                     if isinstance(d.get(k), str):
                         try:
                             d[k] = json.loads(d[k])
@@ -908,18 +926,27 @@ class AgentDB:
             item: Dict[str, Any] = {
                 "role": message["role"],
                 "content": message.get("content", ""),
+                "message_id": str(message.get("id") or ""),
             }
             if message.get("role") == "assistant":
-                anchors = _conversation_anchors(message.get("citations"), limit=8)
+                anchors = _conversation_anchors(message.get("citations"), limit=12)
                 if anchors:
                     item["conversation_anchors"] = anchors
-                # 只携带上一轮答案真正交付的必答字段名，供追问轮“已交付消融”。
+                # Historical field lists remain readable; current answers
+                # persist natural goals in the manifest below, not ablation.
                 delivered = message.get("delivered_answer_fields")
                 if isinstance(delivered, list):
                     item["delivered_answer_fields"] = [
                         str(value).strip()
                         for value in delivered
                         if str(value or "").strip()
+                    ]
+                delivery_manifest = message.get("answer_delivery_manifest")
+                if isinstance(delivery_manifest, list):
+                    item["answer_delivery_manifest"] = [
+                        dict(entry)
+                        for entry in delivery_manifest[:64]
+                        if isinstance(entry, dict)
                     ]
             result.append(item)
         return result

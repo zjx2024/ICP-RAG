@@ -371,6 +371,8 @@ def _vision_confidence(candidates: Iterable[Mapping[str, Any]]) -> float | None:
     for candidate in candidates:
         if clean_text(candidate.get("source_kind")) != "image_vision":
             continue
+        if clean_text(candidate.get("extraction_status") or "succeeded") != "succeeded":
+            continue
         if clean_text(candidate.get("merge_role") or "included") in {"isolated", "rejected"}:
             continue
         graph = candidate.get("normalized_graph") or candidate.get("raw_graph") or {}

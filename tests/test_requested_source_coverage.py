@@ -1,107 +1,173 @@
 import unittest
 
 from backend.agent.answer_contract import focused_answer_contract
-from backend.agent.nodes.answer import (
-    _filter_answer_domain_evidence,
-    _ensure_explicit_rbd_scope_boundary,
-    _requested_source_coverage_notice,
-    _source_coverage_preflight_instruction,
+from backend.agent.rbd_contract import bind_rbd_models, selected_rbd_anchor_selectors
+from backend.agent.nodes.answer_request import _NO_SUPPORTED_FACTS_MESSAGE
+from backend.agent.nodes.answer import _extract_citations
+from backend.agent.nodes.answer_domain_scope import _filter_answer_domain_evidence
+from backend.agent.nodes.answer import _answer_task_instruction
+from backend.agent.tools.icp_diagnosis import (
+    _filter_diagrams_by_explicit_object_ids,
+    _filter_requested_rbd_rows,
 )
-from backend.agent.tools.icp_diagnosis import _filter_diagrams_by_explicit_object_ids
+
+
+def _authorize_selected_rbd(state, rbd):
+    revision_id = f"revision-{rbd['evidence_id']}"
+    rbd.update(
+        {
+            "claim_type": "rbd_structure",
+            "source_kind": "postgres",
+            "authority": "validated_relation",
+            "doc_id": "doc-rbd",
+            "review_status": "auto_validated",
+        }
+    )
+    metadata = dict(rbd.get("metadata") or {})
+    metadata.update(
+        {
+            "revision_id": revision_id,
+            "diagram_key": rbd["record_id"],
+            "validation_status": "auto_validated",
+            "projection_status": "published",
+            "is_active": True,
+        }
+    )
+    rbd["metadata"] = metadata
+    anchor = {
+        "doc_type": "rbd",
+        "doc_id": "doc-rbd",
+        "record_id": rbd["record_id"],
+        "revision_id": revision_id,
+        "diagram_key": rbd["record_id"],
+    }
+    _, binding = bind_rbd_models(
+        [rbd],
+        required=True,
+        raw_user_query=state.get("query"),
+        anchor_selectors=selected_rbd_anchor_selectors([anchor]),
+    )
+    state["selected_conversation_anchors"] = [anchor]
+    state["rbd_query_binding"] = binding
 
 
 class RequestedSourceCoverageTests(unittest.TestCase):
-    def test_empty_explicit_rbd_query_is_visible_in_answer(self):
-        answer = _requested_source_coverage_notice(
-            "FMECA 给出了两个候选原因。[^1]",
-            {
-                "requested_source_tools": ["rbd_query"],
-                "tool_results": [
-                    {"tool": "rbd_query", "status": "empty", "evidence_ids": []}
-                ],
-                "evidence_registry": [],
-                "safety_decision": {"approved_evidence_ids": []},
-            },
-        )
+    def test_source_question_survives_an_unavailable_field_without_authorizing_other_sources(self):
+        from backend.agent.nodes.plan import _parse_requested_sources
+        from backend.agent.tool_policy import resolve_tool_policy
 
-        self.assertIn("资料查询结果", answer)
-        self.assertIn("RBD 可靠性框图分析报告", answer)
-        self.assertIn("未找到", answer)
-        self.assertIn("不能以其他资料替代", answer)
+        for source in ("rbd", "function_locator", "hmc"):
+            for wording in ("请向资料甲核实检测依据", "Does source A provide a verification basis?", "资料甲能证明到哪一步？"):
+                with self.subTest(source=source, wording=wording):
+                    request = [{"doc_type": source, "basis": wording, "question_role": "capability", "requested_fields": ["detection_method"]}]
+                    self.assertEqual(request, _parse_requested_sources(request, raw_user_query=wording))
+                    decision = resolve_tool_policy(intent="entity_profile", raw_user_query=wording, requested_sources=request)
+                    self.assertIn("detection_method", decision["source_coverage_fields"])
+                    self.assertEqual([source], decision["authorized_doc_types"])
+                    self.assertNotIn("fmeca_query", decision["authorized_tools"])
 
-    def test_failed_explicit_source_is_not_reported_as_no_match(self):
-        answer = _requested_source_coverage_notice(
-            "已整理当前可用的 FMECA 资料。[^1]",
-            {
-                "query_frame": {"requested_source_tools": ["rbd_query"]},
-                "tool_results": [{"tool": "rbd_query", "status": "failed"}],
-                "evidence_registry": [],
-                "safety_decision": {"approved_evidence_ids": []},
-            },
-        )
 
-        self.assertIn("查询未成功", answer)
-        self.assertNotIn("未找到与当前对象", answer)
-
-    def test_approved_explicit_source_needs_no_status_footer(self):
-        answer = _requested_source_coverage_notice(
-            "RBD 结构已整理。[^1]",
-            {
-                "requested_source_tools": ["rbd_query"],
-                "tool_results": [{"tool": "rbd_query", "status": "ok"}],
-                "evidence_registry": [
-                    {"evidence_id": "rbd-1", "doc_type": "rbd"}
-                ],
-                "safety_decision": {"approved_evidence_ids": ["rbd-1"]},
-            },
-        )
-
-        self.assertNotIn("资料查询结果", answer)
-
-    def test_explicit_rbd_source_sets_structure_not_calculation_boundary(self):
-        instruction = _source_coverage_preflight_instruction(
-            {"requested_source_tools": ["rbd_query"]}
-        )
-
-        self.assertIn("成功判据", instruction)
-        self.assertIn("不能证明该模块为什么损坏", instruction)
-        self.assertIn("未计算数值", instruction)
-        self.assertIn("不得因此断言 RBD 文档缺少", instruction)
-
-    def test_successful_explicit_rbd_adds_its_scope_boundary(self):
-        answer = _ensure_explicit_rbd_scope_boundary(
-            "RBD 成功判据已经整理。[^1]",
-            {
-                "requested_source_tools": ["rbd_query"],
-                "_terminal_public_ledger": True,
-                "context_evidence_ids": ["rbd-1"],
-                "evidence_registry": [
-                    {
-                        "evidence_id": "rbd-1",
-                        "doc_type": "rbd",
-                        "claim_type": "rbd_structure",
-                    }
-                ],
-                "safety_decision": {"approved_evidence_ids": ["rbd-1"]},
-            },
-        )
-
-        self.assertIn("RBD 的结论边界", answer)
-        self.assertIn("不能单独确认所询对象的根因或维修动作", answer)
-        self.assertIn("[^1]", answer)
-
-    def test_public_rbd_boundary_uses_final_citation_number(self):
-        answer = _ensure_explicit_rbd_scope_boundary(
-            "已整理结构。[^2]",
-            {"requested_source_tools": ["rbd_query"]},
-            citations=[
-                {"id": 1, "doc_type": "fmeca", "type": "fmeca_fact"},
-                {"id": 2, "doc_type": "rbd", "type": "rbd_structure"},
+    def test_source_boundary_window_uses_selected_rbd_not_locator_neighbors(self):
+        rbd = {
+            "evidence_id": "rbd-selected",
+            "doc_type": "rbd",
+            "record_id": "RBD:demo-power-path",
+            "title": "演示供电路径",
+        }
+        locator = {
+            "evidence_id": "function-neighbor",
+            "doc_type": "function_locator",
+            "record_id": "FUNC-OTHER",
+            "metadata": {"answer_fields": {"function_id": "FUNC-OTHER"}},
+        }
+        state = {
+            "requested_source_tools": ["rbd_query"],
+            "selected_conversation_anchors": [
+                {"doc_type": "rbd", "record_id": "RBD:demo-power-path"}
             ],
+            "safety_decision": {
+                "approved_evidence_ids": ["rbd-selected", "function-neighbor"]
+            },
+            "query_frame": {
+                "requested_source_tools": ["rbd_query"],
+                "response_focus": ["source_capability", "source_limitation"],
+            },
+        }
+        _authorize_selected_rbd(state, rbd)
+
+        filtered = _filter_answer_domain_evidence(state, [rbd, locator])
+
+        self.assertEqual(["rbd-selected"], [item["evidence_id"] for item in filtered])
+
+    def test_source_boundary_does_not_drop_an_independent_second_goal(self):
+        rbd = {
+            "evidence_id": "rbd-selected",
+            "doc_type": "rbd",
+            "record_id": "RBD:demo-path",
+            "authority": "validated_relation",
+        }
+        history = {
+            "evidence_id": "history-selected",
+            "doc_type": "fault_history",
+            "record_id": "HIS-DEMO",
+            "authority": "authoritative_record",
+            "match_type": "exact_conversation_reference",
+            "metadata": {"answer_fields": {"verification_result": "连续复测通过"}},
+        }
+        state = {
+            "requested_source_tools": ["rbd_query"],
+            "query_targets": [
+                {"intent": "reliability_query"},
+                {"intent": "history_query"},
+            ],
+            "query_frame": {
+                "requested_source_tools": ["rbd_query"],
+                "source_obligations": [{
+                    "tool": "rbd_query",
+                    "doc_type": "rbd",
+                    "fields": ["rbd_success_criterion", "rbd_path_structure"],
+                }],
+                "response_focus": ["source_capability", "recovery_verification"],
+                "required_answer_fields": [
+                    "rbd_success_criterion",
+                    "rbd_path_structure",
+                    "history_result",
+                ],
+            },
+        }
+        _authorize_selected_rbd(state, rbd)
+
+        filtered = _filter_answer_domain_evidence(state, [rbd, history])
+
+        self.assertEqual(
+            {"rbd-selected", "history-selected"},
+            {item["evidence_id"] for item in filtered},
         )
 
-        self.assertIn("RBD 的结论边界", answer)
-        self.assertIn("[^2]", answer)
+
+
+
+
+
+
+    def test_explicit_source_boundary_keeps_only_requested_evidence_dimensions(self):
+        instruction = _answer_task_instruction(
+            {
+                "query_frame": {
+                    "source_obligations": [{
+                        "tool": "rbd_query",
+                        "doc_type": "rbd",
+                        "fields": ["rbd_single_failure_boundary"],
+                    }]
+                }
+            }
+        )
+
+        self.assertIn('"fields":["rbd_single_failure_boundary"]', instruction)
+        self.assertNotIn("rbd_success_criterion", instruction)
+        self.assertNotIn("rbd_path_structure", instruction)
+
+
 
     def test_explicit_rbd_coverage_keeps_cause_answer_narrative(self):
         self.assertFalse(
@@ -115,12 +181,20 @@ class RequestedSourceCoverageTests(unittest.TestCase):
                             "fault_cause",
                             "rbd_path_structure",
                         ],
+                        "diagnostic_closure": {
+                            "required": True,
+                            "required_dimensions": [
+                                "fault_cause",
+                                "rbd_path_structure",
+                            ],
+                            "basis": "当前原因与结构边界",
+                        },
                     },
                 }
             )
         )
 
-    def test_explicit_rbd_keeps_only_graph_with_same_durable_subject_id(self):
+    def test_structured_subject_without_rbd_authority_contract_drops_graphs(self):
         function_item = {
             "evidence_id": "function-msm",
             "doc_type": "function_locator",
@@ -150,12 +224,17 @@ class RequestedSourceCoverageTests(unittest.TestCase):
                 "intent": "cause_analysis",
                 "requested_source_tools": ["rbd_query"],
                 "query_frame": {"requested_source_tools": ["rbd_query"]},
+                "structured_entity_binding": {
+                    "bound": True,
+                    "business_ids": ["MOD-GPP-MSM"],
+                    "terms": ["MOD-GPP-MSM", "MSM"],
+                },
             },
             [function_item, matching_rbd, unrelated_rbd],
         )
 
         self.assertEqual(
-            ["function-msm", "rbd-msm"],
+            ["function-msm"],
             [item["evidence_id"] for item in filtered],
         )
 
@@ -182,6 +261,127 @@ class RequestedSourceCoverageTests(unittest.TestCase):
         )
 
         self.assertEqual(["RBD-SYN-002"], [row["diagram_key"] for row in filtered])
+
+    def test_natural_rbd_subject_cannot_select_a_model(self):
+        rows = [
+            {
+                "diagram_type": "rbd",
+                "revision_id": "rev-power",
+                "diagram_key": "RBD:电源保障链可靠性模型",
+                "title": "电源保障链可靠性模型",
+                "validation_status": "auto_validated",
+                "projection_status": "published",
+                "is_active": True,
+                "graph": {
+                    "vertices": [
+                        {"business_id": "MOD-PWR-ICU", "name": "输入调理模块"}
+                    ]
+                },
+            },
+            {
+                "diagram_type": "rbd",
+                "revision_id": "rev-display",
+                "diagram_key": "RBD:显示输出功能可靠性模型",
+                "title": "显示输出功能可靠性模型",
+                "validation_status": "auto_validated",
+                "projection_status": "published",
+                "is_active": True,
+                "graph": {"vertices": [{"name": "显示处理模块"}]},
+            },
+        ]
+
+        filtered = _filter_requested_rbd_rows(
+            rows,
+            requested=True,
+            literal_subject="显示处理模块",
+        )
+        self.assertEqual([], filtered)
+
+    def test_selected_rbd_citation_identity_outvotes_meta_question_text(self):
+        rows = [
+            {
+                "diagram_type": "rbd",
+                "revision_id": "rev-task",
+                "diagram_key": "RBD:任务计算保障链",
+                "title": "任务计算保障链",
+                "validation_status": "auto_validated",
+                "projection_status": "published",
+                "is_active": True,
+            },
+            {
+                "diagram_type": "rbd",
+                "revision_id": "rev-display",
+                "diagram_key": "RBD:显示输出保障链",
+                "title": "显示输出保障链",
+                "validation_status": "auto_validated",
+                "projection_status": "published",
+                "is_active": True,
+            },
+        ]
+
+        filtered = _filter_requested_rbd_rows(
+            rows,
+            requested=True,
+            anchor_identities=["RBD:任务计算保障链"],
+            literal_subject="可靠性框图的结论边界",
+        )
+
+        self.assertEqual(
+            ["RBD:任务计算保障链"],
+            [item["diagram_key"] for item in filtered],
+        )
+
+    def test_explicit_rbd_boundary_is_reusable_after_semantic_hydration(self):
+        unrelated = {
+            "diagram_key": "RBD:电源保障链可靠性模型",
+            "title": "电源保障链可靠性模型",
+            "graph": {"vertices": [{"name": "输入调理模块"}]},
+            "match_type": "semantic_locator_hydration",
+        }
+
+        self.assertEqual(
+            [],
+            _filter_requested_rbd_rows(
+                [unrelated],
+                requested=True,
+                literal_subject="输入端滤波器",
+            ),
+        )
+
+    def test_explicit_rbd_business_id_miss_drops_all_other_rbd_evidence(self):
+        function_item = {
+            "evidence_id": "function-msm",
+            "doc_type": "function_locator",
+            "metadata": {
+                "answer_fields": {"component_id": "MOD-GPP-MSM"}
+            },
+        }
+        unrelated_rbd = {
+            "evidence_id": "rbd-pdu",
+            "doc_type": "rbd",
+            "content": (
+                '{"vertices":[{"business_id":"MOD-PWR-PDU",'
+                '"properties":{"module_id":"MOD-PWR-PDU"}}]}'
+            ),
+        }
+
+        filtered = _filter_answer_domain_evidence(
+            {
+                "requested_source_tools": ["rbd_query"],
+                "query_frame": {"requested_source_tools": ["rbd_query"]},
+                "structured_entity_binding": {
+                    "bound": True,
+                    "business_ids": ["MOD-GPP-MSM"],
+                    "terms": ["MOD-GPP-MSM", "MSM"],
+                },
+            },
+            [function_item, unrelated_rbd],
+        )
+
+        self.assertEqual(
+            ["function-msm"],
+            [item["evidence_id"] for item in filtered],
+        )
 
 
 if __name__ == "__main__":

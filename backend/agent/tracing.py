@@ -5,10 +5,12 @@
 回答流结束后 ``end_turn`` 将事件以 JSON-lines 落盘（目录可配置），同时
 更新进程级聚合计数。查询接口按 ``trace_id`` 回放或取聚合统计。
 
-降级计数只统计三类系统性降级，对应路线图可量化验收项：
+降级计数统计可操作的系统性降级，对应路线图可量化验收项：
 - ``planner_json``：规划模型 JSON 解析失败退回宽召回
 - ``adaptive_fallback``：adaptive_tools 路由输出不可用退回安全候选集
 - ``retrieval_projection``：检索管线出错（含投影失败）触发降级
+- ``editor_manifest_echo``：回答校对模型回显内部清单并立即安全降级
+- ``answer_incremental_fallback``：增量回答模型失败后使用已批准字段兜底
 
 LLM 调用统一挂在 ``llm_service.call_model``（P0-7 收敛后的公开入口），
 工具调用事件由各工具节点/检索映射处主动上报。
@@ -25,13 +27,21 @@ from contextvars import ContextVar
 from typing import Any, Dict, List, Optional
 
 from backend.config.config import config
+from backend.agent.answer_observation import observe_model_call
 
 logger = logging.getLogger(__name__)
 
 DEGRADATION_KINDS = (
+    "scope_router",
+    "capability_response",
     "planner_json",
+    "target_contract",
+    "model_selection",
     "adaptive_fallback",
     "retrieval_projection",
+    "editor_manifest_echo",
+    "answer_incremental_fallback",
+    "answer_open_claim_safety_fallback",
 )
 
 _current_trace: ContextVar[Optional["TraceRecorder"]] = ContextVar(
@@ -44,9 +54,7 @@ _AGG: Dict[str, int] = {
     "llm_calls": 0,
     "llm_failures": 0,
     "tool_events": 0,
-    "deg_planner_json": 0,
-    "deg_adaptive_fallback": 0,
-    "deg_retrieval_projection": 0,
+    **{f"deg_{kind}": 0 for kind in DEGRADATION_KINDS},
 }
 
 
@@ -187,6 +195,7 @@ def peek() -> Optional[TraceRecorder]:
 
 def record_llm(**fields: Any) -> None:
     """LLM 调用留痕：有活跃 trace 进事件；聚合计数始终累加。"""
+    observe_model_call(fields)
     with _AGG_LOCK:
         _AGG["llm_calls"] += 1
         if not fields.get("ok", True):
@@ -205,8 +214,26 @@ def record_tool(**fields: Any) -> None:
         recorder.record_tool(**fields)
 
 
+def record_answer_review(*, attempt: int, outcome: str, code: str = "", issues=()) -> None:
+    """Public diagnostics contain codes/coordinates, never drafts or feedback."""
+    import re
+
+    recorder = peek()
+    if recorder is not None:
+        recorder._record(
+            "answer_review", attempt=attempt, outcome=outcome,
+            code=code if re.fullmatch(r"[a-z_]{0,80}", code) else "unknown",
+            issues=[{"location": item["location"], "code": item["code"]}
+                    for item in issues if isinstance(item, dict)
+                    and isinstance(item.get("location"), str)
+                    and re.fullmatch(r"(?:u\d+|q\d+|review)", item["location"])
+                    and isinstance(item.get("code"), str)
+                    and re.fullmatch(r"[a-z_]{1,80}", item["code"])][:40],
+        )
+
+
 def record_degradation(kind: str, detail: str = "") -> None:
-    """三类系统性降级计数（即使无活跃 trace 也计进程级聚合）。
+    """受控类型的系统性降级计数（即使无活跃 trace 也计进程级聚合）。
 
     未知 kind 不落计数（避免类型漂移污染降级率统计），但活跃 trace 下
     仍记录 detail 便于排查。
@@ -226,11 +253,7 @@ def aggregate_stats() -> Dict[str, Any]:
         snapshot = dict(_AGG)
     turns = snapshot["turns"] or 1
     llm_calls = snapshot["llm_calls"]
-    degradations = (
-        snapshot["deg_planner_json"]
-        + snapshot["deg_adaptive_fallback"]
-        + snapshot["deg_retrieval_projection"]
-    )
+    degradations = sum(snapshot.get(f"deg_{kind}", 0) for kind in DEGRADATION_KINDS)
     return {
         **snapshot,
         "avg_llm_calls_per_turn": round(llm_calls / turns, 2),

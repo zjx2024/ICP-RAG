@@ -24,6 +24,7 @@ from backend.core.parsers.table_engine import (
     TableSchema,
     extract_table_drafts as engine_extract_table_drafts,
 )
+from backend.core.value_normalization import normalize_optional_identifier
 from backend.storage.postgres_client import postgres_client
 from backend.storage.search_store import search_store
 
@@ -311,6 +312,12 @@ def _normalize_fmeca(draft: RecordDraft) -> None:
 
 def _normalize_mfl(draft: RecordDraft) -> None:
     draft.values["mfl_code"] = _normalized_code(draft.values.get("mfl_code"))
+    # A visual dash/N/A in an optional identifier column means “not supplied”,
+    # not a globally mergeable API business identity.  ``raw_data`` continues
+    # to retain the exact source cell for audit.
+    draft.values["api_name"] = normalize_optional_identifier(
+        draft.values.get("api_name")
+    )
     raw = _clean_cell(draft.values.get("api_reportable"))
     normalized, recognized = _parse_boolean(raw)
     draft.values["api_reportable_raw"] = raw

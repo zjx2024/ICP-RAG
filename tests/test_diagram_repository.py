@@ -1,5 +1,6 @@
 import hashlib
 import unittest
+from unittest.mock import Mock
 
 from backend.icp.diagram_models import content_hash
 from backend.icp.diagram_repository import (
@@ -110,6 +111,14 @@ class DiagramRepositorySchemaTests(unittest.TestCase):
 
 
 class DiagramRepositoryOperationTests(unittest.TestCase):
+    def test_failed_rollback_is_logged_without_masking_original_error(self):
+        connection = Mock()
+        connection.rollback.side_effect = RuntimeError("connection closed")
+        repository = DiagramRepository(connection)
+        with self.assertLogs("backend.icp.diagram_repository", level="WARNING") as logs:
+            repository._rollback()
+        self.assertIn("connection closed", logs.output[0])
+
     def _repository(self, responses):
         connection = _ScriptedConnection(responses)
         ids = iter(["00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-000000000002"])
@@ -457,6 +466,16 @@ class DiagramRepositoryOperationTests(unittest.TestCase):
         self.assertNotIn("'parsing'", sql)
         self.assertNotIn("'failed'", sql)
         self.assertEqual(("doc-1", "fta"), params)
+
+    def test_both_active_revision_reads_include_authoritative_document_scope(self):
+        metadata = {"configuration": "BUILD-Q", "document_version": "V8"}
+        active = {"revision_id": "revision-3", "document_metadata": metadata, "doc_name": "source.docx"}
+        repository, connection = self._repository([{"rows": [active]}, {"rows": [active]}])
+        self.assertEqual(metadata, repository.get_active_revision("diagram-3")["document_metadata"])
+        self.assertEqual(metadata, repository.list_active_revisions(diagram_type="rbd")[0]["document_metadata"])
+        for sql, _ in connection.executions:
+            self.assertIn("doc.metadata AS document_metadata", sql)
+            self.assertIn("doc.file_name AS doc_name", sql)
 
     def test_active_read_keeps_last_confirmed_revision_while_new_draft_is_pending(self):
         active = {

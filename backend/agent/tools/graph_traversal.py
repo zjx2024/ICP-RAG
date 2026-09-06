@@ -22,7 +22,18 @@ import time
 from collections import deque
 from typing import Any, Callable, Dict, Iterable, List, Literal, Mapping, Sequence
 
-from backend.agent.contracts import make_evidence, make_tool_result
+from backend.agent.answer_contract import (
+    normalize_answer_fields,
+    normalize_diagnostic_closure,
+    tools_for_answer_fields,
+)
+from backend.agent.contracts import (
+    make_evidence,
+    make_tool_result,
+    match_type_is_exact,
+    match_type_precision,
+)
+from backend.agent.tool_policy import QUERY_TOOL_NAMES
 from backend.icp.diagram_validation import FORMAL_VALIDATION_STATUSES
 
 
@@ -47,6 +58,22 @@ HARD_MAX_EDGES = 400
 HARD_MAX_PATHS = 50
 HARD_MAX_SEEDS = 20
 _MAX_PATH_STATES = 5000
+
+# Keep the adapter's last-line validation bounded exactly like the adaptive
+# router that creates graph requests.  The adapter intentionally recomputes
+# this set from current structured state instead of trusting a persisted or
+# model-mutated ``graph_traversal_request``.
+_MAX_ADAPTER_GRAPH_SEEDS = 8
+_MAX_ADAPTER_CANDIDATE_SEEDS_PER_TOOL = 3
+_SOURCE_TOOL_DOC_TYPES = {
+    "function_locator": "function_locator",
+    "hmc_query": "hmc",
+    "fmeca_query": "fmeca",
+    "fta_query": "fta",
+    "rbd_query": "rbd",
+    "mfl_query": "mfl",
+    "fault_history_query": "fault_history",
+}
 
 
 class GraphTraversalValidationError(ValueError):
@@ -1306,6 +1333,231 @@ def run_graph_traversal(
         return _result(status="failed", request=normalized, errors=[str(exc)])
 
 
+def _adapter_required_answer_fields(state: Mapping[str, Any]) -> List[str]:
+    """Return only validated field contracts that can own a graph seed."""
+
+    frame = state.get("query_frame")
+    frame = frame if isinstance(frame, Mapping) else {}
+    fields = normalize_answer_fields(frame.get("required_answer_fields"))
+    for raw_target in state.get("query_targets") or []:
+        if not isinstance(raw_target, Mapping):
+            continue
+        for field in normalize_answer_fields(
+            raw_target.get("required_fields") or raw_target.get("answer_fields")
+        ):
+            if field not in fields:
+                fields.append(field)
+    closure = normalize_diagnostic_closure(
+        frame.get("diagnostic_closure"),
+        raw_user_query=state.get("query"),
+    )
+    for field in closure.get("required_dimensions") or []:
+        if field not in fields:
+            fields.append(field)
+    return fields
+
+
+def _adapter_executed_query_tools(state: Mapping[str, Any]) -> set[str]:
+    return {
+        _text(item.get("tool"))
+        for item in (state.get("tool_results") or [])
+        if isinstance(item, Mapping) and _text(item.get("tool")) in QUERY_TOOL_NAMES
+    }
+
+
+def _adapter_seed_owner_tools(state: Mapping[str, Any]) -> set[str]:
+    """Resolve seed owners from structured fields/source obligations only.
+
+    User wording, evidence titles and retrieved prose are deliberately absent:
+    they may affect relevance ranking upstream, but cannot authorize an entity
+    as the centre of a graph traversal at this boundary.
+    """
+
+    frame = state.get("query_frame")
+    frame = frame if isinstance(frame, Mapping) else {}
+    owners = {
+        tool
+        for tool in tools_for_answer_fields(_adapter_required_answer_fields(state))
+        if tool in QUERY_TOOL_NAMES
+    }
+    for raw in frame.get("source_obligations") or []:
+        if not isinstance(raw, Mapping):
+            continue
+        tool = _text(raw.get("tool"))
+        if tool in QUERY_TOOL_NAMES:
+            owners.add(tool)
+    for raw in frame.get("requested_source_tools") or []:
+        tool = _text(raw)
+        if tool in QUERY_TOOL_NAMES:
+            owners.add(tool)
+    authorized = set(state.get("authorized_tools") or state.get("allowed_tools") or [])
+    return owners & authorized
+
+
+def _selected_anchor_matches_binding(
+    state: Mapping[str, Any], binding: Mapping[str, Any]
+) -> bool:
+    """Verify an exact conversation binding against a selected server anchor."""
+
+    business_id = _text(binding.get("business_id"))
+    source_tool = _text(binding.get("source_tool"))
+    expected_doc_type = _SOURCE_TOOL_DOC_TYPES.get(source_tool, "")
+    if not business_id or not expected_doc_type:
+        return False
+    for raw_anchor in state.get("selected_conversation_anchors") or []:
+        if not isinstance(raw_anchor, Mapping):
+            continue
+        # The plan node constructs this list by intersecting model-selected IDs
+        # with server-offered anchors.  Requiring that stable anchor identity
+        # prevents a caller from presenting an arbitrary record-shaped dict.
+        if not _text(raw_anchor.get("anchor_id") or raw_anchor.get("evidence_id")):
+            continue
+        if _text(raw_anchor.get("doc_type")) != expected_doc_type:
+            continue
+        values = [_text(raw_anchor.get("record_id"))]
+        fields = raw_anchor.get("answer_fields")
+        if isinstance(fields, Mapping):
+            for key, raw_value in fields.items():
+                normalized_key = _text(key).casefold()
+                if not (
+                    normalized_key.endswith("_id")
+                    or normalized_key.endswith("_code")
+                    or normalized_key in {"abbreviation", "hmc_code", "record_code"}
+                ):
+                    continue
+                raw_values = (
+                    raw_value
+                    if isinstance(raw_value, (list, tuple, set, frozenset))
+                    else [raw_value]
+                )
+                values.extend(_text(value) for value in raw_values)
+        if business_id in {value for value in values if value}:
+            return True
+    return False
+
+
+def _exact_adapter_binding_authorized(
+    state: Mapping[str, Any], binding: Mapping[str, Any]
+) -> bool:
+    """Accept only registered exact identity protocols at the adapter edge."""
+
+    match_type = _text(binding.get("match_type"))
+    if (
+        not match_type_is_exact(match_type)
+        or _text(binding.get("source_tool")) not in _SOURCE_TOOL_DOC_TYPES
+        or not _text(binding.get("business_id"))
+    ):
+        return False
+    if match_type == "exact_conversation_reference":
+        return _selected_anchor_matches_binding(state, binding)
+    return True
+
+
+def _eligible_adapter_seed_bindings(
+    state: Mapping[str, Any],
+) -> Dict[str, Dict[str, Any]]:
+    """Recompute the bounded bindings eligible for the current graph request.
+
+    Exact bindings are already machine-authorized identities.  A candidate is
+    exploration-only and remains eligible solely when its structured source
+    tool both owns an explicit current-turn obligation and has actually run.
+    Ambiguous/relevance-only identity states never grant traversal authority.
+    """
+
+    candidate_tools = _adapter_seed_owner_tools(state) & _adapter_executed_query_tools(
+        state
+    )
+    record_binding = state.get("structured_record_binding")
+    record_binding = record_binding if isinstance(record_binding, Mapping) else {}
+    entity_binding = state.get("structured_entity_binding")
+    entity_binding = entity_binding if isinstance(entity_binding, Mapping) else {}
+    reject_fmeca = (
+        record_binding.get("ambiguous") is True
+        or record_binding.get("relevance_only") is True
+    )
+    reject_function = entity_binding.get("ambiguous") is True
+
+    exact: List[Dict[str, Any]] = []
+    candidates: List[Dict[str, Any]] = []
+    candidate_count_by_tool: Dict[str, int] = {}
+    seen: set[str] = set()
+    for raw in state.get("graph_seed_bindings") or []:
+        if not isinstance(raw, Mapping):
+            continue
+        binding = dict(raw)
+        logical_id = _text(binding.get("logical_id"))
+        if not logical_id or logical_id in seen:
+            continue
+        source_tool = _text(binding.get("source_tool"))
+        status = _text(binding.get("binding_status"))
+        if reject_fmeca and source_tool == "fmeca_query":
+            continue
+        if reject_function and source_tool == "function_locator":
+            continue
+        if status == "exact" and _exact_adapter_binding_authorized(state, binding):
+            seen.add(logical_id)
+            exact.append(binding)
+            continue
+        # Unknown/unbound statuses fail closed.  Only the explicit candidate
+        # protocol may enter the bounded exploratory branch.
+        if (
+            status != "candidate"
+            or source_tool not in candidate_tools
+            or match_type_precision(binding.get("match_type")) <= 0
+        ):
+            continue
+        if (
+            candidate_count_by_tool.get(source_tool, 0)
+            >= _MAX_ADAPTER_CANDIDATE_SEEDS_PER_TOOL
+        ):
+            continue
+        candidate_count_by_tool[source_tool] = (
+            candidate_count_by_tool.get(source_tool, 0) + 1
+        )
+        seen.add(logical_id)
+        candidates.append(binding)
+
+    selected = [*exact, *candidates][:_MAX_ADAPTER_GRAPH_SEEDS]
+    return {_text(item.get("logical_id")): item for item in selected}
+
+
+def _adapter_terminal_update(
+    request: Mapping[str, Any],
+    *,
+    status: str,
+    reason: str,
+) -> Dict[str, Any]:
+    """Return an evidence-free adapter result without touching HugeGraph."""
+
+    diagnostics = {"errors": [reason]} if status == "blocked" else {"warnings": [reason]}
+    tool_result = make_tool_result(
+        tool="graph_traversal",
+        status=status,
+        params=dict(request),
+        data={"node_count": 0, "edge_count": 0, "path_count": 0},
+        backend="hugegraph+postgres_reauthorization",
+        **diagnostics,
+    )
+    return {
+        "tool_calls": [
+            {
+                "tool": "graph_traversal",
+                "count": 0,
+                "duration": 0.0,
+                "params": dict(request),
+                "status": status,
+                "evidence_count": 0,
+                "evidence_ids": [],
+                "results_preview": [],
+                "skip_reason": reason,
+            }
+        ],
+        "tool_results": [tool_result],
+        "evidence_registry": [],
+        "graph_paths": [],
+    }
+
+
 async def graph_traversal_node(
     state: Mapping[str, Any],
     *,
@@ -1320,41 +1572,44 @@ async def graph_traversal_node(
     core to the rest of the diagnosis orchestrator.
     """
 
-    request = state.get("graph_traversal_request") or {}
+    raw_request = state.get("graph_traversal_request")
+    request = dict(raw_request) if isinstance(raw_request, Mapping) else {}
     allowed_tools = set(state.get("allowed_tools") or ())
     policy_disallows = "allowed_tools" in state and "graph_traversal" not in allowed_tools
-    if policy_disallows or not request.get("seed_ids"):
-        reason = (
-            "关系查询不在本轮工具白名单中"
-            if policy_disallows
-            else "直接查询未返回可绑定的业务实体ID，未执行关系扩展"
+    requested_seed_ids = _list(
+        request.get("seed_ids")
+        or request.get("source_ids")
+        or request.get("start_ids")
+    )
+    if policy_disallows:
+        return _adapter_terminal_update(
+            request,
+            status="blocked" if requested_seed_ids else "empty",
+            reason="关系查询不在本轮工具白名单中",
         )
-        tool_result = make_tool_result(
-            tool="graph_traversal",
+    if not requested_seed_ids:
+        return _adapter_terminal_update(
+            request,
             status="empty",
-            params=dict(request),
-            data={"node_count": 0, "edge_count": 0, "path_count": 0},
-            backend="hugegraph+postgres_reauthorization",
-            warnings=[reason],
+            reason="直接查询未返回可绑定的业务实体ID，未执行关系扩展",
         )
-        return {
-            "tool_calls": [
-                {
-                    "tool": "graph_traversal",
-                    "count": 0,
-                    "duration": 0.0,
-                    "params": dict(request),
-                    "status": "empty",
-                    "evidence_count": 0,
-                    "evidence_ids": [],
-                    "results_preview": [],
-                    "skip_reason": reason,
-                }
-            ],
-            "tool_results": [tool_result],
-            "evidence_registry": [],
-            "graph_paths": [],
-        }
+
+    eligible_bindings = _eligible_adapter_seed_bindings(state)
+    unauthorized_seed_ids = [
+        seed_id for seed_id in requested_seed_ids if seed_id not in eligible_bindings
+    ]
+    if unauthorized_seed_ids:
+        reason = (
+            "关系查询种子不属于本轮可授权的结构化绑定: "
+            + "、".join(unauthorized_seed_ids)
+        )
+        return _adapter_terminal_update(request, status="blocked", reason=reason)
+
+    # The LangGraph product path never consumes projection edges without a
+    # fresh PostgreSQL assertion check.  Keep the lower-level pure traversal
+    # API configurable for isolated callers, but close this adapter even when
+    # a forged/stale request tries to turn reauthorization off.
+    request["require_relation_reauthorization"] = True
 
     started = time.monotonic()
     result = await asyncio.to_thread(
@@ -1370,24 +1625,64 @@ async def graph_traversal_node(
         if isinstance(item, Mapping) and _text(item.get("id"))
     }
     binding_by_logical_id = {
-        _text(item.get("logical_id")): item
-        for item in (state.get("graph_seed_bindings") or [])
-        if isinstance(item, Mapping) and _text(item.get("logical_id"))
+        logical_id: binding
+        for logical_id, binding in eligible_bindings.items()
+        if logical_id in requested_seed_ids
     }
     binding_by_path_id: Dict[str, Mapping[str, Any]] = {}
     for path in paths:
         start_node = nodes_by_physical_id.get(_text(path.get("start_id")), {})
-        binding = binding_by_logical_id.get(_text(start_node.get("logical_id")))
-        if binding:
-            path["seed_binding_status"] = binding.get("binding_status", "candidate")
-            path["seed_match_type"] = binding.get("match_type", "")
-            binding_by_path_id[_text(path.get("path_id"))] = binding
+        start_logical_ids = {
+            _text(start_node.get("logical_id")),
+            *(_list(start_node.get("logical_ids"))),
+        }
+        start_bindings = [
+            binding_by_logical_id[logical_id]
+            for logical_id in sorted(start_logical_ids)
+            if logical_id in binding_by_logical_id
+        ]
+        if not start_bindings:
+            return _adapter_terminal_update(
+                request,
+                status="blocked",
+                reason="关系路径起点无法回绑到本轮已授权的结构化种子",
+            )
+        # Multiple logical IDs can share one canonical vertex.  Preserve the
+        # weakest requested binding so a candidate can never inherit a sibling
+        # exact binding's authority through projection deduplication.
+        binding = sorted(
+            start_bindings,
+            key=lambda item: (
+                0 if _text(item.get("binding_status")) == "candidate" else 1,
+                _text(item.get("logical_id")),
+            ),
+        )[0]
+        path["seed_binding_status"] = _text(binding.get("binding_status"))
+        path["seed_match_type"] = _text(binding.get("match_type"))
+        path["seed_logical_id"] = _text(binding.get("logical_id"))
+        binding_by_path_id[_text(path.get("path_id"))] = binding
 
     evidence: List[Dict[str, Any]] = []
     for raw_item in result.get("evidence") or []:
         item = dict(raw_item)
         binding = binding_by_path_id.get(_text(item.get("record_id")))
-        if binding and binding.get("binding_status") != "exact":
+        if binding is None:
+            return _adapter_terminal_update(
+                request,
+                status="blocked",
+                reason="关系证据无法回绑到本轮已授权的结构化种子",
+            )
+        binding_status = _text(binding.get("binding_status"))
+        metadata = dict(item.get("metadata") or {})
+        metadata.update(
+            {
+                "seed_binding_status": binding_status,
+                "seed_match_type": _text(binding.get("match_type")),
+                "seed_logical_id": _text(binding.get("logical_id")),
+            }
+        )
+        item["metadata"] = metadata
+        if binding_status != "exact":
             # The edges remain formally re-authorized, while the user's words
             # only selected a candidate start entity. Keep those two confidence
             # dimensions separate for the evidence gate and answer model.
@@ -1398,15 +1693,6 @@ async def graph_traversal_node(
             if limitation not in limitations:
                 limitations.append(limitation)
             item["limitations"] = limitations
-            metadata = dict(item.get("metadata") or {})
-            metadata.update(
-                {
-                    "seed_binding_status": "candidate",
-                    "seed_match_type": binding.get("match_type", "semantic_candidate"),
-                    "seed_logical_id": binding.get("logical_id", ""),
-                }
-            )
-            item["metadata"] = metadata
         evidence.append(item)
     diagnostics = result.get("diagnostics") or {}
     tool_result = make_tool_result(

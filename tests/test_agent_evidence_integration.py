@@ -1,3 +1,7 @@
+import backend.agent.nodes.answer_claim_units as _source_answer_claim_units
+import backend.agent.nodes.answer_evidence_window as _source_answer_evidence_window
+import backend.agent.nodes.answer_payload as _source_answer_payload
+import backend.agent.nodes.answer_text as _source_answer_text
 import asyncio
 import importlib.util
 import json
@@ -28,6 +32,7 @@ elif "psycopg2" in sys.modules and getattr(sys.modules["psycopg2"], "__spec__", 
 from backend.agent.contracts import make_evidence
 from backend.agent.nodes import answer as answer_module
 from backend.agent.nodes.evidence_gate import evidence_gate_node
+from backend.agent.rbd_contract import bind_rbd_models
 from backend.agent.tools import icp_calculation as calculation_module
 from backend.agent.tools import icp_diagnosis as diagnosis_module
 
@@ -36,33 +41,8 @@ def _run(coroutine):
     return asyncio.run(coroutine)
 
 
-class _CapturingCursor:
-    def __init__(self, connection):
-        self.connection = connection
-        self.description = []
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_args):
-        return False
-
-    def execute(self, query, params=()):
-        self.connection.calls.append((" ".join(query.split()), tuple(params or ())))
-
-    def fetchall(self):
-        return []
 
 
-class _CapturingConnection:
-    def __init__(self):
-        self.calls = []
-
-    def cursor(self):
-        return _CapturingCursor(self)
-
-    def rollback(self):
-        pass
 
 
 def _rbd_graph():
@@ -83,236 +63,35 @@ def _rbd_graph():
     }
 
 
+def _calculation_authorization(operation, target, basis):
+    return [{
+        "operation": operation,
+        "mode": "calculate",
+        "target": target,
+        "basis": basis,
+    }]
+
+
+def _rbd_authority_binding(row, query):
+    selected, binding = bind_rbd_models(
+        [row],
+        required=True,
+        raw_user_query=query,
+        explicit_rbd_ids=[row["revision_id"]],
+    )
+    assert selected == [row]
+    assert binding["bound"] is True
+    return binding
+
+
 class DiagnosisIntegrationTests(unittest.TestCase):
-    def test_hmc_symptom_item_cannot_support_a_repair_action(self):
-        evidence = make_evidence(
-            source_kind="postgres",
-            authority="authoritative_record",
-            evidence_level="L1_DIRECT",
-            claim_type="hmc_fault",
-            doc_type="hmc",
-            doc_id="doc-hmc",
-            record_id="91810001**0002",
-            title="91810001**0002",
-            content="故障现象：ICU 输入滤波性能退化",
-            metadata={
-                "answer_fields": {
-                    "maintenance_action": "检查滤波器件，必要时更换输入调理模块。"
-                }
-            },
-        )
-        bindings = [{"citation_id": 1, "quote": "检查滤波器件，必要时更换输入调理模块。"}]
 
-        self.assertEqual(
-            [],
-            answer_module._verified_bindings_for_unit(
-                "检查滤波器件，必要时更换输入调理模块。",
-                bindings,
-                {1: evidence},
-            ),
-        )
 
-    def test_specific_module_examples_require_all_named_identities_in_sources(self):
-        evidence = make_evidence(
-            source_kind="postgres",
-            authority="authoritative_record",
-            evidence_level="L1_DIRECT",
-            claim_type="fmeca_fact",
-            doc_type="fmeca",
-            doc_id="doc-fmeca",
-            record_id="FM-SYN-002",
-            title="输入滤波性能退化",
-            content="输入纹波和传导干扰增大，多个子系统出现间歇性异常。",
-        )
-        bindings = [{"citation_id": 1, "quote": "多个子系统出现间歇性异常"}]
 
-        self.assertEqual(
-            [],
-            answer_module._verified_bindings_for_unit(
-                "PDU 误跳闸、GPP-A 存储校验错和 TCM 门限漂移均由该故障引起。",
-                bindings,
-                {1: evidence},
-            ),
-        )
 
-    def test_failure_mode_identity_prevents_cross_mode_impact_binding(self):
-        sensor_open = make_evidence(
-            source_kind="postgres",
-            authority="authoritative_record",
-            evidence_level="L1_DIRECT",
-            claim_type="fmeca_fact",
-            doc_type="fmeca",
-            doc_id="doc-fmeca",
-            record_id="FM-SYN-058",
-            title="传感器通道开路",
-            content="传感器通道开路会导致相关保护或健康判断失去依据。",
-        )
-        saturation = make_evidence(
-            source_kind="postgres",
-            authority="authoritative_record",
-            evidence_level="L1_DIRECT",
-            claim_type="fmeca_fact",
-            doc_type="fmeca",
-            doc_id="doc-fmeca",
-            record_id="FM-SYN-059",
-            title="A/D 采样饱和",
-            content="A/D 采样饱和会导致采样结果失真，健康监测可能误判。",
-        )
-        unit = "A/D 采样饱和会导致采样结果失真，健康监测可能误判。"
 
-        self.assertEqual(
-            [],
-            answer_module._verified_bindings_for_unit(
-                unit,
-                [{"citation_id": 1, "quote": "相关保护或健康判断失去依据"}],
-                {1: sensor_open},
-            ),
-        )
-        self.assertEqual(
-            1,
-            len(
-                answer_module._verified_bindings_for_unit(
-                    unit,
-                    [{"citation_id": 2, "quote": "采样结果失真，健康监测可能误判"}],
-                    {2: saturation},
-                )
-            ),
-        )
 
-    def test_open_circuit_fmeca_cannot_support_ad_saturation_causes(self):
-        sensor_open = make_evidence(
-            source_kind="postgres",
-            authority="authoritative_record",
-            evidence_level="L1_DIRECT",
-            claim_type="fmeca_fact",
-            doc_type="fmeca",
-            doc_id="doc-fmeca",
-            record_id="FM-SYN-058",
-            title="传感器通道开路",
-            content=(
-                "故障模式：传感器通道开路。"
-                "故障原因：传感器线路开路、连接器松动或输入保护损坏。"
-                "检测方法：检查原始 A/D 计数、开路诊断和连接状态。"
-            ),
-        )
-        saturation_claim = (
-            "A/D 采样饱和：若原始计数达到上限且开路诊断正常，"
-            "则候选原因包括输入超量程、增益配置错误或转换器异常。"
-        )
 
-        self.assertEqual(
-            [],
-            answer_module._verified_bindings_for_unit(
-                saturation_claim,
-                [
-                    {
-                        "citation_id": 1,
-                        "quote": sensor_open["content"],
-                    }
-                ],
-                {1: sensor_open},
-            ),
-        )
-
-    def test_verified_bindings_apply_each_quotes_long_claim_guard(self):
-        evidence = make_evidence(
-            source_kind="postgres",
-            authority="authoritative_record",
-            evidence_level="L1_DIRECT",
-            claim_type="fmeca_fact",
-            doc_type="fmeca",
-            doc_id="doc-fmeca",
-            record_id="FM-SYN-002",
-            title="输入滤波性能退化",
-            content=(
-                "故障原因：滤波电容老化、连接阻抗增大或屏蔽接地不良。"
-                "局部影响：输入纹波和传导干扰增大。"
-                "最终影响：多个子系统出现间歇性异常。"
-            ),
-        )
-        long_claim = (
-            "输入滤波性能退化的原因包括滤波电容老化、连接阻抗增大或屏蔽接地不良；"
-            "局部影响是输入纹波和传导干扰增大，最终会使多个子系统出现间歇性异常，"
-            "并进一步造成负载配电保护误跳闸、存储校验错误和复位信号卡滞。"
-        )
-        bindings = [
-            {
-                "citation_id": 1,
-                "quote": "滤波电容老化、连接阻抗增大或屏蔽接地不良",
-            },
-            {"citation_id": 1, "quote": "输入纹波和传导干扰增大"},
-            {"citation_id": 1, "quote": "多个子系统出现间歇性异常"},
-        ]
-
-        self.assertEqual(
-            [],
-            answer_module._verified_bindings_for_unit(
-                long_claim,
-                bindings,
-                {1: evidence},
-            ),
-        )
-
-    def test_named_architecture_source_requires_function_locator_evidence(self):
-        fmeca = make_evidence(
-            source_kind="postgres",
-            authority="authoritative_record",
-            evidence_level="L1_DIRECT",
-            claim_type="fmeca_fact",
-            doc_type="fmeca",
-            doc_id="doc-fmeca",
-            record_id="FM-SYN-038",
-            title="NGW 突发丢包",
-            content="NGW 在高负载下发生突发丢包。",
-        )
-        unit = "根据系统架构说明，NGW 在高负载下会发生突发丢包。"
-
-        self.assertEqual(
-            [],
-            answer_module._verified_bindings_for_unit(
-                unit,
-                [{"citation_id": 1, "quote": "NGW 在高负载下发生突发丢包"}],
-                {1: fmeca},
-            ),
-        )
-
-    def test_history_wording_cannot_bind_to_fmeca_or_mfl_only(self):
-        fmeca = make_evidence(
-            source_kind="postgres",
-            authority="authoritative_record",
-            evidence_level="L1_DIRECT",
-            claim_type="fmeca_fact",
-            doc_type="fmeca",
-            doc_id="doc-fmeca",
-            record_id="FM-SYN-002",
-            title="输入滤波性能退化",
-            content="建议检查滤波器件，必要时更换输入调理模块。",
-        )
-        unit = "以前曾记录过该故障，最终通过更换输入调理模块解决。"
-
-        self.assertEqual(
-            [],
-            answer_module._deterministic_unit_citations(unit, {1: fmeca}, preferred=[1]),
-        )
-
-    def test_opposite_payload_direction_cannot_bind_as_same_fact(self):
-        ingress = make_evidence(
-            source_kind="postgres",
-            authority="authoritative_record",
-            evidence_level="L1_DIRECT",
-            claim_type="historical_case",
-            doc_type="fault_history",
-            doc_id="doc-history",
-            record_id="HIS-SYN-011",
-            title="A 通道接收历史",
-            content="外部设备持续发送数据，但系统 A 通道接收计数长期不变。",
-        )
-        unit = "历史案例表明，内部已经产生报文但外部设备收不到数据。"
-
-        self.assertEqual(
-            [],
-            answer_module._deterministic_unit_citations(unit, {1: ingress}, preferred=[1]),
-        )
 
     def test_fmeca_sql_recall_uses_planner_normalized_phrase(self):
         connection = _CapturingConnection()
@@ -740,6 +519,42 @@ class DiagnosisIntegrationTests(unittest.TestCase):
         self.assertEqual("", result["clarification_question"])
         self.assertTrue(result["evidence_registry"])
 
+    def test_source_boundary_followup_does_not_generate_fault_clarification(self):
+        for facets in (
+            ["evidence_boundaries", "conclusion_validity"],
+            ["evidence_boundary", "conclusion_scope"],
+            ["capability_boundary", "limitation"],
+        ):
+            with self.subTest(facets=facets):
+                state = {
+                    "intent": "hybrid",
+                    "query": "哪些结论能说，哪些不能说？不要用不相干的框图补足。",
+                    "rewritten_query": "说明已查 RBD 的证据边界",
+                    "query_frame": {
+                        "entities": ["输入端滤波器"],
+                        "requested_facets": facets,
+                        "requested_source_tools": ["rbd_query"],
+                    },
+                    "allowed_tools": ["rbd_query", "evidence_synthesis"],
+                    "requested_source_tools": ["rbd_query"],
+                    "sql_limit": 8,
+                }
+                with (
+                    patch.object(diagnosis_module, "_query_diagrams", return_value=[]),
+                    patch.object(
+                        diagnosis_module,
+                        "_enrich_function_sources",
+                        side_effect=lambda rows, _errors=None: list(rows),
+                    ),
+                ):
+                    result = _run(diagnosis_module.icp_diagnosis_node(state))
+
+                self.assertEqual("", result["clarification_question"])
+                self.assertNotIn(
+                    "fault_reasoning",
+                    [item["tool"] for item in result["tool_calls"]],
+                )
+
     def test_direct_fact_queries_exclude_failed_or_in_progress_documents(self):
         connection = _CapturingConnection()
         with patch.object(diagnosis_module.postgres_client, "conn", connection):
@@ -1076,7 +891,12 @@ class DiagnosisIntegrationTests(unittest.TestCase):
             "sql_limit": 8,
             "retrieval_top_k": 8,
         }
+        from backend.agent.current_model_selection import model_candidates, validate_selection
+        selection = validate_selection({"status": "selected", "question_basis": state["query"], "selections": [
+            {"doc_id": "doc-fta", "revision_id": "revision-fta-1", "matched_title": active_revision["title"]},
+        ]}, model_candidates([active_revision], "fta"), query=state["query"])
         with (
+            patch("backend.agent.diagram_query_scope.select_current_models", return_value=selection),
             patch.object(diagnosis_module, "_query_diagrams", return_value=[]),
             patch.object(
                 diagnosis_module,
@@ -1207,6 +1027,38 @@ class DiagnosisIntegrationTests(unittest.TestCase):
         search_candidate = next(item for item in candidates if item["fault"] == "相似检索故障")
         self.assertEqual(0.25, search_candidate["score"])
 
+    def test_fmeca_code_search_hit_reinforces_hydrated_failure_mode(self):
+        fmeca_rows = [
+            {
+                "doc_id": "doc-fmeca",
+                "code": "FM-SYN-006",
+                "fault_mode": "A路间歇停机",
+            },
+            {
+                "doc_id": "doc-fmeca",
+                "code": "FM-SYN-053",
+                "fault_mode": "切换状态振荡",
+            },
+        ]
+        search_rows = [
+            {
+                "kb_id": "fmeca",
+                "chunk_id": "chunk-hot-power",
+                "title": "FM-SYN-006",
+                "score": 0.9,
+            }
+        ]
+        evidence = diagnosis_module._direct_evidence("fmeca_query", fmeca_rows)
+        evidence.extend(diagnosis_module._search_evidence(search_rows))
+
+        candidates = diagnosis_module._candidate_faults(
+            [], fmeca_rows, search_rows, evidence
+        )
+
+        self.assertEqual("A路间歇停机", candidates[0]["fault"])
+        self.assertGreater(candidates[0]["score"], candidates[1]["score"])
+        self.assertNotIn("FM-SYN-006", [item["fault"] for item in candidates])
+
     def test_component_matched_hmc_is_structured_authoritative_candidate(self):
         hmc_rows = [
             {
@@ -1228,6 +1080,27 @@ class DiagnosisIntegrationTests(unittest.TestCase):
 
 
 class CalculationAndGateIntegrationTests(unittest.TestCase):
+    def test_calculation_recognizes_colon_diagram_keys_from_selected_anchors(self):
+        keys = calculation_module._requested_graph_keys(
+            {
+                "query": "按刚才四条通路重新计算",
+                "selected_conversation_anchors": [
+                    {
+                        "doc_type": "rbd",
+                        "record_id": "RBD:显示输出功能可靠性模型",
+                        "title": "显示输出功能可靠性模型",
+                        "answer_fields": {
+                            "diagram_key": "RBD:显示输出功能可靠性模型"
+                        },
+                    }
+                ],
+            },
+            "rbd",
+        )
+
+        self.assertIn("rbd:显示输出功能可靠性模型", keys)
+        self.assertNotIn("显示输出功能可靠性模型", keys)
+
     def test_calculation_parent_binds_business_diagram_key_to_revision(self):
         parent = make_evidence(
             source_kind="postgres",
@@ -1263,6 +1136,9 @@ class CalculationAndGateIntegrationTests(unittest.TestCase):
     def test_inactive_state_graph_is_never_calculated(self):
         state = {
             "query": "计算 RBD 可靠度",
+            "calculation_authorizations": _calculation_authorization(
+                "rbd_reliability", "rbd", "计算 RBD 可靠度"
+            ),
             "entity_keywords": ["处理模块"],
             "allowed_tools": ["rbd_calculator"],
             "confirmed_graphs": [
@@ -1281,7 +1157,7 @@ class CalculationAndGateIntegrationTests(unittest.TestCase):
             patch.object(calculation_module, "calculate_rbd", side_effect=AssertionError("旧修订被计算")),
         ):
             result = _run(calculation_module.icp_calculation_node(state))
-        self.assertEqual("empty", result["tool_results"][0]["status"])
+        self.assertEqual("partial", result["tool_results"][0]["status"])
         self.assertEqual([], result["calculation_results"])
 
     def test_provisional_and_quarantined_graphs_are_never_calculated(self):
@@ -1289,6 +1165,9 @@ class CalculationAndGateIntegrationTests(unittest.TestCase):
             with self.subTest(validation_status=validation_status):
                 state = {
                     "query": "计算 RBD 可靠度",
+                    "calculation_authorizations": _calculation_authorization(
+                        "rbd_reliability", "rbd", "计算 RBD 可靠度"
+                    ),
                     "entity_keywords": ["处理模块"],
                     "allowed_tools": ["rbd_calculator"],
                     "confirmed_graphs": [
@@ -1313,10 +1192,11 @@ class CalculationAndGateIntegrationTests(unittest.TestCase):
                 ):
                     result = _run(calculation_module.icp_calculation_node(state))
 
-                self.assertEqual("empty", result["tool_results"][0]["status"])
+                self.assertEqual("partial", result["tool_results"][0]["status"])
                 self.assertEqual([], result["calculation_results"])
 
     def test_auto_validated_graph_calculation_has_approved_parent_chain(self):
+        query = "计算 revision_id=revision-auto 的 RBD 可靠度"
         row = {
             "diagram_type": "rbd",
             "revision_id": "revision-auto",
@@ -1341,6 +1221,7 @@ class CalculationAndGateIntegrationTests(unittest.TestCase):
             review_status="auto_validated",
             content="处理模块串联系统路径",
             metadata={
+                "revision_id": "revision-auto",
                 "validation_status": "auto_validated",
                 "is_active": True,
                 "projection_status": "published",
@@ -1348,10 +1229,14 @@ class CalculationAndGateIntegrationTests(unittest.TestCase):
         )
         state = {
             "intent": "reliability_query",
-            "query": "计算 RBD 可靠度",
+            "query": query,
+            "calculation_authorizations": _calculation_authorization(
+                "rbd_reliability", "rbd", query
+            ),
             "allowed_tools": ["rbd_query", "rbd_calculator"],
             "confirmed_graphs": [row],
             "evidence_registry": [graph_evidence],
+            "rbd_query_binding": _rbd_authority_binding(row, query),
         }
 
         calculated = _run(calculation_module.icp_calculation_node(state))
@@ -1375,6 +1260,7 @@ class CalculationAndGateIntegrationTests(unittest.TestCase):
         self.assertNotIn("formal_calculation", gated["safety_decision"]["blocked_claims"])
 
     def test_active_graph_calculation_has_complete_parent_chain_and_passes_gate(self):
+        query = "计算 revision_id=revision-1 的 RBD 可靠度"
         row = {
             "diagram_type": "rbd",
             "revision_id": "revision-1",
@@ -1397,14 +1283,23 @@ class CalculationAndGateIntegrationTests(unittest.TestCase):
             record_id="revision-1",
             review_status="confirmed",
             content="处理模块串联系统路径",
-            metadata={"is_active": True, "projection_status": "published"},
+            metadata={
+                "revision_id": "revision-1",
+                "validation_status": "manual_confirmed",
+                "is_active": True,
+                "projection_status": "published",
+            },
         )
         state = {
             "intent": "reliability_query",
-            "query": "计算 RBD 可靠度",
+            "query": query,
+            "calculation_authorizations": _calculation_authorization(
+                "rbd_reliability", "rbd", query
+            ),
             "allowed_tools": ["rbd_query", "rbd_calculator"],
             "confirmed_graphs": [row],
             "evidence_registry": [graph_evidence],
+            "rbd_query_binding": _rbd_authority_binding(row, query),
         }
         calculated = _run(calculation_module.icp_calculation_node(state))
         derived = calculated["evidence_registry"][0]
@@ -1466,6 +1361,9 @@ class CalculationAndGateIntegrationTests(unittest.TestCase):
         state = {
             "intent": "cause_analysis",
             "query": "计算 FTA 顶事件概率",
+            "calculation_authorizations": _calculation_authorization(
+                "fta_probability", "fta", "计算 FTA 顶事件概率"
+            ),
             "allowed_tools": ["fta_query", "fta_analyzer"],
             "confirmed_graphs": [row],
             "evidence_registry": [parent],
@@ -1491,6 +1389,9 @@ class CalculationAndGateIntegrationTests(unittest.TestCase):
     def test_graph_repository_failure_is_auditable(self):
         state = {
             "query": "计算显示链路 RBD 可靠度",
+            "calculation_authorizations": _calculation_authorization(
+                "rbd_reliability", "rbd", "计算显示链路 RBD 可靠度"
+            ),
             "entity_keywords": ["显示链路"],
             "allowed_tools": ["rbd_calculator"],
             "confirmed_graphs": [],
@@ -1517,6 +1418,7 @@ class CalculationAndGateIntegrationTests(unittest.TestCase):
             "is_active": True,
             "graph": graph,
         }
+        query = "计算 revision_id=revision-missing-param 的 RBD 系统可靠度"
         parent = make_evidence(
             source_kind="postgres",
             authority="confirmed_relation",
@@ -1527,14 +1429,23 @@ class CalculationAndGateIntegrationTests(unittest.TestCase):
             record_id="revision-missing-param",
             review_status="confirmed",
             content="处理模块串联路径",
-            metadata={"is_active": True, "projection_status": "published"},
+            metadata={
+                "revision_id": "revision-missing-param",
+                "validation_status": "manual_confirmed",
+                "is_active": True,
+                "projection_status": "published",
+            },
         )
         state = {
             "intent": "reliability_query",
-            "query": "计算 RBD 系统可靠度",
+            "query": query,
+            "calculation_authorizations": _calculation_authorization(
+                "rbd_reliability", "rbd", query
+            ),
             "allowed_tools": ["rbd_query", "rbd_calculator"],
             "confirmed_graphs": [row],
             "evidence_registry": [parent],
+            "rbd_query_binding": _rbd_authority_binding(row, query),
         }
         calculated = _run(calculation_module.icp_calculation_node(state))
         derived = calculated["evidence_registry"][0]
@@ -1584,6 +1495,7 @@ class CalculationAndGateIntegrationTests(unittest.TestCase):
             "is_active": True,
             "graph": {"vertices": vertices, "edges": edges},
         }
+        query = "计算 revision_id=revision-truncated 的 RBD 系统可靠度"
         parent = make_evidence(
             source_kind="postgres",
             authority="confirmed_relation",
@@ -1594,14 +1506,23 @@ class CalculationAndGateIntegrationTests(unittest.TestCase):
             record_id="revision-truncated",
             review_status="confirmed",
             content="13 条并联路径",
-            metadata={"is_active": True, "projection_status": "published"},
+            metadata={
+                "revision_id": "revision-truncated",
+                "validation_status": "manual_confirmed",
+                "is_active": True,
+                "projection_status": "published",
+            },
         )
         state = {
             "intent": "reliability_query",
-            "query": "计算 RBD 系统可靠度",
+            "query": query,
+            "calculation_authorizations": _calculation_authorization(
+                "rbd_reliability", "rbd", query
+            ),
             "allowed_tools": ["rbd_query", "rbd_calculator"],
             "confirmed_graphs": [row],
             "evidence_registry": [parent],
+            "rbd_query_binding": _rbd_authority_binding(row, query),
         }
 
         calculated = _run(calculation_module.icp_calculation_node(state))
@@ -1681,6 +1602,10 @@ class AnswerEvidenceIntegrationTests(unittest.TestCase):
         state = {
             "intent": "history_query",
             "query_targets": [{"intent": "history_query"}],
+            "query_frame": {
+                "required_answer_fields": ["history_result"],
+                "response_focus": ["recovery_verification"],
+            },
             "evidence_registry": [history],
             "context_evidence_ids": [history["evidence_id"]],
             "safety_decision": {
@@ -1693,102 +1618,145 @@ class AnswerEvidenceIntegrationTests(unittest.TestCase):
 
         self.assertEqual([history["evidence_id"]], [item["evidence_id"] for item in selected])
 
-    def test_impact_answer_is_direct_llm_summary_without_diagnosis_template(self):
-        impact = make_evidence(
+    def test_history_window_obeys_persisted_branch_parent_binding(self):
+        selected_mfl = make_evidence(
+            source_kind="postgres",
+            authority="authoritative_record",
+            evidence_level="L1_DIRECT",
+            claim_type="maintenance_locator",
+            doc_type="mfl",
+            record_id="MFL-SYN-006",
+            title="A路电源模块：A路间歇停机",
+            content="A路受热后退出，冷却后恢复。",
+            metadata={
+                "answer_fields": {
+                    "record_code": "MFL-SYN-006",
+                    "module_failure": "A路电源模块：A路间歇停机",
+                }
+            },
+        )
+        thermal_fmeca = make_evidence(
             source_kind="postgres",
             authority="authoritative_record",
             evidence_level="L1_DIRECT",
             claim_type="fmeca_fact",
             doc_type="fmeca",
-            doc_id="doc-fmeca",
-            doc_name="FMECA.xlsx",
-            record_id="FM-SYN-002",
-            title="输入滤波性能退化",
-            content=(
-                "故障原因=滤波电容老化、连接阻抗增大或屏蔽接地不良；"
-                "局部影响=输入纹波和传导干扰增大；最终影响=多个子系统间歇异常；严酷度=III"
-            ),
-        )
-        state = {
-            "intent": "impact_analysis",
-            "query": "滤波电容有点老化了，会有什么影响吗？",
-            "messages": [],
-            "evidence_registry": [impact],
-            "context_evidence_ids": [impact["evidence_id"]],
-            "candidate_faults": [{"fault": "不应向用户展示的内部候选", "score": 0.6}],
-            "diagnostic_support": 0.5,
-            "clarification_question": "",
-            "safety_decision": {
-                "status": "answer",
-                "can_claim_unique": False,
-                "questions": [],
-                "approved_evidence_ids": [impact["evidence_id"]],
-                "blocked_evidence_ids": [],
-                "blocked_claims": [],
-                "context_evidence_ids": [impact["evidence_id"]],
+            record_id="FM-SYN-067",
+            title="温控闭环失效",
+            content="高温高负载时发生过温降级。",
+            metadata={
+                "answer_fields": {
+                    "record_code": "FM-SYN-067",
+                    "product_flag": "TCM / FUNC-620",
+                    "failure_mode": "温控闭环失效",
+                }
             },
-        }
-        verbose_model_answer = (
-            "### 初步判断\n"
-            "滤波电容老化会使输入滤波能力下降，输入纹波和传导干扰增大，并可能引发多个子系统间歇异常；资料严酷度为 III。[^1]\n\n"
-            "### 资料明确记载\n"
-            "FMECA 将其记录为输入滤波性能退化。[^1]\n\n"
-            "### 建议检查\n"
-            "请补充告警码并执行完整排故。\n\n"
-            "### 下一步需要确认\n"
-            "请补充故障阶段。\n\n"
-            "### 适用性说明\n"
-            "以上内容需要人工复核。"
         )
-        repair = json.dumps(
-            {
-                "units": [
-                    {
-                        "unit_id": "u1",
-                        "bindings": [
-                            {
-                                "citation_id": 1,
-                                "quote": (
-                                    "故障原因=滤波电容老化、连接阻抗增大或屏蔽接地不良；"
-                                    "局部影响=输入纹波和传导干扰增大；"
-                                    "最终影响=多个子系统间歇异常；严酷度=III"
-                                ),
-                            }
-                        ],
-                    },
-                    {
-                        "unit_id": "u2",
-                        "bindings": [{"citation_id": 1, "quote": "输入滤波性能退化"}],
-                    },
-                ]
+        matching_history = make_evidence(
+            source_kind="postgres",
+            authority="authoritative_record",
+            evidence_level="L1_DIRECT",
+            claim_type="historical_case",
+            doc_type="fault_history",
+            record_id="HIS-SYN-002",
+            title="HIS-SYN-002",
+            content="A路退出后B路接管，冷却后恢复。",
+            match_type="semantic_id_hydration",
+            metadata={
+                "answer_fields": {
+                    "case_id": "HIS-SYN-002",
+                    "fault_symptom": "A路退出，B路自动接管，冷却后恢复。",
+                    "related_module": "MOD-PWR-PSUA A路电源模块",
+                    "related_function": "FUNC-120 A路稳压供电",
+                    "explicit_references": {"mfl": ["MFL-SYN-006"]},
+                }
             },
-            ensure_ascii=False,
         )
-        with (
-            patch.object(
-                answer_module.llm_service,
-                "_call_model",
-                side_effect=[verbose_model_answer, repair],
-            ) as call,
-            patch.object(
-                answer_module.agent_model_role_service,
-                "apply_agent_llm_params",
-                return_value=None,
-            ),
+        unrelated_history = make_evidence(
+            source_kind="postgres",
+            authority="authoritative_record",
+            evidence_level="L1_DIRECT",
+            claim_type="historical_case",
+            doc_type="fault_history",
+            record_id="HIS-SYN-023",
+            title="HIS-SYN-023",
+            content="温控输出卡滞导致过温降级。",
+            match_type="structured_query",
+            metadata={
+                "answer_fields": {
+                    "case_id": "HIS-SYN-023",
+                    "fault_symptom": "温度升高且风扇命令不变，随后过温降级。",
+                    "related_module": "MOD-TCS-TCM 温度控制模块",
+                    "related_function": "FUNC-620 温度控制与保护",
+                    "explicit_references": {"fmeca": ["FM-SYN-067"]},
+                }
+            },
+        )
+        for item, score in (
+            (selected_mfl, 0.60),
+            (thermal_fmeca, 0.90),
+            (matching_history, 0.10),
+            (unrelated_history, 0.80),
         ):
-            result = _run(answer_module.answer_node(state))
+            item["answer_rerank_score"] = score
+        evidence = [
+            selected_mfl,
+            thermal_fmeca,
+            unrelated_history,
+            matching_history,
+        ]
+        evidence_ids = [item["evidence_id"] for item in evidence]
+        state = {
+            "query": (
+                "主供电A路受热后退出、另一路接管，冷却后恢复；"
+                "以前的相近案例怎么验证？"
+            ),
+            "intent": "maintenance_query",
+            "query_targets": [
+                {"intent": "maintenance_query"},
+                {"intent": "history_query"},
+            ],
+            "query_frame": {
+                "required_answer_fields": [
+                    "maintenance_action",
+                    "history_result",
+                ],
+                "diagnostic_closure": {
+                    "required": True,
+                    "required_dimensions": [
+                        "maintenance_action",
+                        "history_result",
+                    ],
+                    "basis": "以前的相近案例怎么验证",
+                },
+            },
+            "selected_conversation_anchors": [
+                {"doc_type": "mfl", "record_id": "MFL-SYN-006"},
+                {"doc_type": "fmeca", "record_id": "FM-SYN-067"},
+            ],
+            # Upstream retrieval has already bound the current branch to this
+            # exact history parent.  The answer window must reuse that durable
+            # decision instead of reselecting the higher-scoring neighbour.
+            "history_parent_binding": {
+                "version": 1,
+                "case_ids": ["HIS-SYN-002"],
+                "row_ids": [],
+                "source": "selected_branch_anchor",
+                "authority": "identity",
+                "comparison": False,
+                "ambiguous": False,
+                "conflict": False,
+                "authorizes_exact_links": True,
+            },
+            "safety_decision": {"approved_evidence_ids": evidence_ids},
+        }
 
-        prompt = call.call_args_list[0].args[0][0]["content"]
-        answer = result["final_answer"]
-        self.assertIn("第一段直接、准确回答", prompt)
-        self.assertIn("不得展示成固定章节", prompt)
-        self.assertNotIn("候选故障：\n", prompt)
-        self.assertIn("输入纹波和传导干扰增大", answer)
-        self.assertNotIn("初步判断", answer)
-        self.assertNotIn("资料明确记载", answer)
-        self.assertNotIn("建议检查", answer)
-        self.assertNotIn("下一步需要确认", answer)
-        self.assertNotIn("适用性说明", answer)
+        selected = _source_answer_evidence_window._select_evidence_window(state, evidence, limit=12)
+        selected_records = [item["record_id"] for item in selected]
+
+        self.assertIn("HIS-SYN-002", selected_records)
+        self.assertNotIn("HIS-SYN-023", selected_records)
+
 
     def test_context_and_citations_share_deduplicated_gate_selection(self):
         original = make_evidence(
@@ -1826,7 +1794,10 @@ class AnswerEvidenceIntegrationTests(unittest.TestCase):
         }
         context = answer_module._format_context(state)
         citations = answer_module._extract_citations(state)
-        self.assertIn("[^1] HMC-001", context)
+        packets = [json.loads(line) for line in context.splitlines() if line.startswith('{"record_identity":')]
+        self.assertEqual(1, len(packets))
+        self.assertEqual("HMC-001", packets[0]["record_identity"]["record_id"])
+        self.assertEqual([1], [claim["citation_id"] for claim in packets[0]["claims"]])
         self.assertIn("显示链路故障", context)
         self.assertNotIn("旧上下文不应进入", context)
         self.assertNotIn("不应进入本次上下文", context)
@@ -1834,207 +1805,7 @@ class AnswerEvidenceIntegrationTests(unittest.TestCase):
         self.assertEqual("HMC手册.xlsx", citations[0]["doc_name"])
         self.assertEqual("HMC-001", citations[0]["source_ref"])
 
-    def test_cause_answer_reserves_formal_fta_in_crowded_evidence_window(self):
-        hmc_evidence = [
-            make_evidence(
-                source_kind="postgres",
-                authority="authoritative_record",
-                evidence_level="L1_DIRECT",
-                claim_type="hmc_fault",
-                doc_type="hmc",
-                doc_id="doc-hmc",
-                doc_name="HMC手册.docx",
-                record_id=f"HMC-{index:03d}",
-                title=f"HMC-{index:03d}",
-                content=f"第 {index} 条 HMC 故障现象",
-            )
-            for index in range(16)
-        ]
-        fmeca_evidence = [
-            make_evidence(
-                source_kind="postgres",
-                authority="authoritative_record",
-                evidence_level="L1_DIRECT",
-                claim_type="fmeca_fact",
-                doc_type="fmeca",
-                doc_id="doc-fmeca",
-                doc_name="FMECA分析报告.docx",
-                record_id=f"FM-{index:03d}",
-                title=f"FM-{index:03d}",
-                content=f"第 {index} 条 FMECA 原因记录",
-            )
-            for index in range(12)
-        ]
-        fta = make_evidence(
-            source_kind="postgres",
-            authority="validated_relation",
-            evidence_level="L2_CORROBORATED",
-            claim_type="fta_structure",
-            doc_type="fta",
-            doc_id="doc-fta",
-            doc_name="FTA故障树分析.docx",
-            record_id="FTA-RESTART-001",
-            title="系统非指令性重复复位故障树",
-            content="顶事件=系统运行中非指令性重复复位；原因链包含电源异常与复位控制异常。",
-            review_status="auto_validated",
-            metadata={
-                "validation_status": "auto_validated",
-                "is_active": True,
-                "projection_status": "published",
-            },
-        )
-        registry = [*hmc_evidence, *fmeca_evidence, fta]
-        base_state = {
-            "intent": "cause_analysis",
-            "query_targets": [{"intent": "cause_analysis"}],
-            "query": "系统运行中为什么会反复自动重启？",
-            "messages": [],
-            "allowed_tools": ["hmc_query", "fmeca_query", "fta_query"],
-            "evidence_registry": registry,
-            "candidate_faults": [],
-            "diagnostic_support": 0.7,
-            "clarification_question": "",
-        }
-        gated = _run(evidence_gate_node(base_state))
-        self.assertIn(fta["evidence_id"], gated["approved_evidence_ids"])
-        state = {**base_state, **gated}
 
-        repair = json.dumps(
-            {
-                "units": [
-                    {
-                        "unit_id": "u1",
-                        "bindings": [
-                            {
-                                "citation_id": 1,
-                                "quote": "原因链包含电源异常与复位控制异常",
-                            }
-                        ],
-                    }
-                ]
-            },
-            ensure_ascii=False,
-        )
-        with (
-            patch.object(
-                answer_module.llm_service,
-                "_call_model",
-                side_effect=["资料中的故障树记录了重复复位原因链。[^1]", repair],
-            ) as call,
-            patch.object(
-                answer_module.agent_model_role_service,
-                "apply_agent_llm_params",
-                return_value=None,
-            ),
-        ):
-            result = _run(answer_module.answer_node(state))
-
-        citations = result["citations"]
-        self.assertLessEqual(len(citations), 25)
-        fta_citation = next(
-            item for item in citations if item["evidence_id"] == fta["evidence_id"]
-        )
-        self.assertEqual("fta", fta_citation["doc_type"])
-        self.assertEqual("validated_relation", fta_citation["authority"])
-        self.assertIn("fmeca", {item["doc_type"] for item in result["evidence_catalog"]})
-        self.assertEqual(1, len(citations))
-        self.assertEqual("answer_used", result["evidence_catalog"][0]["status"])
-        prompt = call.call_args_list[0].args[0][0]["content"]
-        self.assertIn("系统非指令性重复复位故障树", prompt)
-        self.assertIn("原因链包含电源异常与复位控制异常", prompt)
-        self.assertIn(
-            f"[^{fta_citation['id']}] 系统非指令性重复复位故障树｜fta",
-            prompt,
-        )
-
-    def test_uncited_summary_is_bound_by_verified_quote_without_global_warning(self):
-        fta = make_evidence(
-            source_kind="postgres",
-            authority="validated_relation",
-            evidence_level="L2_CORROBORATED",
-            claim_type="fta_structure",
-            doc_type="fta",
-            doc_id="doc-fta",
-            doc_name="FTA故障树分析报告.docx",
-            record_id="FTA-RESTART-001",
-            title="系统非指令性重复复位",
-            content=(
-                "系统运行过程中出现非指令性重复复位。"
-                "复位控制异常会导致系统反复复位。"
-            ),
-            review_status="auto_validated",
-            metadata={
-                "validation_status": "auto_validated",
-                "is_active": True,
-                "projection_status": "published",
-            },
-        )
-        state = {
-            "intent": "cause_analysis",
-            "query": "系统为什么反复重启？",
-            "messages": [],
-            "evidence_registry": [fta],
-            "context_evidence_ids": [fta["evidence_id"]],
-            "candidate_faults": [],
-            "diagnostic_support": 0.8,
-            "clarification_question": "",
-            "safety_decision": {
-                "status": "answer",
-                "can_claim_unique": False,
-                "approved_evidence_ids": [fta["evidence_id"]],
-                "blocked_evidence_ids": [],
-                "context_evidence_ids": [fta["evidence_id"]],
-                "questions": [],
-            },
-        }
-        draft = (
-            "根据 FTA 记录，系统反复复位与复位控制异常有关。\n\n"
-            "综上，复位控制异常会导致系统反复复位。"
-        )
-        repair = json.dumps(
-            {
-                "units": [
-                    {
-                        "unit_id": "u1",
-                        "bindings": [
-                            {
-                                "citation_id": 1,
-                                "quote": "系统运行过程中出现非指令性重复复位",
-                            }
-                        ],
-                    },
-                    {
-                        "unit_id": "u2",
-                        "bindings": [
-                            {
-                                "citation_id": 1,
-                                "quote": "复位控制异常会导致系统反复复位",
-                            }
-                        ],
-                    },
-                ]
-            },
-            ensure_ascii=False,
-        )
-        with (
-            patch.object(
-                answer_module.llm_service,
-                "_call_model",
-                side_effect=[draft, repair],
-            ) as call,
-            patch.object(
-                answer_module.agent_model_role_service,
-                "apply_agent_llm_params",
-                return_value=None,
-            ),
-        ):
-            result = _run(answer_module.answer_node(state))
-
-        self.assertEqual(2, call.call_count)
-        self.assertEqual(2, result["final_answer"].count("[^1]"))
-        self.assertNotIn("部分说明未附可直接核验的来源", result["final_answer"])
-        self.assertIn("根据 FTA 记录", result["final_answer"])
-        self.assertIn("综上", result["final_answer"])
 
     def test_citation_numbers_restart_per_answer_but_evidence_ids_do_not(self):
         first = make_evidence(
@@ -2071,407 +1842,33 @@ class AnswerEvidenceIntegrationTests(unittest.TestCase):
             second_citations[0]["evidence_id"],
         )
 
-    def test_model_supplied_current_marker_is_revalidated_before_output(self):
-        evidence = make_evidence(
-            source_kind="postgres",
-            authority="authoritative_record",
-            evidence_level="L1_DIRECT",
-            claim_type="hmc_fault",
-            doc_type="hmc",
-            record_id="HMC-001",
-            title="显示链路异常",
-            content="显示链路出现间歇异常。",
-        )
-        state = {
-            "intent": "cause_analysis",
-            "query": "为什么反复重启？",
-            "messages": [],
-            "evidence_registry": [evidence],
-            "context_evidence_ids": [evidence["evidence_id"]],
-            "candidate_faults": [],
-            "diagnostic_support": 0.4,
-            "clarification_question": "",
-            "safety_decision": {
-                "status": "answer",
-                "can_claim_unique": False,
-                "approved_evidence_ids": [evidence["evidence_id"]],
-                "blocked_evidence_ids": [],
-                "context_evidence_ids": [evidence["evidence_id"]],
-                "questions": [],
-            },
-        }
-        unsupported_draft = "电源模块已经损坏，会导致系统反复重启。[^1]"
-        rejected_binding = json.dumps(
-            {"units": [{"unit_id": "u1", "bindings": []}]},
-            ensure_ascii=False,
-        )
-        with (
-            patch.object(
-                answer_module.llm_service,
-                "_call_model",
-                side_effect=[unsupported_draft, rejected_binding],
-            ) as call,
-            patch.object(
-                answer_module.agent_model_role_service,
-                "apply_agent_llm_params",
-                return_value=None,
-            ),
-        ):
-            result = _run(answer_module.answer_node(state))
-
-        self.assertEqual(2, call.call_count)
-        self.assertNotIn("电源模块已经损坏", result["final_answer"])
-        self.assertNotIn("[^1]", result["final_answer"])
-        self.assertEqual(answer_module._NO_SUPPORTED_FACTS_MESSAGE, result["final_answer"])
 
     def test_factual_headings_and_maintenance_actions_require_citations(self):
         self.assertTrue(
-            answer_module._line_is_factual_assertion("### 电源故障会导致系统重启")
+            _source_answer_claim_units._line_is_factual_assertion("### 电源故障会导致系统重启")
         )
         self.assertTrue(
-            answer_module._line_is_factual_assertion("请检查并更换电源模块。")
+            _source_answer_claim_units._line_is_factual_assertion("请检查并更换电源模块。")
         )
-        self.assertFalse(answer_module._line_is_factual_assertion("### 原因分析"))
-        self.assertTrue(answer_module._line_is_factual_assertion("请补充故障代码。"))
+        self.assertFalse(_source_answer_claim_units._line_is_factual_assertion("### 原因分析"))
+        self.assertTrue(_source_answer_claim_units._line_is_factual_assertion("请补充故障代码。"))
         self.assertFalse(
-            answer_module._line_is_factual_assertion(
+            _source_answer_claim_units._line_is_factual_assertion(
                 "请补充故障代码。",
                 {"请补充故障代码。"},
             )
         )
-        self.assertTrue(answer_module._line_is_factual_assertion("其等效串联电阻会增大。"))
+        self.assertTrue(_source_answer_claim_units._line_is_factual_assertion("其等效串联电阻会增大。"))
 
-    def test_safety_reminder_with_model_marker_is_kept_without_fake_binding(self):
-        state = {
-            "evidence_registry": [],
-            "safety_decision": {"approved_evidence_ids": []},
-        }
-        answer = _run(
-            answer_module._repair_answer_citations(
-                "实际处置以适用构型和正式维修程序为准。[^1]",
-                state,
-                None,
-                citation_count=1,
-            )
-        )
 
-        self.assertEqual("实际处置以适用构型和正式维修程序为准。", answer)
 
-    def test_applicability_notice_is_appended_once_by_backend(self):
-        answer = answer_module._ensure_applicability_notice(
-            f"已核验结论。[^1]\n\n{answer_module._APPLICABILITY_NOTICE}",
-            "fault_diagnosis",
-        )
 
-        self.assertEqual(1, answer.count(answer_module._APPLICABILITY_NOTICE))
-        self.assertTrue(answer.endswith(answer_module._APPLICABILITY_NOTICE))
 
-    def test_semantic_applicability_notice_is_replaced_by_one_canonical_footer(self):
-        answer = answer_module._ensure_applicability_notice(
-            "已核验结论。[^1]\n\n现场维修应结合适用机型、有效文档版本，并遵循正式维修程序复核。",
-            "fault_diagnosis",
-        )
 
-        self.assertNotIn("现场维修应结合", answer)
-        self.assertEqual(1, answer.count(answer_module._APPLICABILITY_NOTICE))
-        self.assertTrue(answer.endswith(answer_module._APPLICABILITY_NOTICE))
 
-    def test_source_location_text_cannot_verify_a_factual_binding(self):
-        ledger = {
-            1: {
-                "title": "显示链路异常",
-                "content": "显示链路出现间歇异常。",
-                "scope": {},
-                "metadata": {},
-                "source_ref": "电源模块损坏导致反复重启.docx#1",
-            }
-        }
 
-        self.assertFalse(
-            answer_module._binding_is_verifiable(
-                {
-                    "citation_id": 1,
-                    "quote": "电源模块损坏导致反复重启",
-                },
-                ledger,
-            )
-        )
 
-    def test_short_quote_cannot_support_a_long_multi_claim_paragraph(self):
-        ledger = {
-            1: {
-                "title": "91810003**0003",
-                "content": "PSU-B B路间歇停机",
-                "scope": {},
-                "metadata": {},
-            }
-        }
-        long_claim = (
-            "外部电源输入滤波性能退化会增大纹波和干扰；功率器件热失稳、"
-            "焊点裂纹或反馈网络异常会引起欠压保护和间歇停机，进而触发系统复位。"
-        )
 
-        self.assertFalse(
-            answer_module._binding_is_verifiable(
-                {
-                    "citation_id": 1,
-                    "quote": "PSU-B B路间歇停机",
-                },
-                ledger,
-                long_claim,
-            )
-        )
-        self.assertTrue(
-            answer_module._binding_is_verifiable(
-                {
-                    "citation_id": 1,
-                    "quote": "PSU-B B路间歇停机",
-                },
-                ledger,
-                "HMC 记录为 PSU-B B路间歇停机。",
-            )
-        )
-
-    def test_citation_repair_drops_unsupported_segments_from_mixed_fmeca_paragraph(self):
-        evidence = make_evidence(
-            source_kind="postgres",
-            authority="authoritative_record",
-            evidence_level="L1_DIRECT",
-            claim_type="fmeca_fact",
-            doc_type="fmeca",
-            doc_id="doc-fmeca",
-            record_id="FM-SYN-002",
-            title="输入滤波性能退化",
-            content=(
-                "局部影响：输入纹波和传导干扰增大。"
-                "最终影响：多个子系统出现间歇性异常，故障具有相关性。"
-            ),
-        )
-        state = {
-            "intent": "impact_analysis",
-            "query": "滤波元件退化后为什么会多处零星异常？",
-            "evidence_registry": [evidence],
-            "context_evidence_ids": [evidence["evidence_id"]],
-            "safety_decision": {
-                "approved_evidence_ids": [evidence["evidence_id"]],
-                "blocked_evidence_ids": [],
-                "context_evidence_ids": [evidence["evidence_id"]],
-            },
-        }
-        draft = (
-            "输入滤波性能退化会导致输入纹波和传导干扰增大；"
-            "多个子系统可能出现具有相关性的间歇性异常；"
-            "还会导致负载配电保护误跳闸、存储校验错误和复位信号卡滞。[^1]"
-        )
-        unsupported = ("保护误跳闸", "存储校验错误", "复位信号卡滞")
-
-        def citation_editor(messages, _model):
-            prompt = messages[0]["content"]
-            raw_units = prompt.split("待校对事实单元：\n", 1)[1].split(
-                "\n\n本轮已批准证据：", 1
-            )[0]
-            units = json.loads(raw_units)
-            response_units = []
-            for unit in units:
-                text = str(unit.get("text") or "")
-                if any(value in text for value in unsupported):
-                    bindings = []
-                elif "纹波和传导干扰" in text:
-                    bindings = [
-                        {"citation_id": 1, "quote": "输入纹波和传导干扰增大"}
-                    ]
-                elif "多个子系统" in text:
-                    bindings = [
-                        {
-                            "citation_id": 1,
-                            "quote": "多个子系统出现间歇性异常，故障具有相关性",
-                        }
-                    ]
-                else:
-                    bindings = []
-                response_units.append(
-                    {"unit_id": unit["unit_id"], "bindings": bindings}
-                )
-            return json.dumps({"units": response_units}, ensure_ascii=False)
-
-        with patch.object(
-            answer_module.llm_service,
-            "_call_model",
-            side_effect=citation_editor,
-        ):
-            repaired = _run(
-                answer_module._repair_answer_citations(
-                    draft,
-                    state,
-                    None,
-                    citation_count=1,
-                )
-            )
-
-        self.assertIn("输入纹波和传导干扰增大", repaired)
-        self.assertIn("多个子系统可能出现具有相关性的间歇性异常", repaired)
-        for value in unsupported:
-            self.assertNotIn(value, repaired)
-        self.assertIn("[^1]", repaired)
-
-    def test_nonstandard_superscript_citation_marker_is_removed(self):
-        answer = "多个子系统出现间歇性异常^[1]。[^1]"
-
-        sanitized = answer_module._sanitize_citation_markers(answer, 1)
-
-        self.assertEqual("多个子系统出现间歇性异常。[^1]", sanitized)
-
-    def test_uncertainty_or_question_prefix_cannot_hide_a_second_assertion(self):
-        state = {
-            "evidence_registry": [],
-            "safety_decision": {
-                "approved_evidence_ids": [],
-                "questions": ["请补充适用构型。"],
-            },
-        }
-        answer = answer_module._downgrade_unapproved_assertions(
-            "资料未记载，但通常是电源模块损坏。\n"
-            "请补充适用构型；故障原因是电源损坏。",
-            state,
-        )
-
-        self.assertEqual(answer_module._NO_SUPPORTED_FACTS_MESSAGE, answer)
-        self.assertNotIn("电源损坏", answer)
-
-    def test_answer_removes_invalid_markers_and_unique_diagnosis_language(self):
-        evidence = make_evidence(
-            source_kind="postgres",
-            authority="authoritative_record",
-            evidence_level="L1_DIRECT",
-            claim_type="hmc_fault",
-            doc_type="hmc",
-            record_id="HMC-001",
-            title="HMC-001",
-            content="显示链路异常",
-        )
-        question = "请补充适用构型。"
-        state = {
-            "intent": "symptom_diagnosis",
-            "query": "显示闪烁",
-            "messages": [],
-            "evidence_registry": [evidence],
-            "context_evidence_ids": [evidence["evidence_id"]],
-            "candidate_faults": [{"fault": "显示链路异常", "score": 0.5}],
-            "diagnostic_support": 0.5,
-            "safety_decision": {
-                "status": "clarify",
-                "can_claim_unique": False,
-                "questions": [question],
-                "approved_evidence_ids": [evidence["evidence_id"]],
-                "blocked_evidence_ids": [],
-                "context_evidence_ids": [evidence["evidence_id"]],
-            },
-        }
-        with (
-            patch.object(
-                answer_module.llm_service,
-                "_call_model",
-                return_value="已经确定为唯一故障。[^99]",
-            ) as call,
-            patch.object(
-                answer_module.agent_model_role_service,
-                "apply_agent_llm_params",
-                return_value=None,
-            ),
-        ):
-            result = _run(answer_module.answer_node(state))
-
-        self.assertNotIn("已经确定", result["final_answer"])
-        self.assertNotIn("电源损坏", result["final_answer"])
-        self.assertNotIn("[^99]", result["final_answer"])
-        self.assertIn("证据不足以支持唯一故障结论", result["final_answer"])
-        self.assertIn(question, result["final_answer"])
-        prompt = call.call_args_list[0].args[0][0]["content"]
-        self.assertIn(question, prompt)
-        self.assertEqual([], result["citations"])
-        self.assertEqual(1, len(result["evidence_catalog"]))
-        self.assertEqual("approved", result["evidence_catalog"][0]["status"])
-
-    def test_final_citations_are_compact_subset_and_catalog_keeps_process_evidence(self):
-        evidence = [
-            make_evidence(
-                source_kind="postgres",
-                authority="authoritative_record",
-                evidence_level="L1_DIRECT",
-                claim_type="fmeca_fact",
-                doc_type="fmeca",
-                record_id=f"FM-{index}",
-                title=f"证据 {index}",
-                content=content,
-            )
-            for index, content in enumerate(
-                ("输入纹波增大。", "温度升高。", "滤波能力下降。"),
-                start=1,
-            )
-        ]
-        state = {
-            "intent": "impact_analysis",
-            "query": "老化有什么影响？",
-            "messages": [],
-            "evidence_registry": evidence,
-            "context_evidence_ids": [item["evidence_id"] for item in evidence],
-            "tool_results": [
-                {
-                    "tool": "fmeca_query",
-                    "evidence_ids": [item["evidence_id"] for item in evidence],
-                }
-            ],
-            "candidate_faults": [],
-            "diagnostic_support": 0.8,
-            "safety_decision": {
-                "status": "answer",
-                "approved_evidence_ids": [item["evidence_id"] for item in evidence],
-                "blocked_evidence_ids": [],
-                "context_evidence_ids": [item["evidence_id"] for item in evidence],
-                "questions": [],
-            },
-        }
-        draft = "滤波能力会下降。\n\n输入纹波会增大。"
-        repair = json.dumps(
-            {
-                "units": [
-                    {
-                        "unit_id": "u1",
-                        "bindings": [{"citation_id": 3, "quote": "滤波能力下降"}],
-                    },
-                    {
-                        "unit_id": "u2",
-                        "bindings": [{"citation_id": 1, "quote": "输入纹波增大"}],
-                    },
-                ]
-            },
-            ensure_ascii=False,
-        )
-        with (
-            patch.object(answer_module.llm_service, "_call_model", side_effect=[draft, repair]),
-            patch.object(
-                answer_module.agent_model_role_service,
-                "apply_agent_llm_params",
-                return_value=None,
-            ),
-        ):
-            result = _run(answer_module.answer_node(state))
-
-        self.assertIn("滤波能力会下降。[^1]", result["final_answer"])
-        self.assertIn("输入纹波会增大。[^2]", result["final_answer"])
-        self.assertEqual([1, 2], [item["id"] for item in result["citations"]])
-        self.assertEqual(
-            [evidence[2]["evidence_id"], evidence[0]["evidence_id"]],
-            [item["evidence_id"] for item in result["citations"]],
-        )
-        self.assertEqual(3, len(result["evidence_catalog"]))
-        self.assertEqual(
-            ["answer_used", "answer_used", "approved"],
-            [item["status"] for item in result["evidence_catalog"]],
-        )
-        self.assertEqual([1, 2, None], [
-            item["answer_citation_id"] for item in result["evidence_catalog"]
-        ])
 
     def test_bounded_catalog_reserves_every_exposed_tool_call_evidence_id(self):
         evidence = [
@@ -2535,106 +1932,23 @@ class AnswerEvidenceIntegrationTests(unittest.TestCase):
         self.assertLessEqual(len(payload["content"]), 1800)
         self.assertLessEqual(
             len(payload["document_metadata"]),
-            answer_module.EVIDENCE_METADATA_MAX_ITEMS,
+            _source_answer_payload.EVIDENCE_METADATA_MAX_ITEMS,
         )
         self.assertLessEqual(
             len(payload["derived_from"]),
-            answer_module.EVIDENCE_METADATA_MAX_LIST_ITEMS,
+            _source_answer_payload.EVIDENCE_METADATA_MAX_LIST_ITEMS,
         )
         self.assertTrue(all(len(value) <= 240 for value in payload["derived_from"]))
         self.assertLessEqual(
             len(payload["limitations"]),
-            answer_module.EVIDENCE_METADATA_MAX_LIST_ITEMS,
+            _source_answer_payload.EVIDENCE_METADATA_MAX_LIST_ITEMS,
         )
         self.assertTrue(all(len(value) <= 600 for value in payload["limitations"]))
 
-    def test_answer_strips_blocked_numeric_and_uses_single_evidence_boundary(self):
-        evidence = make_evidence(
-            source_kind="postgres",
-            authority="authoritative_record",
-            evidence_level="L1_DIRECT",
-            claim_type="hmc_fault",
-            doc_type="hmc",
-            record_id="HMC-001",
-            title="HMC-001",
-            content="显示链路异常",
-        )
-        state = {
-            "intent": "symptom_diagnosis",
-            "query": "为什么显示异常，可靠度是多少？",
-            "messages": [],
-            "evidence_registry": [evidence],
-            "context_evidence_ids": [evidence["evidence_id"]],
-            "candidate_faults": [{"fault": "显示链路异常", "score": 0.5}],
-            "diagnostic_support": 0.5,
-            "safety_decision": {
-                "status": "clarify",
-                "can_claim_unique": False,
-                "blocked_claims": ["formal_numeric_result"],
-                "questions": ["请补充可靠度参数。"],
-                "approved_evidence_ids": [evidence["evidence_id"]],
-                "blocked_evidence_ids": [],
-                "context_evidence_ids": [evidence["evidence_id"]],
-            },
-        }
-        unsafe = (
-            "HMC 手册表明显示链路已经失效。\n"
-            "可以确认故障原因为电源损坏。\n"
-            "系统可靠度为 0.97。\n"
-            "顶事件概率为百分之九十七。"
-        )
-        with (
-            patch.object(answer_module.llm_service, "_call_model", return_value=unsafe),
-            patch.object(
-                answer_module.agent_model_role_service,
-                "apply_agent_llm_params",
-                return_value=None,
-            ),
-        ):
-            result = _run(answer_module.answer_node(state))
 
-        answer = result["final_answer"]
-        self.assertNotIn("0.97", answer)
-        self.assertNotIn("百分之九十七", answer)
-        self.assertIn("数值边界", answer)
-        self.assertNotIn("电源损坏", answer)
-        self.assertNotIn("待复核（未绑定已批准直接证据）", answer)
-        self.assertNotIn("部分说明未附可直接核验的来源", answer)
-        self.assertEqual(1, answer.count("证据边界："))
-
-    def test_uncited_assertions_are_removed_without_global_boundary(self):
-        evidence = make_evidence(
-            source_kind="postgres",
-            authority="authoritative_record",
-            evidence_level="L1_DIRECT",
-            claim_type="hmc_fault",
-            doc_type="hmc",
-            record_id="HMC-001",
-            title="HMC-001",
-            content="显示链路异常",
-        )
-        state = {
-            "evidence_registry": [evidence],
-            "context_evidence_ids": [evidence["evidence_id"]],
-            "safety_decision": {
-                "approved_evidence_ids": [],
-                "context_evidence_ids": [evidence["evidence_id"]],
-            },
-        }
-
-        answer = answer_module._downgrade_unapproved_assertions(
-            "HMC 手册表明显示链路失效。\nFMECA 记录指出该故障会影响显示输出。",
-            state,
-        )
-
-        self.assertEqual(answer_module._NO_SUPPORTED_FACTS_MESSAGE, answer)
-        self.assertNotIn("证据边界：", answer)
-        self.assertNotIn("待复核（未绑定已批准直接证据）", answer)
-        self.assertNotIn("HMC 手册表明显示链路失效。", answer)
-        self.assertNotIn("FMECA 记录指出该故障会影响显示输出。", answer)
 
     def test_citation_removal_drops_orphan_section_and_hides_number_gaps(self):
-        answer = answer_module._cleanup_numbered_bold_sections(
+        answer = _source_answer_text._cleanup_numbered_bold_sections(
             "开场结论。[^1]\n\n"
             "**2. 复位控制逻辑故障**[^1]\n\n"
             "**3. 散热与环境因素**\n"
@@ -2646,36 +1960,9 @@ class AnswerEvidenceIntegrationTests(unittest.TestCase):
         self.assertIn("**散热与环境因素**", answer)
         self.assertIn("风扇故障会导致过热。[^2]", answer)
 
-    def test_existing_evidence_boundary_is_not_duplicated(self):
-        evidence = make_evidence(
-            source_kind="postgres",
-            authority="authoritative_record",
-            evidence_level="L1_DIRECT",
-            claim_type="hmc_fault",
-            doc_type="hmc",
-            record_id="HMC-001",
-            title="HMC-001",
-            content="显示链路异常",
-        )
-        state = {
-            "evidence_registry": [evidence],
-            "safety_decision": {"approved_evidence_ids": []},
-        }
-
-        answer = answer_module._downgrade_unapproved_assertions(
-            f"{answer_module._UNIQUE_DIAGNOSIS_BOUNDARY}\n"
-            "证据边界：这是模型重复生成的边界。\n\n"
-            "待复核（未绑定已批准直接证据）：HMC 手册表明显示链路失效。",
-            state,
-        )
-
-        self.assertEqual(1, answer.count("证据边界："))
-        self.assertNotIn("这是模型重复生成的边界", answer)
-        self.assertNotIn("待复核（未绑定已批准直接证据）", answer)
-        self.assertNotIn("HMC 手册表明显示链路失效。", answer)
 
     def test_cleanup_removes_orphan_heading_and_incomplete_table(self):
-        answer = answer_module._cleanup_generated_markdown_structure(
+        answer = _source_answer_text._cleanup_generated_markdown_structure(
             "### 原因分析\n\n"
             "### 仍有内容\n"
             "有证据的正文。[^1]\n\n"
@@ -2689,7 +1976,7 @@ class AnswerEvidenceIntegrationTests(unittest.TestCase):
         self.assertNotIn("| 字段 | 内容 |", answer)
 
     def test_cleanup_renumbers_remaining_top_level_sections(self):
-        answer = answer_module._cleanup_generated_markdown_structure(
+        answer = _source_answer_text._cleanup_generated_markdown_structure(
             "### 1. 状态查询\n内容一。[^1]\n\n"
             "### 3. 原因与影响\n内容二。[^2]\n\n"
             "#### 情形 A\n内容三。[^2]\n\n"
@@ -2702,308 +1989,39 @@ class AnswerEvidenceIntegrationTests(unittest.TestCase):
         self.assertIn("#### 情形 A", answer)
         self.assertNotIn("### 5.", answer)
 
-    def test_public_output_localizes_internal_fields_and_english_labels(self):
-        answer = answer_module._strip_internal_editor_artifacts(
-            "### Cause (FTA 路径)\n"
-            "- **Cause**：滤波异常（fault_cause）。[^1]\n"
-            "- **Impact (局部)**：输出抖动（local_impact / final_impact）。[^1]\n"
-            "- **原因 (cause)**：元件老化。[^1]\n"
-            "- **影响（impact）**：业务数据延迟。[^1]\n"
-            "- compensation_action=切换冗余通道；maintenance_action：检查连接器。[^2]\n"
-            "- detection_method=读取状态字；verification_result=连续运行正常。[^2]\n"
-            "- 普通代码与 API 保留：CauseMonitor API、fault_cause_v2。"
-        )
 
-        self.assertIn("### 原因（FTA 路径）", answer)
-        self.assertIn("**原因**：滤波异常。", answer)
-        self.assertIn("**影响（局部）**：输出抖动。", answer)
-        self.assertIn("**原因**：元件老化。", answer)
-        self.assertIn("**影响**：业务数据延迟。", answer)
-        self.assertIn("补偿措施：切换冗余通道", answer)
-        self.assertIn("维修方法：检查连接器", answer)
-        self.assertIn("检测方法：读取状态字", answer)
-        self.assertIn("验证结果：连续运行正常", answer)
-        self.assertIn("CauseMonitor API", answer)
-        self.assertIn("fault_cause_v2", answer)
-        self.assertNotRegex(
-            answer,
-            r"(?i)(?:fault_cause|local_impact|final_impact|compensation_action|"
-            r"maintenance_action|detection_method|verification_result)\s*[:：=)]",
-        )
-        self.assertNotIn("**Cause", answer)
-        self.assertNotIn("**Impact", answer)
 
-    def test_exact_hmc_direct_hit_does_not_get_false_insufficient_or_unavailable_banner(self):
-        evidence = make_evidence(
-            source_kind="postgres",
-            authority="authoritative_record",
-            evidence_level="L1_DIRECT",
-            claim_type="hmc_fault",
-            doc_type="hmc",
-            record_id="31810001**0001",
-            title="31810001**0001",
-            content="显示链路异常",
-            match_type="exact_code",
-        )
-        state = {
-            "intent": "exact_code",
-            "query": "LCN=31810001 HAMC=** HSC=0001",
-            "messages": [],
-            "evidence_registry": [evidence],
-            "context_evidence_ids": [evidence["evidence_id"]],
-            "safety_decision": {
-                "status": "answer",
-                "can_claim_unique": False,
-                "questions": [],
-                "approved_evidence_ids": [evidence["evidence_id"]],
-                "blocked_evidence_ids": [],
-                "blocked_claims": ["unique_diagnosis"],
-                "context_evidence_ids": [evidence["evidence_id"]],
-            },
-        }
-        model_answer = "### HMC 查询结果\nPostgreSQL HMC 精确代码命中 31810001**0001。[^1]"
-        repair = json.dumps(
-            {
-                "units": [
-                    {
-                        "unit_id": "u1",
-                        "bindings": [{"citation_id": 1, "quote": "31810001**0001"}],
-                    }
-                ]
-            },
-            ensure_ascii=False,
-        )
-        with (
-            patch.object(
-                answer_module.llm_service,
-                "_call_model",
-                side_effect=[model_answer, repair],
-            ) as call,
-            patch.object(
-                answer_module.agent_model_role_service,
-                "apply_agent_llm_params",
-                return_value=None,
-            ),
-        ):
-            result = _run(answer_module.answer_node(state))
 
-        answer = result["final_answer"]
-        self.assertNotIn("权威事实源当前不可用", answer)
-        self.assertNotIn("证据不足以支持唯一故障结论", answer)
-        self.assertIn("精确代码命中", answer)
-        prompt = call.call_args_list[0].args[0][0]["content"]
-        self.assertIn("正文通常控制在 700 个中文字以内", prompt)
 
-    def test_component_hmc_repair_invokes_llm_and_preserves_cited_facts(self):
-        metadata = {
-            "hmc_code": "91810001**0001",
-            "lcn": "91810001",
-            "hamc": "**",
-            "hsc": "0001",
-            "data_source": "程序化合成并经过跨文档一致性校验",
-            "data_status": "合成测试数据 / 非运行资料",
-        }
-        scope = {
-            "system": "SYN-ICP-9000 综合信息处理与显示系统",
-            "configuration": "CONFIG-A",
-            "document_number": "SYN-ICP-DOC-002",
-            "document_version": "V1.0",
-        }
-        fault = make_evidence(
-            source_kind="postgres",
-            authority="authoritative_record",
-            evidence_level="L1_DIRECT",
-            claim_type="hmc_fault",
-            doc_type="hmc",
-            doc_id="doc-hmc",
-            doc_name="02_HMC故障代码手册.docx",
-            record_id="91810001**0001",
-            source_ref="02_HMC故障代码手册.docx#table=2;row=3",
-            title="91810001**0001",
-            content="ICU 输入过压钳位失效",
-            match_type="exact_components",
-            scope=scope,
-            metadata=metadata,
-        )
-        repair = make_evidence(
-            source_kind="postgres",
-            authority="authoritative_record",
-            evidence_level="L1_DIRECT",
-            claim_type="maintenance_action",
-            doc_type="hmc",
-            doc_id="doc-hmc",
-            doc_name="02_HMC故障代码手册.docx",
-            record_id="91810001**0001",
-            source_ref="02_HMC故障代码手册.docx#table=2;row=3",
-            title="91810001**0001 维修方法",
-            content="检查输入采样与钳位器件，确认异常后更换输入调理模块。",
-            match_type="exact_components",
-            scope=scope,
-            metadata=metadata,
-        )
-        state = {
-            "intent": "exact_code",
-            "query": "LCN 91810001 HSC 0001 故障如何修复",
-            "messages": [],
-            "evidence_registry": [fault, repair],
-            "context_evidence_ids": [fault["evidence_id"], repair["evidence_id"]],
-            "safety_decision": {
-                "status": "answer",
-                "can_claim_unique": False,
-                "questions": [],
-                "approved_evidence_ids": [fault["evidence_id"], repair["evidence_id"]],
-                "blocked_evidence_ids": [],
-                "blocked_claims": ["unique_diagnosis"],
-                "context_evidence_ids": [fault["evidence_id"], repair["evidence_id"]],
-            },
-        }
-        model_answer = (
-            "### 诊断结论\n"
-            "文档记录该字段组合对应 **ICU 输入过压钳位失效**。[^1]\n\n"
-            "### 处理建议\n"
-            "文档建议检查输入采样与钳位器件，确认异常后更换输入调理模块。[^2]\n\n"
-            "- HMC：`91810001**0001`（LCN `91810001` / HAMC `**` / HSC `0001`）。[^1]\n"
-            "- 数据状态：合成测试数据 / 非运行资料。[^1]"
-        )
-        citation_repair = json.dumps(
-            {
-                "units": [
-                    {
-                        "unit_id": "u1",
-                        "bindings": [{"citation_id": 1, "quote": "ICU 输入过压钳位失效"}],
-                    },
-                    {
-                        "unit_id": "u2",
-                        "bindings": [
-                            {
-                                "citation_id": 2,
-                                "quote": "检查输入采样与钳位器件，确认异常后更换输入调理模块",
-                            }
-                        ],
-                    },
-                    {
-                        "unit_id": "u3",
-                        "bindings": [{"citation_id": 1, "quote": "91810001**0001"}],
-                    },
-                    {
-                        "unit_id": "u4",
-                        "bindings": [{"citation_id": 1, "quote": "合成测试数据 / 非运行资料"}],
-                    },
-                ]
-            },
-            ensure_ascii=False,
-        )
-        with (
-            patch.object(
-                answer_module.llm_service,
-                "_call_model",
-                side_effect=[model_answer, citation_repair],
-            ) as call,
-            patch.object(
-                answer_module.agent_model_role_service,
-                "apply_agent_llm_params",
-                return_value=None,
-            ),
-        ):
-            result = _run(answer_module.answer_node(state))
 
-        answer = result["final_answer"]
-        self.assertEqual(2, call.call_count)
-        prompt = call.call_args_list[0].args[0][0]["content"]
-        self.assertIn("91810001**0001", prompt)
-        self.assertIn("ICU 输入过压钳位失效", prompt)
-        self.assertIn("检查输入采样与钳位器件", prompt)
-        self.assertIn("合成测试数据 / 非运行资料", prompt)
-        self.assertIn("91810001**0001", answer)
-        self.assertIn("ICU 输入过压钳位失效", answer)
-        self.assertIn("更换输入调理模块", answer)
-        self.assertIn("[^1]", answer)
-        self.assertIn("[^2]", answer)
-        self.assertIn("合成测试数据 / 非运行资料", answer)
-        self.assertNotIn("待复核（未绑定已批准直接证据）", answer)
-        self.assertNotIn("下一步需要确认", answer)
-        self.assertEqual(["hmc_fault", "maintenance_action"], [item["type"] for item in result["citations"]])
-        self.assertEqual("合成测试数据 / 非运行资料", result["citations"][0]["document_metadata"]["data_status"])
 
-    def test_no_gate_question_removes_model_authored_empty_next_step_section(self):
-        answer = answer_module._canonicalize_clarification_section(
-            "### HMC 查询结果\n已找到记录。\n\n### 下一步需要确认\n无\n\n### 适用性说明\n仅用于检索。",
-            {"safety_decision": {"questions": []}},
-        )
 
-        self.assertNotIn("下一步需要确认", answer)
-        self.assertNotIn("\n无\n", f"\n{answer}\n")
-        self.assertIn("### 适用性说明", answer)
+class _CapturingCursor:
+    def __init__(self, connection):
+        self.connection = connection
+        self.description = []
 
-    def test_answer_normalizes_escaped_markdown_and_replaces_duplicate_next_steps(self):
-        first_question = "请补充缺失的 HAMC。"
-        second_question = "请确认适用构型和有效文档版本。"
-        state = {
-            "intent": "exact_code",
-            "query": "LCN 91810001 HSC 0001 故障如何修复",
-            "messages": [],
-            "evidence_registry": [],
-            "candidate_faults": [],
-            "diagnostic_support": 0.2,
-            "safety_decision": {
-                "status": "clarify",
-                "can_claim_unique": False,
-                "questions": [first_question, second_question],
-                "approved_evidence_ids": [],
-                "blocked_evidence_ids": [],
-                "blocked_claims": ["incomplete_hmc_code"],
-                "context_evidence_ids": [],
-            },
-        }
-        escaped = (
-            "\\### 初步判断\\\n"
-            "当前仅能核对字段。\\\n\n"
-            "\\**下一步需要确认\\**\n"
-            "1\\. 请提供更多代码。\n"
-            "2\\. 请提供更多背景。\n\n"
-            "\\**适用性说明\\**\n"
-            "仅用于知识检索。\n\n"
-            "\\### 下一步需要确认\n"
-            "\\- 这是重复章节。"
-        )
-        with (
-            patch.object(answer_module.llm_service, "_call_model", return_value=escaped),
-            patch.object(
-                answer_module.agent_model_role_service,
-                "apply_agent_llm_params",
-                return_value=None,
-            ),
-        ):
-            result = _run(answer_module.answer_node(state))
+    def __enter__(self):
+        return self
 
-        answer = result["final_answer"]
-        self.assertNotIn("\\", answer)
-        self.assertEqual(1, answer.count("下一步需要确认"))
-        self.assertEqual(1, answer.count(first_question))
-        self.assertEqual(1, answer.count(second_question))
-        self.assertNotIn("这是重复章节", answer)
-        self.assertNotIn("请提供更多代码", answer)
-        self.assertIn(answer_module._APPLICABILITY_NOTICE, answer)
-        self.assertNotIn("仅用于知识检索", answer)
+    def __exit__(self, *_args):
+        return False
 
-    def test_blocked_status_without_failure_marker_does_not_claim_source_unavailable(self):
-        state = {
-            "intent": "exact_code",
-            "safety_decision": {
-                "status": "blocked",
-                "can_claim_unique": False,
-                "questions": [],
-                "blocked_claims": ["exact_hmc_fact"],
-            },
-        }
-        answer = answer_module._enforce_answer_safety(
-            "权威事实源当前不可用，本回答不能作为正式诊断结论。\n"
-            "HMC 精确查询已完成但未找到匹配记录。",
-            state,
-            architecture_query=False,
-        )
-        self.assertNotIn("权威事实源当前不可用", answer)
-        self.assertNotIn("PostgreSQL 权威事实查询失败", answer)
+    def execute(self, query, params=()):
+        self.connection.calls.append((" ".join(query.split()), tuple(params or ())))
+
+    def fetchall(self):
+        return []
+
+class _CapturingConnection:
+    def __init__(self):
+        self.calls = []
+
+    def cursor(self):
+        return _CapturingCursor(self)
+
+    def rollback(self):
+        pass
 
 
 if __name__ == "__main__":

@@ -1,348 +1,3848 @@
 {
   "name": "ICP 多轮回归集（一）代码查询、模糊现象与具体定位",
-  "version": "2026-09-03",
-  "description": "33 组多轮对话：精确 HMC 代码查询及跨文档补全、模糊现象定位与追问收窄、具体故障定位与现场验证。所有 expected_records 可在 test-docs/ 七类合成测试文档中回溯；合成数据不代表真实适航知识。",
+  "version": "2026-09-05-gold-v3",
+  "description": "33 组多轮对话：精确 HMC 代码查询及跨文档补全、模糊现象定位与追问收窄、具体故障定位与现场验证。所有 expected_records 可在 test-docs/ 七类合成测试文档中回溯；合成数据不代表真实适航知识。 2026-09-05复核：保留100例身份，逐轮语义标准与冻结源坐标，扩展长对话/纠正/话题返回；评分不可与旧关键词通过率直接比较。",
   "defaults": {
     "assertions": {
+      "required_event_types": [
+        "answer",
+        "done"
+      ],
       "min_evidence": 1,
-      "min_citations": 1,
-      "required_event_types": ["answer", "done"],
-      "answer_not_contains": [
-        "待复核（未绑定已批准直接证据）",
-        "证据边界：部分说明未附可直接核验的来源"
-      ]
+      "min_citations": 1
     }
   },
   "cases": [
     {
       "id": "MT-EXACT-01-icu-clamp",
-      "metadata": {"category": "精确代码查询与跨文档补全", "coverage": ["hmc_query", "fmeca_query"], "expected_records": ["91810001**0001", "FM-SYN-001", "MFL-SYN-001"]},
+      "metadata": {
+        "category": "精确代码查询与跨文档补全",
+        "coverage": [
+          "hmc_query",
+          "fmeca_query"
+        ],
+        "expected_records": [
+          "91810001**0001",
+          "FM-SYN-001",
+          "MFL-SYN-001",
+          "FM-SYN-002",
+          "MFL-SYN-002",
+          "MOD-DSP-OIM",
+          "FUNC-430",
+          "MFL-SYN-049",
+          "FM-SYN-049",
+          "MOD-TCS-CGM",
+          "FUNC-610",
+          "FM-SYN-064",
+          "SUB-IFC",
+          "MOD-PWR-ICU"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "exact_code",
+          "related_question",
+          "neighbor_isolation",
+          "history_window_boundary",
+          "nonadjacent_reference",
+          "topic_return",
+          "multi_object_comparison",
+          "summary_verification"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "91810001**0001",
+          "FM-SYN-001",
+          "MFL-SYN-001",
+          "FM-SYN-002",
+          "MFL-SYN-002",
+          "MOD-DSP-OIM",
+          "FUNC-430",
+          "MFL-SYN-049",
+          "FM-SYN-049",
+          "MOD-TCS-CGM",
+          "FUNC-610",
+          "FM-SYN-064",
+          "SUB-IFC",
+          "MOD-PWR-ICU",
+          "MFL-SYN-064",
+          "SCOPE-02",
+          "SCOPE-03",
+          "SCOPE-06",
+          "SCOPE-01",
+          "ARCH_SUPPORT"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "91810001**0001",
+          "FM-SYN-001",
+          "MFL-SYN-001",
+          "FM-SYN-002",
+          "MFL-SYN-002",
+          "MOD-DSP-OIM",
+          "FUNC-430",
+          "MFL-SYN-049",
+          "FM-SYN-049",
+          "MOD-TCS-CGM",
+          "FUNC-610",
+          "FM-SYN-064",
+          "SUB-IFC",
+          "MOD-PWR-ICU",
+          "MFL-SYN-064"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "code", "question": "查一下 LCN 91810001、HAMC **、HSC 0001 这条代码，它对应什么故障现象，维修上怎么处理？",
-         "assertions": {"required_scope_routes": ["knowledge_base"], "required_tools": ["hmc_query"], "required_doc_types": ["hmc"], "answer_regex": ["91810001", "过压|钳位"]}},
-        {"id": "cross", "question": "这个故障模式在 FMECA 里记录的原因、局部影响和最终影响分别是什么？严酷度是多少？",
-         "metadata": {"checks": "必须把“这个故障模式”解析为上一轮的 ICU 输入过压钳位失效，不得泛化到整个电源子系统。"},
-         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "any_used_record_ids": ["FM-SYN-001"], "answer_regex": ["钳位|采样|驱动", "启动|掉电"]}}
+        {
+          "id": "code",
+          "question": "查一下 LCN 91810001、HAMC **、HSC 0001 这条代码，它对应什么故障现象，维修上怎么处理？",
+          "assertions": {
+            "required_scope_routes": [
+              "knowledge_base"
+            ],
+            "required_doc_types": [
+              "hmc"
+            ],
+            "required_tools": [
+              "hmc_query"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              }
+            ],
+            "required_used_record_ids": [
+              "91810001**0001"
+            ]
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "cross",
+          "question": "这个故障模式在 FMECA 里记录的原因、局部影响和最终影响分别是什么？严酷度是多少？",
+          "metadata": {
+            "checks": "追问对象仍是 ICU 输入过压钳位失效 FM-SYN-001。分别解释钳位/驱动/采样原因、局部输入调理阻断、最终启动失败或反复掉电和 II 类严重度；不能换成欠压误告警或滤波退化。"
+          },
+          "assertions": {
+            "required_used_doc_types": [
+              "fmeca"
+            ],
+            "required_tools": [],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "追问对象仍是 ICU 输入过压钳位失效 FM-SYN-001。分别解释钳位/驱动/采样原因、局部输入调理阻断、最终启动失败或反复掉电和 II 类严重度；不能换成欠压误告警或滤波退化。"
+              }
+            ],
+            "required_used_record_ids": [
+              "FM-SYN-001"
+            ]
+          }
+        },
+        {
+          "id": "neighbor-comparison",
+          "question": "输入滤波性能退化和这个输入过压钳位失效，是同一个故障模式吗？",
+          "metadata": {
+            "checks": "明确 FM-SYN-002 与 001 不是同一行，前者纹波/干扰及相关异常，后者上电输入调理阻断；不得把比较结果改写成原报码含两个故障。"
+          },
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "明确 FM-SYN-002 与 001 不是同一行，前者纹波/干扰及相关异常，后者上电输入调理阻断；不得把比较结果改写成原报码含两个故障。"
+              }
+            ]
+          }
+        },
+        {
+          "id": "switch-display",
+          "question": "先换个对象：输出接口模块 OIM 的职责是什么？",
+          "metadata": {
+            "checks": "切到 OIM 输出编码/驱动及外部显示接口，不把 ICU 电源职责带过去。"
+          },
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "切到 OIM 输出编码/驱动及外部显示接口，不把 ICU 电源职责带过去。"
+              }
+            ]
+          }
+        },
+        {
+          "id": "display-api",
+          "question": "它在内部测试图正常、外部完全无信号时，维修清单提供了哪个接口和检查办法？",
+          "metadata": {
+            "checks": "它是 OIM，MFL-SYN-049/GetOIMFaultStatus；核查内部测试图、接口时钟、物理输出及连接驱动，不用 ICU 接口。"
+          },
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "它是 OIM，MFL-SYN-049/GetOIMFaultStatus；核查内部测试图、接口时钟、物理输出及连接驱动，不用 ICU 接口。"
+              }
+            ]
+          }
+        },
+        {
+          "id": "switch-clock",
+          "question": "再看时钟生成模块 CGM，它和显示输出的关系是什么？",
+          "metadata": {
+            "checks": "切到 CGM 的统一时基支撑，说明时钟失效可能牵连显示；不能伪造其为当前显示 RBD 中的单独功能块。"
+          },
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "切到 CGM 的统一时基支撑，说明时钟失效可能牵连显示；不能伪造其为当前显示 RBD 中的单独功能块。"
+              }
+            ]
+          }
+        },
+        {
+          "id": "ifc-collection",
+          "question": "数据接口与通信子系统由哪几个模块组成？",
+          "metadata": {
+            "checks": "完整列 BCA、BCB、NGW、PCU 四模块，不能因刚谈 CGM 把它计入 IFC。"
+          },
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "完整列 BCA、BCB、NGW、PCU 四模块，不能因刚谈 CGM 把它计入 IFC。"
+              }
+            ]
+          }
+        },
+        {
+          "id": "capability",
+          "question": "暂停具体排故。你能用这七类资料帮助我做哪些事？",
+          "metadata": {
+            "checks": "解释专用诊断/代码/原因影响/维修历史/FTA-RBD 有据分析能力与人工复核边界，不重放上一轮 IFC 清单。"
+          },
+          "assertions": {
+            "min_evidence": 0,
+            "min_citations": 0,
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "解释专用诊断/代码/原因影响/维修历史/FTA-RBD 有据分析能力与人工复核边界，不重放上一轮 IFC 清单。"
+              }
+            ]
+          }
+        },
+        {
+          "id": "compare-objects",
+          "question": "把前面提到的 ICU 和 OIM 对照一下：哪个处理输入电源，哪个驱动外部显示？",
+          "metadata": {
+            "checks": "分别对应 ICU 输入电源调理与 OIM 输出编码/驱动，身份不能交换；核对时允许必要复述。"
+          },
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "分别对应 ICU 输入电源调理与 OIM 输出编码/驱动，身份不能交换；核对时允许必要复述。"
+              }
+            ]
+          }
+        },
+        {
+          "id": "return-first-code",
+          "question": "回到本次对话第一轮查的那个输入调理报码。维修清单给它的直接上报接口是什么？不要混入后来比较的滤波故障。",
+          "metadata": {
+            "checks": "跨越八轮仍回到第一轮报码，而非近一轮对象。当前源表未提供 HMC→MFL 的显式编码关联，不能因合成编号同序或现象相同声称 MFL001 已被证明属于当前码。必须保持 91810001**0001 钳位故障身份，不混滤波/欠压邻居。可依据 HMC 说明采样/钳位检查与确认后更换，并明确尚不能确认该码在 MFL 的接口对应关系；未确认关联不能说成 MFL 没有 API。若作为独立同现象记录介绍 MFL001，须明确关联未证实，其 GetICUFaultStatus 为周期1s，不得冒充该码已授权处置。"
+          },
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "跨越八轮仍回到第一轮报码，而非近一轮对象。当前源表未提供 HMC→MFL 的显式编码关联，不能因合成编号同序或现象相同声称 MFL001 已被证明属于当前码。必须保持 91810001**0001 钳位故障身份，不混滤波/欠压邻居。可依据 HMC 说明采样/钳位检查与确认后更换，并明确尚不能确认该码在 MFL 的接口对应关系；未确认关联不能说成 MFL 没有 API。若作为独立同现象记录介绍 MFL001，须明确关联未证实，其 GetICUFaultStatus 为周期1s，不得冒充该码已授权处置。"
+              }
+            ]
+          }
+        },
+        {
+          "id": "final-code-check",
+          "question": "请最后核对一次：那条完整报码是什么、接口应怎样调用？只保留这条记录的检查内容。",
+          "metadata": {
+            "checks": "核对完整报码及其可确认检查内容，允许必要复述。当前源表未提供 HMC→MFL 的显式编码关联，不能因合成编号同序或现象相同声称 MFL001 已被证明属于当前码。必须保持 91810001**0001 钳位故障身份，不混滤波/欠压邻居。可依据 HMC 说明采样/钳位检查与确认后更换，并明确尚不能确认该码在 MFL 的接口对应关系；未确认关联不能说成 MFL 没有 API。若作为独立同现象记录介绍 MFL001，须明确关联未证实，其 GetICUFaultStatus 为周期1s，不得冒充该码已授权处置。"
+          },
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "核对完整报码及其可确认检查内容，允许必要复述。当前源表未提供 HMC→MFL 的显式编码关联，不能因合成编号同序或现象相同声称 MFL001 已被证明属于当前码。必须保持 91810001**0001 钳位故障身份，不混滤波/欠压邻居。可依据 HMC 说明采样/钳位检查与确认后更换，并明确尚不能确认该码在 MFL 的接口对应关系；未确认关联不能说成 MFL 没有 API。若作为独立同现象记录介绍 MFL001，须明确关联未证实，其 GetICUFaultStatus 为周期1s，不得冒充该码已授权处置。"
+              }
+            ]
+          }
+        }
       ]
     },
     {
       "id": "MT-EXACT-02-psua-intermittent",
-      "metadata": {"category": "精确代码查询与跨文档补全", "coverage": ["hmc_query", "mfl_query"], "expected_records": ["91810002**0003", "FM-SYN-006", "MFL-SYN-006"]},
+      "metadata": {
+        "category": "精确代码查询与跨文档补全",
+        "coverage": [
+          "hmc_query",
+          "mfl_query"
+        ],
+        "expected_records": [
+          "91810002**0003",
+          "FM-SYN-006",
+          "MFL-SYN-006"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "exact_code",
+          "related_question",
+          "neighbor_isolation"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "91810002**0003",
+          "FM-SYN-006",
+          "MFL-SYN-006",
+          "SCOPE-02",
+          "SCOPE-03",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "91810002**0003",
+          "FM-SYN-006",
+          "MFL-SYN-006"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "code", "question": "HMC 代码 91810002、HAMC 通配、HSC 0003 记录的故障是什么，应该怎样排查？",
-         "assertions": {"required_tools": ["hmc_query"], "required_doc_types": ["hmc"], "answer_regex": ["91810002", "间歇停机|散热|热循环"]}},
-        {"id": "api", "question": "这个故障能不能通过状态接口直接上报？如果不能，现场该用什么方式确认？",
-         "assertions": {"required_tools": ["mfl_query"], "required_used_doc_types": ["mfl"], "any_used_record_ids": ["MFL-SYN-006"], "answer_regex": ["否|不能直接上报|不可直接上报|热循环|复现"]}}
+        {
+          "id": "code",
+          "question": "HMC 代码 91810002、HAMC 通配、HSC 0003 记录的故障是什么，应该怎样排查？",
+          "assertions": {
+            "required_doc_types": [
+              "hmc"
+            ],
+            "required_tools": [
+              "hmc_query"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              }
+            ],
+            "required_used_record_ids": [
+              "91810002**0003"
+            ]
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "api",
+          "question": "这个故障能不能通过状态接口直接上报？如果不能，现场该用什么方式确认？",
+          "assertions": {
+            "required_used_doc_types": [
+              "mfl"
+            ],
+            "required_tools": [],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "MFL-SYN-006 明确不可直接 API 上报，API 名称为缺失符号。回答不能移借 MFL-SYN-004/005 的 GetPSUAFaultStatus 当作此故障的直接上报接口；应结合温度、负载电流、停机时间和热循环确认。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "MFL-SYN-006 明确不可直接 API 上报，API 名称为缺失符号。回答不能移借 MFL-SYN-004/005 的 GetPSUAFaultStatus 当作此故障的直接上报接口；应结合温度、负载电流、停机时间和热循环确认。"
+          }
+        }
       ]
     },
     {
       "id": "MT-EXACT-03-pdu-false-trip",
-      "metadata": {"category": "精确代码查询与跨文档补全", "coverage": ["hmc_query", "fault_history_query"], "expected_records": ["91810004**0002", "FM-SYN-011", "HIS-SYN-004"]},
+      "metadata": {
+        "category": "精确代码查询与跨文档补全",
+        "coverage": [
+          "hmc_query",
+          "fault_history_query"
+        ],
+        "expected_records": [
+          "91810004**0002",
+          "FM-SYN-011",
+          "HIS-SYN-004"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "exact_code",
+          "related_question",
+          "neighbor_isolation"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "91810004**0002",
+          "FM-SYN-011",
+          "HIS-SYN-004",
+          "MFL-SYN-011",
+          "SCOPE-02",
+          "SCOPE-03",
+          "SCOPE-07",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "91810004**0002",
+          "FM-SYN-011",
+          "HIS-SYN-004",
+          "MFL-SYN-011"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "code", "question": "LCN 91810004、HAMC **、HSC 0002 的含义是什么？现场按什么步骤处理？",
-         "assertions": {"required_tools": ["hmc_query"], "required_doc_types": ["hmc"], "answer_regex": ["91810004", "过流|保护|门限|采样"]}},
-        {"id": "history", "question": "以前有没有处理过同类误跳闸的案例？当时最后是怎么确认根因的？",
-         "assertions": {"required_tools": ["fault_history_query"], "required_used_doc_types": ["fault_history"], "required_answer_facets": ["history_time", "history_action", "history_result"]}}
+        {
+          "id": "code",
+          "question": "LCN 91810004、HAMC **、HSC 0002 的含义是什么？现场按什么步骤处理？",
+          "assertions": {
+            "required_doc_types": [
+              "hmc"
+            ],
+            "required_tools": [
+              "hmc_query"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              }
+            ],
+            "required_used_record_ids": [
+              "91810004**0002"
+            ]
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "history",
+          "question": "以前有没有处理过同类误跳闸的案例？当时最后是怎么确认根因的？",
+          "assertions": {
+            "required_used_doc_types": [
+              "fault_history"
+            ],
+            "required_tools": [],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "应定位 HIS-SYN-004：实测电流与 PDU 采样不符、电流注入的固定偏置支持传感器偏置，保护逻辑本身正常；不能只重述代码或把实际过载当成已确认根因。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "应定位 HIS-SYN-004：实测电流与 PDU 采样不符、电流注入的固定偏置支持传感器偏置，保护逻辑本身正常；不能只重述代码或把实际过载当成已确认根因。"
+          }
+        }
       ]
     },
     {
       "id": "MT-EXACT-04-bcm-startup-timeout",
-      "metadata": {"category": "精确代码查询与跨文档补全", "coverage": ["hmc_query", "fta_query"], "expected_records": ["91820001**0001", "FM-SYN-016", "FTA-SYN-001"]},
+      "metadata": {
+        "category": "精确代码查询与跨文档补全",
+        "coverage": [
+          "hmc_query",
+          "fta_query"
+        ],
+        "expected_records": [
+          "91820001**0001",
+          "FM-SYN-016",
+          "FTA-SYN-001"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "exact_code",
+          "related_question",
+          "neighbor_isolation"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "91820001**0001",
+          "FM-SYN-016",
+          "FTA-SYN-001",
+          "MFL-SYN-016",
+          "SCOPE-02",
+          "SCOPE-03",
+          "SCOPE-04",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "91820001**0001",
+          "FM-SYN-016",
+          "FTA-SYN-001",
+          "MFL-SYN-016"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "code", "question": "请给出 LCN 91820001、HAMC **、HSC 0001 对应的故障描述和维修方法。",
-         "assertions": {"required_tools": ["hmc_query"], "required_doc_types": ["hmc"], "answer_regex": ["91820001", "启动|时序|超时"]}},
-        {"id": "tree", "question": "这类故障在“系统无法完成启动”那棵故障树里处在什么位置？还涉及哪些基本事件？",
-         "assertions": {"required_tools": ["fta_query"], "required_used_doc_types": ["fta"], "any_used_record_ids": ["FTA-SYN-001"], "answer_regex": ["启动|基本事件|顶事件"]}}
+        {
+          "id": "code",
+          "question": "请给出 LCN 91820001、HAMC **、HSC 0001 对应的故障描述和维修方法。",
+          "assertions": {
+            "required_doc_types": [
+              "hmc"
+            ],
+            "required_tools": [
+              "hmc_query"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              }
+            ],
+            "required_used_record_ids": [
+              "91820001**0001"
+            ]
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "tree",
+          "question": "这类故障在“系统无法完成启动”那棵故障树里处在什么位置？还涉及哪些基本事件？",
+          "assertions": {
+            "required_used_doc_types": [
+              "fta"
+            ],
+            "required_tools": [],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "应在 FTA-SYN-001 中指出 BCM 启动时序超时为单事件割集，并区分其他 BCM 事件、MSM、CGM 和双电源同时失效的 AND 条件；不能把所有电源故障都补进该树。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "应在 FTA-SYN-001 中指出 BCM 启动时序超时为单事件割集，并区分其他 BCM 事件、MSM、CGM 和双电源同时失效的 AND 条件；不能把所有电源故障都补进该树。"
+          }
+        }
       ]
     },
     {
       "id": "MT-EXACT-05-gppb-ecc",
-      "metadata": {"category": "精确代码查询与跨文档补全", "coverage": ["hmc_query", "fault_history_query"], "expected_records": ["91820003**0003", "FM-SYN-024", "HIS-SYN-008"]},
+      "metadata": {
+        "category": "精确代码查询与跨文档补全",
+        "coverage": [
+          "hmc_query",
+          "fault_history_query"
+        ],
+        "expected_records": [
+          "91820003**0003",
+          "FM-SYN-024",
+          "HIS-SYN-008"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "exact_code",
+          "related_question",
+          "neighbor_isolation"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "91820003**0003",
+          "FM-SYN-024",
+          "HIS-SYN-008",
+          "MFL-SYN-024",
+          "SCOPE-02",
+          "SCOPE-03",
+          "SCOPE-07",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "91820003**0003",
+          "FM-SYN-024",
+          "HIS-SYN-008",
+          "MFL-SYN-024"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "code", "question": "91820003 这个 LCN 下 HAMC 通配、HSC 0003 是哪类故障？",
-         "assertions": {"required_tools": ["hmc_query"], "required_doc_types": ["hmc"], "answer_regex": ["91820003", "存储|校验"]}},
-        {"id": "history", "question": "有历史案例提到过类似现象吗？当时是温度相关还是器件本身问题？",
-         "assertions": {"required_tools": ["fault_history_query"], "required_used_doc_types": ["fault_history"], "any_used_record_ids": ["HIS-SYN-008"], "required_answer_facets": ["history_action", "history_result"]}}
+        {
+          "id": "code",
+          "question": "91820003 这个 LCN 下 HAMC 通配、HSC 0003 是哪类故障？",
+          "assertions": {
+            "required_doc_types": [
+              "hmc"
+            ],
+            "required_tools": [
+              "hmc_query"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              }
+            ],
+            "required_used_record_ids": [
+              "91820003**0003"
+            ]
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "history",
+          "question": "有历史案例提到过类似现象吗？当时是温度相关还是器件本身问题？",
+          "assertions": {
+            "required_used_doc_types": [
+              "fault_history"
+            ],
+            "required_tools": [],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "HIS-SYN-008 是温度相关的存储器件热退化，高温同地址位翻转、低温正常、供电纹波合格；不是在温度和器件之间强行二选一，也不能声称只是外部温度且无器件问题。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "HIS-SYN-008 是温度相关的存储器件热退化，高温同地址位翻转、低温正常、供电纹波合格；不是在温度和器件之间强行二选一，也不能声称只是外部温度且无器件问题。"
+          }
+        }
       ]
     },
     {
       "id": "MT-EXACT-06-ngw-burst-loss",
-      "metadata": {"category": "精确代码查询与跨文档补全", "coverage": ["hmc_query", "fault_history_query"], "expected_records": ["91830003**0002", "FM-SYN-038", "HIS-SYN-013"]},
+      "metadata": {
+        "category": "精确代码查询与跨文档补全",
+        "coverage": [
+          "hmc_query",
+          "fault_history_query"
+        ],
+        "expected_records": [
+          "91830003**0002",
+          "FM-SYN-038",
+          "HIS-SYN-013"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "exact_code",
+          "related_question",
+          "neighbor_isolation"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "91830003**0002",
+          "FM-SYN-038",
+          "HIS-SYN-013",
+          "MFL-SYN-038",
+          "SCOPE-02",
+          "SCOPE-03",
+          "SCOPE-07",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "91830003**0002",
+          "FM-SYN-038",
+          "HIS-SYN-013",
+          "MFL-SYN-038"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "code", "question": "帮我查 HMC 91830003 ** 0002 的完整记录，包括故障现象和维修方法。",
-         "assertions": {"required_tools": ["hmc_query"], "required_doc_types": ["hmc"], "answer_regex": ["91830003", "丢包|端口|队列"]}},
-        {"id": "history", "question": "历史上这类突发丢包是怎么定位的？验证结果是什么？",
-         "assertions": {"required_tools": ["fault_history_query"], "required_used_doc_types": ["fault_history"], "any_used_record_ids": ["HIS-SYN-013"], "required_answer_facets": ["history_time", "history_action", "history_result"]}}
+        {
+          "id": "code",
+          "question": "帮我查 HMC 91830003 ** 0002 的完整记录，包括故障现象和维修方法。",
+          "assertions": {
+            "required_doc_types": [
+              "hmc"
+            ],
+            "required_tools": [
+              "hmc_query"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              }
+            ],
+            "required_used_record_ids": [
+              "91830003**0002"
+            ]
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "history",
+          "question": "历史上这类突发丢包是怎么定位的？验证结果是什么？",
+          "assertions": {
+            "required_used_doc_types": [
+              "fault_history"
+            ],
+            "required_tools": [],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "HIS-SYN-013 通过队列满、升级后队列深度只有基线一半和恢复配置后相同流量无丢包定位；给出 100% 流量/120% 突发、2 h、丢包率低于 0.01% 的案例验证，而非仅列 NGW 原因候选。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "HIS-SYN-013 通过队列满、升级后队列深度只有基线一半和恢复配置后相同流量无丢包定位；给出 100% 流量/120% 突发、2 h、丢包率低于 0.01% 的案例验证，而非仅列 NGW 原因候选。"
+          }
+        }
       ]
     },
     {
       "id": "MT-EXACT-07-pcu-mapping",
-      "metadata": {"category": "精确代码查询与跨文档补全", "coverage": ["hmc_query", "fault_history_query"], "expected_records": ["91830004**0001", "FM-SYN-040", "HIS-SYN-014"]},
+      "metadata": {
+        "category": "精确代码查询与跨文档补全",
+        "coverage": [
+          "hmc_query",
+          "fault_history_query"
+        ],
+        "expected_records": [
+          "91830004**0001",
+          "FM-SYN-040",
+          "HIS-SYN-014"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "exact_code",
+          "related_question",
+          "neighbor_isolation"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "91830004**0001",
+          "FM-SYN-040",
+          "HIS-SYN-014",
+          "MFL-SYN-040",
+          "SCOPE-02",
+          "SCOPE-03",
+          "SCOPE-07",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "91830004**0001",
+          "FM-SYN-040",
+          "HIS-SYN-014",
+          "MFL-SYN-040"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "code", "question": "LCN 91830004、HAMC **、HSC 0001 记录的是什么问题？怎么修？",
-         "assertions": {"required_tools": ["hmc_query"], "required_doc_types": ["hmc"], "answer_regex": ["91830004", "协议|映射"]}},
-        {"id": "history", "question": "以前出现过吗？当时是怎么确认是映射表问题而不是硬件故障的？",
-         "assertions": {"required_tools": ["fault_history_query"], "required_used_doc_types": ["fault_history"], "any_used_record_ids": ["HIS-SYN-014"], "required_answer_facets": ["history_action", "history_result"]}}
+        {
+          "id": "code",
+          "question": "LCN 91830004、HAMC **、HSC 0001 记录的是什么问题？怎么修？",
+          "assertions": {
+            "required_doc_types": [
+              "hmc"
+            ],
+            "required_tools": [
+              "hmc_query"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              }
+            ],
+            "required_used_record_ids": [
+              "91830004**0001"
+            ]
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "history",
+          "question": "以前出现过吗？当时是怎么确认是映射表问题而不是硬件故障的？",
+          "assertions": {
+            "required_used_doc_types": [
+              "fault_history"
+            ],
+            "required_tools": [],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "HIS-SYN-014：本机映射表 V3.2 与外部 V3.1 不一致，字段 12/13 定义互换，回滚 V3.1 恢复；解释该验证为何支持映射配置而非硬件，不得换到帧转换校验错误。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "HIS-SYN-014：本机映射表 V3.2 与外部 V3.1 不一致，字段 12/13 定义互换，回滚 V3.1 恢复；解释该验证为何支持映射配置而非硬件，不得换到帧转换校验错误。"
+          }
+        }
       ]
     },
     {
       "id": "MT-EXACT-08-oim-no-signal",
-      "metadata": {"category": "精确代码查询与跨文档补全", "coverage": ["hmc_query", "mfl_query"], "expected_records": ["91840003**0001", "FM-SYN-049", "MFL-SYN-049"]},
+      "metadata": {
+        "category": "精确代码查询与跨文档补全",
+        "coverage": [
+          "hmc_query",
+          "mfl_query"
+        ],
+        "expected_records": [
+          "91840003**0001",
+          "FM-SYN-049",
+          "MFL-SYN-049"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "exact_code",
+          "related_question",
+          "neighbor_isolation"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "91840003**0001",
+          "FM-SYN-049",
+          "MFL-SYN-049",
+          "SCOPE-02",
+          "SCOPE-03",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "91840003**0001",
+          "FM-SYN-049",
+          "MFL-SYN-049"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "code", "question": "查 LCN 91840003、HAMC **、HSC 0001，这条代码的故障现象和处置建议是什么？",
-         "assertions": {"required_tools": ["hmc_query"], "required_doc_types": ["hmc"], "answer_regex": ["91840003", "输出通道|无信号|OIM"]}},
-        {"id": "api", "question": "现场可以用哪个状态接口确认输出接口模块本身是否正常？",
-         "assertions": {"required_tools": ["mfl_query"], "required_used_doc_types": ["mfl"], "any_used_record_ids": ["MFL-SYN-049"], "answer_regex": ["GetOIMFaultStatus", "OIM"]}}
+        {
+          "id": "code",
+          "question": "查 LCN 91840003、HAMC **、HSC 0001，这条代码的故障现象和处置建议是什么？",
+          "assertions": {
+            "required_doc_types": [
+              "hmc"
+            ],
+            "required_tools": [
+              "hmc_query"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              }
+            ],
+            "required_used_record_ids": [
+              "91840003**0001"
+            ]
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "api",
+          "question": "现场可以用哪个状态接口确认输出接口模块本身是否正常？",
+          "assertions": {
+            "required_used_doc_types": [
+              "mfl"
+            ],
+            "required_tools": [],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "MFL-SYN-049 的 GetOIMFaultStatus，结合内部测试图、接口时钟和物理输出检查。接口状态不能单独保证模块全部正常。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "MFL-SYN-049 的 GetOIMFaultStatus，结合内部测试图、接口时钟和物理输出检查。接口状态不能单独保证模块全部正常。"
+          }
+        }
       ]
     },
     {
       "id": "MT-EXACT-09-cgm-clock-loss",
-      "metadata": {"category": "精确代码查询与跨文档补全", "coverage": ["hmc_query", "fault_history_query"], "expected_records": ["91860001**0001", "FM-SYN-064", "HIS-SYN-022"]},
+      "metadata": {
+        "category": "精确代码查询与跨文档补全",
+        "coverage": [
+          "hmc_query",
+          "fault_history_query"
+        ],
+        "expected_records": [
+          "91860001**0001",
+          "FM-SYN-064",
+          "HIS-SYN-022"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "exact_code",
+          "related_question",
+          "neighbor_isolation"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "91860001**0001",
+          "FM-SYN-064",
+          "HIS-SYN-022",
+          "MFL-SYN-064",
+          "SCOPE-02",
+          "SCOPE-03",
+          "SCOPE-07",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "91860001**0001",
+          "FM-SYN-064",
+          "HIS-SYN-022",
+          "MFL-SYN-064"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "code", "question": "HMC 91860001 ** 0001 对应什么故障？维修上先做什么？",
-         "assertions": {"required_tools": ["hmc_query"], "required_doc_types": ["hmc"], "answer_regex": ["91860001", "时钟"]}},
-        {"id": "history", "question": "有没有系统时钟丢失的排故记录？当时换了什么、怎么验证的？",
-         "assertions": {"required_tools": ["fault_history_query"], "required_used_doc_types": ["fault_history"], "any_used_record_ids": ["HIS-SYN-022"], "required_answer_facets": ["history_time", "history_action", "history_result"]}}
+        {
+          "id": "code",
+          "question": "HMC 91860001 ** 0001 对应什么故障？维修上先做什么？",
+          "assertions": {
+            "required_doc_types": [
+              "hmc"
+            ],
+            "required_tools": [
+              "hmc_query"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              }
+            ],
+            "required_used_record_ids": [
+              "91860001**0001"
+            ]
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "history",
+          "question": "有没有系统时钟丢失的排故记录？当时换了什么、怎么验证的？",
+          "assertions": {
+            "required_used_doc_types": [
+              "fault_history"
+            ],
+            "required_tools": [],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "HIS-SYN-022 的 CGM 晶振稳压器件失效、备用时基恢复、更换 CGM；给出主备切换/锁相/24 h 漂移和时间戳一致的验证，不能只罗列时钟故障模式。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "HIS-SYN-022 的 CGM 晶振稳压器件失效、备用时基恢复、更换 CGM；给出主备切换/锁相/24 h 漂移和时间戳一致的验证，不能只罗列时钟故障模式。"
+          }
+        }
       ]
     },
     {
       "id": "MT-EXACT-10-fan-stall",
-      "metadata": {"category": "精确代码查询与跨文档补全", "coverage": ["hmc_query", "fault_history_query"], "expected_records": ["91860003**0001", "FM-SYN-070", "HIS-SYN-024"]},
+      "metadata": {
+        "category": "精确代码查询与跨文档补全",
+        "coverage": [
+          "hmc_query",
+          "fault_history_query"
+        ],
+        "expected_records": [
+          "91860003**0001",
+          "FM-SYN-070",
+          "HIS-SYN-024",
+          "FM-SYN-072"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "exact_code",
+          "related_question",
+          "neighbor_isolation"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "91860003**0001",
+          "FM-SYN-070",
+          "HIS-SYN-024",
+          "FM-SYN-072",
+          "MFL-SYN-070",
+          "MFL-SYN-072",
+          "SCOPE-02",
+          "SCOPE-03",
+          "SCOPE-07",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "91860003**0001",
+          "FM-SYN-070",
+          "HIS-SYN-024",
+          "FM-SYN-072",
+          "MFL-SYN-070",
+          "MFL-SYN-072"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "code", "question": "请查出 LCN 91860003、HAMC **、HSC 0001 的故障描述与维修方法。",
-         "assertions": {"required_tools": ["hmc_query"], "required_doc_types": ["hmc"], "answer_regex": ["91860003", "风扇|堵转|转速"]}},
-        {"id": "distinguish", "question": "风扇堵转和风量衰减在现象上怎么区分？资料里各自的判据是什么？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "any_used_record_ids": ["FM-SYN-070", "FM-SYN-072"], "answer_regex": ["转速|电流", "风量|散热"]}}
+        {
+          "id": "code",
+          "question": "请查出 LCN 91860003、HAMC **、HSC 0001 的故障描述与维修方法。",
+          "assertions": {
+            "required_doc_types": [
+              "hmc"
+            ],
+            "required_tools": [
+              "hmc_query"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              }
+            ],
+            "required_used_record_ids": [
+              "91860003**0001"
+            ]
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "distinguish",
+          "question": "风扇堵转和风量衰减在现象上怎么区分？资料里各自的判据是什么？",
+          "assertions": {
+            "required_used_doc_types": [
+              "fmeca"
+            ],
+            "required_tools": [],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "区分 FM-SYN-070 堵转的转速为零/电流和命令与 FM-SYN-072 转速可正常但风量、压差、温升异常；不能把转速正常当作风冷充分。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "区分 FM-SYN-070 堵转的转速为零/电流和命令与 FM-SYN-072 转速可正常但风量、压差、温升异常；不能把转速正常当作风冷充分。"
+          }
+        }
       ]
     },
     {
       "id": "MT-EXACT-11-partial-lcn",
-      "metadata": {"category": "部分代码查询与候选收窄", "coverage": ["hmc_query"], "expected_records": ["91810001", "91810004", "91810005"], "note": "HMC 手册第 3 节：部分代码应返回候选列表并标注缺失段，不得用向量距离猜唯一代码"},
+      "metadata": {
+        "category": "部分代码查询与候选收窄",
+        "coverage": [
+          "hmc_query"
+        ],
+        "expected_records": [
+          "91810001",
+          "91810004",
+          "91810005",
+          "91810004**0001",
+          "91810004**0002",
+          "91810004**0003"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "partial_code",
+          "related_question",
+          "neighbor_isolation",
+          "object_correction"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "91810004**0001",
+          "91810004**0002",
+          "91810004**0003",
+          "91810001**0001",
+          "91810001**0002",
+          "91810001**0003",
+          "91810001010101",
+          "91810001010103",
+          "91810001020102",
+          "91810004010111",
+          "91810004020110",
+          "91810004020112",
+          "91810005**0001",
+          "91810005**0002",
+          "91810005**0003",
+          "91810005010113",
+          "91810005010115",
+          "91810005020114",
+          "SCOPE-02"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "91810004**0001",
+          "91810004**0002",
+          "91810004**0003"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "partial", "question": "只知道故障代码开头是 9181，能帮我找出可能是哪些故障吗？",
-         "assertions": {"required_scope_routes": ["knowledge_base"], "required_tools": ["hmc_query"], "required_doc_types": ["hmc"], "answer_not_contains": ["唯一可能就是", "只可能是这一条"]}},
-        {"id": "narrow", "question": "其中跟配电和保护有关的是哪几条？把完整代码和故障描述列出来。",
-         "assertions": {"required_tools": ["hmc_query"], "required_used_doc_types": ["hmc"], "answer_regex": ["91810004", "支路|过流|电流|配电"]}}
+        {
+          "id": "partial",
+          "question": "只知道故障代码开头是 9181，能帮我找出可能是哪些故障吗？",
+          "assertions": {
+            "required_scope_routes": [
+              "knowledge_base"
+            ],
+            "required_doc_types": [
+              "hmc"
+            ],
+            "required_tools": [
+              "hmc_query"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "narrow",
+          "question": "其中跟配电和保护有关的是哪几条？把完整代码和故障描述列出来。",
+          "assertions": {
+            "required_used_doc_types": [
+              "hmc"
+            ],
+            "required_tools": [],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "列出配电 PDU 相关 91810004 的完整代码与各自描述，区分支路开关、误跳闸、采样漂移；不能把 9181 前缀补成一个唯一报码。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "列出配电 PDU 相关 91810004 的完整代码与各自描述，区分支路开关、误跳闸、采样漂移；不能把 9181 前缀补成一个唯一报码。"
+          }
+        },
+        {
+          "id": "component-query",
+          "question": "补充完整的 LCN 是 91810004，HSC 是 0002，HAMC 暂时没抄到。能进一步确定吗？",
+          "metadata": {
+            "checks": "以 PG 结构化 LCN+HSC 查询，当前源仅匹配 HAMC ** 的过流保护误跳闸，可依据唯一权威行补出 HAMC；不得猜邻居或因用户没提供 HAMC 一律拒绝。"
+          },
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "以 PG 结构化 LCN+HSC 查询，当前源仅匹配 HAMC ** 的过流保护误跳闸，可依据唯一权威行补出 HAMC；不得猜邻居或因用户没提供 HAMC 一律拒绝。"
+              }
+            ]
+          }
+        },
+        {
+          "id": "correct-hsc",
+          "question": "更正一下，末段其实是 0001，HAMC 还是 **。请只解释更正后这条。",
+          "metadata": {
+            "checks": "切换到 91810004**0001 支路开关卡滞断开，不得继续用 0002 误跳闸的描述/维修动作。"
+          },
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "切换到 91810004**0001 支路开关卡滞断开，不得继续用 0002 误跳闸的描述/维修动作。"
+              }
+            ]
+          }
+        }
       ]
     },
     {
       "id": "MT-VAGUE-01-dead-after-power-on",
-      "metadata": {"category": "模糊现象定位与追问收窄", "coverage": ["fta_query", "fmeca_query", "function_locator"], "expected_records": ["FTA-SYN-001", "FM-SYN-001", "FM-SYN-010", "FM-SYN-016"]},
+      "metadata": {
+        "category": "模糊现象定位与追问收窄",
+        "coverage": [
+          "fta_query",
+          "fmeca_query",
+          "function_locator"
+        ],
+        "expected_records": [
+          "FTA-SYN-001",
+          "FM-SYN-001",
+          "FM-SYN-010",
+          "FM-SYN-016",
+          "FM-SYN-017",
+          "FM-SYN-018",
+          "FM-SYN-025",
+          "FM-SYN-064"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "vague_symptom",
+          "related_question"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "FTA-SYN-001",
+          "FM-SYN-001",
+          "FM-SYN-010",
+          "FM-SYN-016",
+          "FM-SYN-017",
+          "FM-SYN-018",
+          "FM-SYN-025",
+          "FM-SYN-064",
+          "MFL-SYN-001",
+          "MFL-SYN-010",
+          "MFL-SYN-016",
+          "MFL-SYN-017",
+          "MFL-SYN-018",
+          "MFL-SYN-025",
+          "MFL-SYN-064",
+          "SCOPE-04",
+          "SCOPE-03",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "FTA-SYN-001",
+          "FM-SYN-001",
+          "FM-SYN-010",
+          "FM-SYN-016",
+          "FM-SYN-017",
+          "FM-SYN-018",
+          "FM-SYN-025",
+          "FM-SYN-064",
+          "MFL-SYN-001",
+          "MFL-SYN-010",
+          "MFL-SYN-016",
+          "MFL-SYN-017",
+          "MFL-SYN-018",
+          "MFL-SYN-025",
+          "MFL-SYN-064"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "symptom", "question": "加电以后整套设备完全没反应，指示灯也不亮，最可能卡在哪一段？",
-         "assertions": {"required_scope_routes": ["knowledge_base"], "required_tools": ["fta_query"], "any_doc_types": ["fta", "fmeca", "function_locator"], "required_answer_facets": ["cause"], "answer_not_contains": ["一定是 BCM 损坏"]}},
-        {"id": "narrow", "question": "补充一下：供电输入侧测得电压是正常的，风扇会转，但系统进不了启动流程。这样能排除掉哪些候选？",
-         "assertions": {"required_tools": ["fmeca_query"], "any_used_doc_types": ["fmeca", "fta"], "answer_regex": ["启动|时序|ICU|PSU|PDU|BCM"], "answer_not_contains": ["仍然无法判断"]}}
+        {
+          "id": "symptom",
+          "question": "加电以后整套设备完全没反应，指示灯也不亮，最可能卡在哪一段？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "uncertainty",
+                "criterion": "问题模糊或对象不全时，给有据候选与区分问题或进行必要澄清；不能只凭相似度给唯一故障/换件结论。已有可辨认领域线索时允许有界检索，不强制某一内部路由。"
+              }
+            ],
+            "min_evidence": 0,
+            "min_citations": 0
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "narrow",
+          "question": "补充一下：供电输入侧测得电压是正常的，风扇会转，但系统进不了启动流程。这样能排除掉哪些候选？",
+          "assertions": {
+            "any_used_doc_types": [
+              "fmeca",
+              "fta"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "使用新增输入电压正常、风扇转动但未启动的信息降低完全断供的优先级，转向内部电源良好/时钟/握手/BCM 启动状态；说明输入正常不能排除所有内部供电链问题，不得原样重播候选。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "使用新增输入电压正常、风扇转动但未启动的信息降低完全断供的优先级，转向内部电源良好/时钟/握手/BCM 启动状态；说明输入正常不能排除所有内部供电链问题，不得原样重播候选。"
+          }
+        }
       ]
     },
     {
       "id": "MT-VAGUE-02-random-restart",
-      "metadata": {"category": "模糊现象定位与追问收窄", "coverage": ["fta_query", "fmeca_query"], "expected_records": ["FTA-SYN-005", "FM-SYN-013", "FM-SYN-018", "FM-SYN-011"]},
+      "metadata": {
+        "category": "模糊现象定位与追问收窄",
+        "coverage": [
+          "fta_query",
+          "fmeca_query"
+        ],
+        "expected_records": [
+          "FTA-SYN-005",
+          "FM-SYN-013",
+          "FM-SYN-018",
+          "FM-SYN-011",
+          "FM-SYN-006",
+          "FM-SYN-009",
+          "FM-SYN-021",
+          "FM-SYN-024",
+          "FM-SYN-067",
+          "FM-SYN-068",
+          "FM-SYN-070",
+          "FM-SYN-071"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "vague_symptom",
+          "related_question"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "FTA-SYN-005",
+          "FM-SYN-013",
+          "FM-SYN-018",
+          "FM-SYN-011",
+          "FM-SYN-006",
+          "FM-SYN-009",
+          "FM-SYN-021",
+          "FM-SYN-024",
+          "FM-SYN-067",
+          "FM-SYN-068",
+          "FM-SYN-070",
+          "FM-SYN-071",
+          "MFL-SYN-013",
+          "MFL-SYN-018",
+          "MFL-SYN-011",
+          "MFL-SYN-006",
+          "MFL-SYN-009",
+          "MFL-SYN-021",
+          "MFL-SYN-024",
+          "MFL-SYN-067",
+          "MFL-SYN-068",
+          "MFL-SYN-070",
+          "MFL-SYN-071",
+          "SCOPE-04",
+          "SCOPE-03",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "FTA-SYN-005",
+          "FM-SYN-013",
+          "FM-SYN-018",
+          "FM-SYN-011",
+          "FM-SYN-006",
+          "FM-SYN-009",
+          "FM-SYN-021",
+          "FM-SYN-024",
+          "FM-SYN-067",
+          "FM-SYN-068",
+          "FM-SYN-070",
+          "FM-SYN-071",
+          "MFL-SYN-013",
+          "MFL-SYN-018",
+          "MFL-SYN-011",
+          "MFL-SYN-006",
+          "MFL-SYN-009",
+          "MFL-SYN-021",
+          "MFL-SYN-024",
+          "MFL-SYN-067",
+          "MFL-SYN-068",
+          "MFL-SYN-070",
+          "MFL-SYN-071"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "symptom", "question": "设备用着用着自己就重启，也没什么规律，可能是什么原因？",
-         "assertions": {"required_tools": ["fta_query"], "any_doc_types": ["fta", "fmeca"], "required_answer_facets": ["cause", "impact"], "answer_not_contains": ["已经确认是电源模块损坏"]}},
-        {"id": "verify", "question": "这几个候选里，哪几个可以先通过看记录或状态量快速排除？给出对应的验证手段。",
-         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "answer_regex": ["复位|看门狗|保持|HUM|过流|门限"]}}
+        {
+          "id": "symptom",
+          "question": "设备用着用着自己就重启，也没什么规律，可能是什么原因？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "uncertainty",
+                "criterion": "问题模糊或对象不全时，给有据候选与区分问题或进行必要澄清；不能只凭相似度给唯一故障/换件结论。已有可辨认领域线索时允许有界检索，不强制某一内部路由。"
+              }
+            ],
+            "min_evidence": 0,
+            "min_citations": 0
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "verify",
+          "question": "这几个候选里，哪几个可以先通过看记录或状态量快速排除？给出对应的验证手段。",
+          "assertions": {
+            "required_used_doc_types": [
+              "fmeca"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "按上轮复位候选对应状态/日志给出快速区分办法，例如复位源与看门狗、供电事件/保护波形和热状态；给出检查优先理由，不要求无依据绝对排序。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "按上轮复位候选对应状态/日志给出快速区分办法，例如复位源与看门狗、供电事件/保护波形和热状态；给出检查优先理由，不要求无依据绝对排序。"
+          }
+        }
       ]
     },
     {
       "id": "MT-VAGUE-03-black-screen-alive",
-      "metadata": {"category": "模糊现象定位与追问收窄", "coverage": ["fta_query", "mfl_query"], "expected_records": ["FTA-SYN-004", "FM-SYN-043", "FM-SYN-049", "FM-SYN-052"]},
+      "metadata": {
+        "category": "模糊现象定位与追问收窄",
+        "coverage": [
+          "fta_query",
+          "mfl_query"
+        ],
+        "expected_records": [
+          "FTA-SYN-004",
+          "FM-SYN-043",
+          "FM-SYN-049",
+          "FM-SYN-052",
+          "FM-SYN-050",
+          "FM-SYN-051",
+          "FM-SYN-053"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "vague_symptom",
+          "related_question"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "FTA-SYN-004",
+          "FM-SYN-043",
+          "FM-SYN-049",
+          "FM-SYN-052",
+          "FM-SYN-050",
+          "FM-SYN-051",
+          "FM-SYN-053",
+          "MFL-SYN-043",
+          "MFL-SYN-049",
+          "MFL-SYN-052",
+          "MFL-SYN-050",
+          "MFL-SYN-051",
+          "MFL-SYN-053",
+          "SCOPE-04",
+          "SCOPE-03",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "FTA-SYN-004",
+          "FM-SYN-043",
+          "FM-SYN-049",
+          "FM-SYN-052",
+          "FM-SYN-050",
+          "FM-SYN-051",
+          "FM-SYN-053",
+          "MFL-SYN-043",
+          "MFL-SYN-049",
+          "MFL-SYN-052",
+          "MFL-SYN-050",
+          "MFL-SYN-051",
+          "MFL-SYN-053"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "symptom", "question": "屏幕全黑，但从别的状态看机器好像还在正常工作，问题大概出在哪？",
-         "assertions": {"required_tools": ["fta_query"], "any_doc_types": ["fta", "fmeca", "mfl"], "required_answer_facets": ["cause"], "answer_not_contains": ["必然是显示屏本身故障"]}},
-        {"id": "narrow", "question": "换过外接终端和线缆还是一样，内置画面源看着是对的。现在优先查哪一段？",
-         "assertions": {"any_tools": ["mfl_query", "fmeca_query"], "any_used_doc_types": ["mfl", "fmeca"], "answer_regex": ["OIM|输出接口|编码|时钟|DCS|切换"]}}
+        {
+          "id": "symptom",
+          "question": "屏幕全黑，但从别的状态看机器好像还在正常工作，问题大概出在哪？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "uncertainty",
+                "criterion": "问题模糊或对象不全时，给有据候选与区分问题或进行必要澄清；不能只凭相似度给唯一故障/换件结论。已有可辨认领域线索时允许有界检索，不强制某一内部路由。"
+              }
+            ],
+            "min_evidence": 0,
+            "min_citations": 0
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "narrow",
+          "question": "换过外接终端和线缆还是一样，内置画面源看着是对的。现在优先查哪一段？",
+          "assertions": {
+            "any_used_doc_types": [
+              "mfl",
+              "fmeca"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "外接终端/线缆替换无效、内置画面源正常使 OIM 输出驱动/编码/接口时钟和 DCS 输出选择更值得检查；不能再把画面合成或终端损坏当首选确定根因。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "外接终端/线缆替换无效、内置画面源正常使 OIM 输出驱动/编码/接口时钟和 DCS 输出选择更值得检查；不能再把画面合成或终端损坏当首选确定根因。"
+          }
+        }
       ]
     },
     {
       "id": "MT-VAGUE-04-external-data-loss",
-      "metadata": {"category": "模糊现象定位与追问收窄", "coverage": ["fta_query", "fmeca_query"], "expected_records": ["FTA-SYN-003", "FM-SYN-034", "FM-SYN-038", "FM-SYN-042"]},
+      "metadata": {
+        "category": "模糊现象定位与追问收窄",
+        "coverage": [
+          "fta_query",
+          "fmeca_query"
+        ],
+        "expected_records": [
+          "FTA-SYN-003",
+          "FM-SYN-034",
+          "FM-SYN-038",
+          "FM-SYN-042",
+          "FM-SYN-031",
+          "FM-SYN-032",
+          "FM-SYN-033"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "vague_symptom",
+          "related_question",
+          "object_correction"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "FTA-SYN-003",
+          "FM-SYN-034",
+          "FM-SYN-038",
+          "FM-SYN-042",
+          "FM-SYN-031",
+          "FM-SYN-032",
+          "FM-SYN-033",
+          "MFL-SYN-034",
+          "MFL-SYN-038",
+          "MFL-SYN-042",
+          "MFL-SYN-031",
+          "MFL-SYN-032",
+          "MFL-SYN-033",
+          "SCOPE-04",
+          "SCOPE-03",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "FTA-SYN-003",
+          "FM-SYN-034",
+          "FM-SYN-038",
+          "FM-SYN-042",
+          "FM-SYN-031",
+          "FM-SYN-032",
+          "FM-SYN-033",
+          "MFL-SYN-034",
+          "MFL-SYN-038",
+          "MFL-SYN-042",
+          "MFL-SYN-031",
+          "MFL-SYN-032",
+          "MFL-SYN-033"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "symptom", "question": "从外部送进来的数据时不时就少一段，业务量小的时候又正常，优先怀疑哪里？",
-         "assertions": {"required_tools": ["fta_query"], "any_doc_types": ["fta", "fmeca"], "required_answer_facets": ["cause"], "answer_not_contains": ["确认是外部设备坏了"]}},
-        {"id": "narrow", "question": "进一步看，A 通道完全没数据，B 通道是好的。这样范围能收到哪里？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "answer_regex": ["BCA|A 通道|接收|仲裁|超时"]}}
+        {
+          "id": "symptom",
+          "question": "从外部送进来的数据时不时就少一段，业务量小的时候又正常，优先怀疑哪里？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "uncertainty",
+                "criterion": "问题模糊或对象不全时，给有据候选与区分问题或进行必要澄清；不能只凭相似度给唯一故障/换件结论。已有可辨认领域线索时允许有界检索，不强制某一内部路由。"
+              }
+            ],
+            "min_evidence": 0,
+            "min_citations": 0
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "narrow",
+          "question": "进一步看，A 通道完全没数据，B 通道是好的。这样范围能收到哪里？",
+          "assertions": {
+            "required_used_doc_types": [
+              "fmeca"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "当前信息已从突发负载丢包修正为 A 总线完全无接收、B 正常；应聚焦 BCA/FM-SYN-031 的接收计数、物理层和配置，不能继续以 BCB 或 NGW 拥塞为唯一对象。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "当前信息已从突发负载丢包修正为 A 总线完全无接收、B 正常；应聚焦 BCA/FM-SYN-031 的接收计数、物理层和配置，不能继续以 BCB 或 NGW 拥塞为唯一对象。"
+          }
+        }
       ]
     },
     {
       "id": "MT-VAGUE-05-getting-hot",
-      "metadata": {"category": "模糊现象定位与追问收窄", "coverage": ["fmeca_query", "mfl_query"], "expected_records": ["FM-SYN-067", "FM-SYN-068", "FM-SYN-070", "FM-SYN-072"]},
+      "metadata": {
+        "category": "模糊现象定位与追问收窄",
+        "coverage": [
+          "fmeca_query",
+          "mfl_query"
+        ],
+        "expected_records": [
+          "FM-SYN-067",
+          "FM-SYN-068",
+          "FM-SYN-070",
+          "FM-SYN-072",
+          "FM-SYN-069",
+          "FM-SYN-071"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "vague_symptom",
+          "related_question"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "FM-SYN-067",
+          "FM-SYN-068",
+          "FM-SYN-070",
+          "FM-SYN-072",
+          "FM-SYN-069",
+          "FM-SYN-071",
+          "MFL-SYN-067",
+          "MFL-SYN-068",
+          "MFL-SYN-070",
+          "MFL-SYN-072",
+          "MFL-SYN-069",
+          "MFL-SYN-071",
+          "SCOPE-03",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "FM-SYN-067",
+          "FM-SYN-068",
+          "FM-SYN-070",
+          "FM-SYN-072",
+          "FM-SYN-069",
+          "FM-SYN-071",
+          "MFL-SYN-067",
+          "MFL-SYN-068",
+          "MFL-SYN-070",
+          "MFL-SYN-072",
+          "MFL-SYN-069",
+          "MFL-SYN-071"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "symptom", "question": "设备越跑越热，但没看到任何过热告警，这种情况该查哪些部件？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["TCM|温控|FAN|风扇|门限|CGM"]}},
-        {"id": "narrow", "question": "风机用手试是有风的，但温度还在涨。下一步往哪个方向查？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "answer_regex": ["TCM|闭环|控制|命令|门限|风量"], "answer_not_contains": ["风扇机械卡死已经确认"]}}
+        {
+          "id": "symptom",
+          "question": "设备越跑越热，但没看到任何过热告警，这种情况该查哪些部件？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "uncertainty",
+                "criterion": "问题模糊或对象不全时，给有据候选与区分问题或进行必要澄清；不能只凭相似度给唯一故障/换件结论。已有可辨认领域线索时允许有界检索，不强制某一内部路由。"
+              }
+            ],
+            "min_evidence": 0,
+            "min_citations": 0
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "narrow",
+          "question": "风机用手试是有风的，但温度还在涨。下一步往哪个方向查？",
+          "assertions": {
+            "required_used_doc_types": [
+              "fmeca"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "有风不能证明风量达标或温控正常；继续比较 TCM 温度/命令/输出、独立温度门限以及风量/压差/风道，不得确认机械堵转，也不能排除所有 FAN 问题。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "有风不能证明风量达标或温控正常；继续比较 TCM 温度/命令/输出、独立温度门限以及风量/压差/风道，不得确认机械堵转，也不能排除所有 FAN 问题。"
+          }
+        }
       ]
     },
     {
       "id": "MT-VAGUE-06-slow-response",
-      "metadata": {"category": "模糊现象定位与追问收窄", "coverage": ["fmeca_query"], "expected_records": ["FM-SYN-020", "FM-SYN-023", "FM-SYN-045"]},
+      "metadata": {
+        "category": "模糊现象定位与追问收窄",
+        "coverage": [
+          "fmeca_query"
+        ],
+        "expected_records": [
+          "FM-SYN-020",
+          "FM-SYN-023",
+          "FM-SYN-045"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "vague_symptom",
+          "related_question"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "FM-SYN-020",
+          "FM-SYN-023",
+          "FM-SYN-045",
+          "MFL-SYN-020",
+          "MFL-SYN-023",
+          "MFL-SYN-045",
+          "SCOPE-03",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "FM-SYN-020",
+          "FM-SYN-023",
+          "FM-SYN-045",
+          "MFL-SYN-020",
+          "MFL-SYN-023",
+          "MFL-SYN-045"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "symptom", "question": "最近操作反应越来越慢，高负载时特别明显，可能是什么在退化？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["调度|任务|GPP|刷新|负载"]}},
-        {"id": "impact", "question": "如果一直不处理，最坏会发展到什么程度？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "required_answer_facets": ["impact"], "answer_regex": ["超时|切换|冗余|延迟|降级"]}}
+        {
+          "id": "symptom",
+          "question": "最近操作反应越来越慢，高负载时特别明显，可能是什么在退化？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "uncertainty",
+                "criterion": "问题模糊或对象不全时，给有据候选与区分问题或进行必要澄清；不能只凭相似度给唯一故障/换件结论。已有可辨认领域线索时允许有界检索，不强制某一内部路由。"
+              }
+            ],
+            "min_evidence": 0,
+            "min_citations": 0
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "impact",
+          "question": "如果一直不处理，最坏会发展到什么程度？",
+          "assertions": {
+            "required_used_doc_types": [
+              "fmeca"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "需解释上轮候选进一步退化的任务时延、数据处理/显示更新滞后或备用接替不平滑等影响；区分条件性推断，不能无依据升级为必然整机失效。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "需解释上轮候选进一步退化的任务时延、数据处理/显示更新滞后或备用接替不平滑等影响；区分条件性推断，不能无依据升级为必然整机失效。"
+          }
+        }
       ]
     },
     {
       "id": "MT-VAGUE-07-scattered-glitches",
-      "metadata": {"category": "模糊现象定位与追问收窄", "coverage": ["fmeca_query", "graph_traversal"], "expected_records": ["FM-SYN-002", "91810001**0002"]},
+      "metadata": {
+        "category": "模糊现象定位与追问收窄",
+        "coverage": [
+          "fmeca_query",
+          "graph_traversal"
+        ],
+        "expected_records": [
+          "FM-SYN-002",
+          "91810001**0002"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "vague_symptom",
+          "related_question"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "FM-SYN-002",
+          "91810001**0002",
+          "MFL-SYN-002",
+          "SCOPE-03",
+          "SCOPE-02",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "FM-SYN-002",
+          "91810001**0002",
+          "MFL-SYN-002"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "symptom", "question": "系统时不时在不同地方出点小毛病，互相之间看不出关系，会不会有一个共同源头？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["纹波|干扰|滤波|接地|相关"]}},
-        {"id": "mechanism", "question": "为什么一个输入侧的问题会让好几个子系统同时出零星异常？机理是什么？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "required_answer_facets": ["cause"], "answer_regex": ["纹波|干扰|共|相关|母线"]}}
+        {
+          "id": "symptom",
+          "question": "系统时不时在不同地方出点小毛病，互相之间看不出关系，会不会有一个共同源头？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "uncertainty",
+                "criterion": "问题模糊或对象不全时，给有据候选与区分问题或进行必要澄清；不能只凭相似度给唯一故障/换件结论。已有可辨认领域线索时允许有界检索，不强制某一内部路由。"
+              }
+            ],
+            "min_evidence": 0,
+            "min_citations": 0
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "mechanism",
+          "question": "为什么一个输入侧的问题会让好几个子系统同时出零星异常？机理是什么？",
+          "assertions": {
+            "required_used_doc_types": [
+              "fmeca"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "围绕 ICU 输入滤波退化解释共同输入纹波/传导干扰影响多个子系统、异常时间相关的机理；不能只重复滤波电容老化等原因，也不能把 SAM 饱和当同一行。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "围绕 ICU 输入滤波退化解释共同输入纹波/传导干扰影响多个子系统、异常时间相关的机理；不能只重复滤波电容老化等原因，也不能把 SAM 饱和当同一行。"
+          }
+        }
       ]
     },
     {
       "id": "MT-VAGUE-08-fault-not-recorded",
-      "metadata": {"category": "模糊现象定位与追问收窄", "coverage": ["fmeca_query", "fta_query"], "expected_records": ["FM-SYN-061", "FM-SYN-062", "FM-SYN-063", "FTA-SYN-006"]},
+      "metadata": {
+        "category": "模糊现象定位与追问收窄",
+        "coverage": [
+          "fmeca_query",
+          "fta_query"
+        ],
+        "expected_records": [
+          "FM-SYN-061",
+          "FM-SYN-062",
+          "FM-SYN-063",
+          "FTA-SYN-006"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "vague_symptom",
+          "related_question"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "FM-SYN-061",
+          "FM-SYN-062",
+          "FM-SYN-063",
+          "FTA-SYN-006",
+          "MFL-SYN-061",
+          "MFL-SYN-062",
+          "MFL-SYN-063",
+          "SCOPE-03",
+          "SCOPE-04",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "FM-SYN-061",
+          "FM-SYN-062",
+          "FM-SYN-063",
+          "FTA-SYN-006",
+          "MFL-SYN-061",
+          "MFL-SYN-062",
+          "MFL-SYN-063"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "symptom", "question": "故障明明发生了，但事后在记录里怎么都查不到，这种情况该从哪里入手？",
-         "assertions": {"required_tools": ["fmeca_query"], "any_doc_types": ["fmeca", "fta"], "answer_regex": ["FLS|日志|存储|索引|回收"]}},
-        {"id": "impact", "question": "记录缺失这件事本身，对后续排故和追溯有什么影响？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "required_answer_facets": ["impact"], "answer_regex": ["追溯|维修|隔离|快照|历史"]}}
+        {
+          "id": "symptom",
+          "question": "故障明明发生了，但事后在记录里怎么都查不到，这种情况该从哪里入手？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "uncertainty",
+                "criterion": "问题模糊或对象不全时，给有据候选与区分问题或进行必要澄清；不能只凭相似度给唯一故障/换件结论。已有可辨认领域线索时允许有界检索，不强制某一内部路由。"
+              }
+            ],
+            "min_evidence": 0,
+            "min_citations": 0
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "impact",
+          "question": "记录缺失这件事本身，对后续排故和追溯有什么影响？",
+          "assertions": {
+            "required_used_doc_types": [
+              "fmeca"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "回答记录缺失会使故障时间、状态快照、对应事件定位和后续故障证据不足，说明排故/追溯影响，不是再列存储故障原因。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "回答记录缺失会使故障时间、状态快照、对应事件定位和后续故障证据不足，说明排故/追溯影响，不是再列存储故障原因。"
+          }
+        }
       ]
     },
     {
       "id": "MT-VAGUE-09-time-inconsistent",
-      "metadata": {"category": "模糊现象定位与追问收窄", "coverage": ["fmeca_query", "fta_query"], "expected_records": ["FM-SYN-064", "FM-SYN-065", "FM-SYN-066", "FTA-SYN-008"]},
+      "metadata": {
+        "category": "模糊现象定位与追问收窄",
+        "coverage": [
+          "fmeca_query",
+          "fta_query"
+        ],
+        "expected_records": [
+          "FM-SYN-064",
+          "FM-SYN-065",
+          "FM-SYN-066",
+          "FTA-SYN-008",
+          "MFL-SYN-064",
+          "MFL-SYN-065",
+          "MFL-SYN-066"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "vague_symptom",
+          "related_question"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "FM-SYN-064",
+          "FM-SYN-065",
+          "FM-SYN-066",
+          "FTA-SYN-008",
+          "MFL-SYN-064",
+          "MFL-SYN-065",
+          "MFL-SYN-066",
+          "SCOPE-03",
+          "SCOPE-04",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "FM-SYN-064",
+          "FM-SYN-065",
+          "FM-SYN-066",
+          "FTA-SYN-008",
+          "MFL-SYN-064",
+          "MFL-SYN-065",
+          "MFL-SYN-066"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "symptom", "question": "系统内部时间和外部对时源对不上，而且越走越偏，可能涉及哪些模块？",
-         "assertions": {"required_tools": ["fmeca_query"], "any_doc_types": ["fmeca", "fta"], "answer_regex": ["CGM|时钟|同步|漂移"]}},
-        {"id": "distinguish", "question": "完全丢失和逐渐漂移，这两种情况在处理上有什么区别？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "answer_regex": ["CGM|主时钟|分配|锁定|频率|同步输入"]}}
+        {
+          "id": "symptom",
+          "question": "系统内部时间和外部对时源对不上，而且越走越偏，可能涉及哪些模块？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "uncertainty",
+                "criterion": "问题模糊或对象不全时，给有据候选与区分问题或进行必要澄清；不能只凭相似度给唯一故障/换件结论。已有可辨认领域线索时允许有界检索，不强制某一内部路由。"
+              }
+            ],
+            "min_evidence": 0,
+            "min_citations": 0
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "distinguish",
+          "question": "完全丢失和逐渐漂移，这两种情况在处理上有什么区别？",
+          "assertions": {
+            "required_used_doc_types": [
+              "fmeca"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "分别解释 CGM 时钟丢失需看主时钟/分配/锁定并评估备用时基，漂移需测频偏并关联温度与误码、校准；不能把二者都简化为同一换件动作。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "分别解释 CGM 时钟丢失需看主时钟/分配/锁定并评估备用时基，漂移需测频偏并关联温度与误码、校准；不能把二者都简化为同一换件动作。"
+          }
+        }
       ]
     },
     {
       "id": "MT-VAGUE-10-one-channel-down",
-      "metadata": {"category": "模糊现象定位与追问收窄", "coverage": ["fmeca_query", "graph_traversal"], "expected_records": ["FM-SYN-004", "FM-SYN-007", "FM-SYN-019", "FM-SYN-022"]},
+      "metadata": {
+        "category": "模糊现象定位与追问收窄",
+        "coverage": [
+          "fmeca_query",
+          "graph_traversal"
+        ],
+        "expected_records": [
+          "FM-SYN-004",
+          "FM-SYN-007",
+          "FM-SYN-019",
+          "FM-SYN-022"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "vague_symptom",
+          "related_question",
+          "object_correction"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "FM-SYN-004",
+          "FM-SYN-007",
+          "FM-SYN-019",
+          "FM-SYN-022",
+          "MFL-SYN-004",
+          "MFL-SYN-007",
+          "MFL-SYN-019",
+          "MFL-SYN-022",
+          "SCOPE-03",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "FM-SYN-004",
+          "FM-SYN-007",
+          "FM-SYN-019",
+          "FM-SYN-022",
+          "MFL-SYN-004",
+          "MFL-SYN-007",
+          "MFL-SYN-019",
+          "MFL-SYN-022"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "symptom", "question": "感觉其中一路已经不工作了，另一路还撑着，该怎么判断是哪一路、影响多大？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["冗余|备用|切换|通道"]}},
-        {"id": "narrow", "question": "是供电那两路中的一路，不是处理通道。现在风险有多大？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "required_answer_facets": ["impact"], "answer_regex": ["PSU-A|PSU-B|冗余|单点|降级"]}}
+        {
+          "id": "symptom",
+          "question": "感觉其中一路已经不工作了，另一路还撑着，该怎么判断是哪一路、影响多大？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "uncertainty",
+                "criterion": "问题模糊或对象不全时，给有据候选与区分问题或进行必要澄清；不能只凭相似度给唯一故障/换件结论。已有可辨认领域线索时允许有界检索，不强制某一内部路由。"
+              }
+            ],
+            "min_evidence": 0,
+            "min_citations": 0
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "narrow",
+          "question": "是供电那两路中的一路，不是处理通道。现在风险有多大？",
+          "assertions": {
+            "required_used_doc_types": [
+              "fmeca"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "接受纠正为双路供电而非处理通道，解释损失一条供电冗余、后续通道故障风险和需确认哪一路/当前负载；不得继续输出 GPP 处理故障结论。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "接受纠正为双路供电而非处理通道，解释损失一条供电冗余、后续通道故障风险和需确认哪一路/当前负载；不得继续输出 GPP 处理故障结论。"
+          }
+        }
       ]
     },
     {
       "id": "MT-VAGUE-11-power-flicker-restart",
-      "metadata": {"category": "模糊现象定位与追问收窄", "coverage": ["fmeca_query", "fault_history_query"], "expected_records": ["FM-SYN-013", "FM-SYN-014", "FM-SYN-015", "HIS-SYN-005"]},
+      "metadata": {
+        "category": "模糊现象定位与追问收窄",
+        "coverage": [
+          "fmeca_query",
+          "fault_history_query"
+        ],
+        "expected_records": [
+          "FM-SYN-013",
+          "FM-SYN-014",
+          "FM-SYN-015",
+          "HIS-SYN-005"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "vague_symptom",
+          "related_question"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "FM-SYN-013",
+          "FM-SYN-014",
+          "FM-SYN-015",
+          "HIS-SYN-005",
+          "MFL-SYN-013",
+          "MFL-SYN-014",
+          "MFL-SYN-015",
+          "SCOPE-03",
+          "SCOPE-07",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "FM-SYN-013",
+          "FM-SYN-014",
+          "FM-SYN-015",
+          "HIS-SYN-005",
+          "MFL-SYN-013",
+          "MFL-SYN-014",
+          "MFL-SYN-015"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "symptom", "question": "输入电源只是闪了一下，整机就重启了，保持供电这块是不是有问题？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["HUM|保持|储能|放电"]}},
-        {"id": "history", "question": "有类似的排故记录吗？当时是怎么确认保持能力不足的？",
-         "assertions": {"required_tools": ["fault_history_query"], "required_used_doc_types": ["fault_history"], "any_used_record_ids": ["HIS-SYN-005"], "required_answer_facets": ["history_time", "history_action", "history_result"]}}
+        {
+          "id": "symptom",
+          "question": "输入电源只是闪了一下，整机就重启了，保持供电这块是不是有问题？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "uncertainty",
+                "criterion": "问题模糊或对象不全时，给有据候选与区分问题或进行必要澄清；不能只凭相似度给唯一故障/换件结论。已有可辨认领域线索时允许有界检索，不强制某一内部路由。"
+              }
+            ],
+            "min_evidence": 0,
+            "min_citations": 0
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "history",
+          "question": "有类似的排故记录吗？当时是怎么确认保持能力不足的？",
+          "assertions": {
+            "required_used_doc_types": [
+              "fault_history"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "HIS-SYN-005 的初始储能电压正常但 24 ms 已跌破门限、容量降至 62%、ESR 升高支持保持不足；给出 50/100/150 ms 瞬断复测而非泛称有类似案例。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "HIS-SYN-005 的初始储能电压正常但 24 ms 已跌破门限、容量降至 62%、ESR 升高支持保持不足；给出 50/100/150 ms 瞬断复测而非泛称有类似案例。"
+          }
+        }
       ]
     },
     {
       "id": "MT-VAGUE-12-display-flicker",
-      "metadata": {"category": "模糊现象定位与追问收窄", "coverage": ["fmeca_query"], "expected_records": ["FM-SYN-045", "FM-SYN-046", "FM-SYN-053"]},
+      "metadata": {
+        "category": "模糊现象定位与追问收窄",
+        "coverage": [
+          "fmeca_query"
+        ],
+        "expected_records": [
+          "FM-SYN-045",
+          "FM-SYN-046",
+          "FM-SYN-053"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "vague_symptom",
+          "related_question"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "FM-SYN-045",
+          "FM-SYN-046",
+          "FM-SYN-053",
+          "MFL-SYN-045",
+          "MFL-SYN-046",
+          "MFL-SYN-053",
+          "SCOPE-03",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "FM-SYN-045",
+          "FM-SYN-046",
+          "FM-SYN-053",
+          "MFL-SYN-045",
+          "MFL-SYN-046",
+          "MFL-SYN-053"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "symptom", "question": "画面偶尔闪一下或者卡一帧，不是完全黑屏，可能和哪些环节有关？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["刷新|帧缓存|FBM|切换|振荡|DPM"]}},
-        {"id": "narrow", "question": "补充：切换指示也在跟着跳。这样最可能是哪一个？怎么确认？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "answer_regex": ["DCS|切换|振荡|回读|状态"]}}
+        {
+          "id": "symptom",
+          "question": "画面偶尔闪一下或者卡一帧，不是完全黑屏，可能和哪些环节有关？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "uncertainty",
+                "criterion": "问题模糊或对象不全时，给有据候选与区分问题或进行必要澄清；不能只凭相似度给唯一故障/换件结论。已有可辨认领域线索时允许有界检索，不强制某一内部路由。"
+              }
+            ],
+            "min_evidence": 0,
+            "min_citations": 0
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "narrow",
+          "question": "补充：切换指示也在跟着跳。这样最可能是哪一个？怎么确认？",
+          "assertions": {
+            "required_used_doc_types": [
+              "fmeca"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "新增切换指示一起跳应提高 DCS/FM-SYN-053 切换振荡的优先级，比较主备健康、切换次数和迟滞；仍需检查确认，不能因相似表述就唯一确诊。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "新增切换指示一起跳应提高 DCS/FM-SYN-053 切换振荡的优先级，比较主备健康、切换次数和迟滞；仍需检查确认，不能因相似表述就唯一确诊。"
+          }
+        }
       ]
     },
     {
       "id": "MT-SPEC-01-psub-undervoltage",
-      "metadata": {"category": "具体故障定位与现场验证", "coverage": ["fmeca_query", "mfl_query"], "expected_records": ["FM-SYN-007", "91810003**0001", "MFL-SYN-007"]},
+      "metadata": {
+        "category": "具体故障定位与现场验证",
+        "coverage": [
+          "fmeca_query",
+          "mfl_query"
+        ],
+        "expected_records": [
+          "FM-SYN-007",
+          "91810003**0001",
+          "MFL-SYN-007",
+          "HIS-SYN-003",
+          "FM-SYN-004",
+          "MFL-SYN-004"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "specific_fault",
+          "related_question",
+          "object_correction",
+          "neighbor_isolation"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "FM-SYN-007",
+          "91810003**0001",
+          "MFL-SYN-007",
+          "HIS-SYN-003",
+          "FM-SYN-004",
+          "MFL-SYN-004",
+          "SCOPE-03",
+          "SCOPE-02",
+          "SCOPE-06",
+          "SCOPE-07"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "FM-SYN-007",
+          "91810003**0001",
+          "MFL-SYN-007",
+          "HIS-SYN-003",
+          "FM-SYN-004",
+          "MFL-SYN-004"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "locate", "question": "B 路母线电压持续低于规定范围，冗余切换能力下降，这是哪条故障模式？",
-         "assertions": {"required_scope_routes": ["knowledge_base"], "required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["PSU-B|B 路|欠压"]}},
-        {"id": "verify", "question": "现场怎么区分是模块本身问题还是负载侧拖垮的？用哪个状态接口？",
-         "assertions": {"required_tools": ["mfl_query"], "required_used_doc_types": ["mfl"], "any_used_record_ids": ["MFL-SYN-007"], "answer_regex": ["GetPSUBFaultStatus", "隔离|负载|环|状态"]}}
+        {
+          "id": "locate",
+          "question": "B 路母线电压持续低于规定范围，冗余切换能力下降，这是哪条故障模式？",
+          "assertions": {
+            "required_scope_routes": [
+              "knowledge_base"
+            ],
+            "required_doc_types": [
+              "fmeca"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "verify",
+          "question": "现场怎么区分是模块本身问题还是负载侧拖垮的？用哪个状态接口？",
+          "assertions": {
+            "required_used_doc_types": [
+              "mfl"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "围绕 PSU-B 输出欠压，先隔离 B 路负载并比较模块输出、电流和稳压环状态，解释负载侧与模块侧的区分；接口是 GetPSUBFaultStatus，不能混 A 路。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "围绕 PSU-B 输出欠压，先隔离 B 路负载并比较模块输出、电流和稳压环状态，解释负载侧与模块侧的区分；接口是 GetPSUBFaultStatus，不能混 A 路。"
+          }
+        },
+        {
+          "id": "correct-channel",
+          "question": "刚才说错了，是 A 路而不是 B 路输出偏低。现在应该看哪条记录、读什么状态？",
+          "metadata": {
+            "checks": "用户纠正优先，切到 FM-SYN-004/MFL-SYN-004、GetPSUAFaultStatus；不能继续引用 B 路记录作为 A 路事实。"
+          },
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "用户纠正优先，切到 FM-SYN-004/MFL-SYN-004、GetPSUAFaultStatus；不能继续引用 B 路记录作为 A 路事实。"
+              }
+            ]
+          }
+        }
       ]
     },
     {
       "id": "MT-SPEC-02-hum-no-handover",
-      "metadata": {"category": "具体故障定位与现场验证", "coverage": ["fmeca_query", "mfl_query"], "expected_records": ["FM-SYN-014", "91810005**0002", "MFL-SYN-014"]},
+      "metadata": {
+        "category": "具体故障定位与现场验证",
+        "coverage": [
+          "fmeca_query",
+          "mfl_query"
+        ],
+        "expected_records": [
+          "FM-SYN-014",
+          "91810005**0002",
+          "MFL-SYN-014",
+          "FM-SYN-013"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "specific_fault",
+          "related_question",
+          "multi_object_comparison"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "FM-SYN-014",
+          "91810005**0002",
+          "MFL-SYN-014",
+          "FM-SYN-013",
+          "MFL-SYN-013",
+          "SCOPE-03",
+          "SCOPE-02",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "FM-SYN-014",
+          "91810005**0002",
+          "MFL-SYN-014",
+          "FM-SYN-013",
+          "MFL-SYN-013"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "locate", "question": "保持供电模块显示已经充满，但输入瞬断时关键模块立即掉电，对应什么故障模式？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["HUM|放电|控制"]}},
-        {"id": "distinguish", "question": "这和“保持能量不足”在判据上怎么区分？两者维修动作一样吗？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "answer_regex": ["放电|驱动|开关", "充电|储能|容量"], "answer_not_contains": ["两者完全相同"]}}
+        {
+          "id": "locate",
+          "question": "保持供电模块显示已经充满，但输入瞬断时关键模块立即掉电，对应什么故障模式？",
+          "assertions": {
+            "required_doc_types": [
+              "fmeca"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "distinguish",
+          "question": "这和“保持能量不足”在判据上怎么区分？两者维修动作一样吗？",
+          "assertions": {
+            "required_used_doc_types": [
+              "fmeca"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "HUM 放电控制失效看放电命令/开关/母线，保持能量不足看保持时间/储能曲线；维修分别聚焦驱动开关与充电储能，允许相同的确认后更换模块但不混同判据。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "HUM 放电控制失效看放电命令/开关/母线，保持能量不足看保持时间/储能曲线；维修分别聚焦驱动开关与充电储能，允许相同的确认后更换模块但不混同判据。"
+          }
+        }
       ]
     },
     {
       "id": "MT-SPEC-03-bcm-image-checksum",
-      "metadata": {"category": "具体故障定位与现场验证", "coverage": ["fmeca_query", "mfl_query"], "expected_records": ["FM-SYN-017", "91820001**0002", "MFL-SYN-017"]},
+      "metadata": {
+        "category": "具体故障定位与现场验证",
+        "coverage": [
+          "fmeca_query",
+          "mfl_query"
+        ],
+        "expected_records": [
+          "FM-SYN-017",
+          "91820001**0002",
+          "MFL-SYN-017"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "specific_fault",
+          "related_question"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "FM-SYN-017",
+          "91820001**0002",
+          "MFL-SYN-017",
+          "SCOPE-03",
+          "SCOPE-02",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "FM-SYN-017",
+          "91820001**0002",
+          "MFL-SYN-017"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "locate", "question": "启动过程中反复报告镜像校验错误并进入安全模式，这是哪种故障？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["镜像|校验|BCM|备份"]}},
-        {"id": "action", "question": "现场第一步应该做什么？什么情况下才需要换件？",
-         "assertions": {"any_tools": ["mfl_query", "hmc_query"], "any_used_doc_types": ["mfl", "hmc"], "required_answer_facets": ["resolution"], "answer_regex": ["备份|镜像|存储|更换"]}}
+        {
+          "id": "locate",
+          "question": "启动过程中反复报告镜像校验错误并进入安全模式，这是哪种故障？",
+          "assertions": {
+            "required_doc_types": [
+              "fmeca"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "action",
+          "question": "现场第一步应该做什么？什么情况下才需要换件？",
+          "assertions": {
+            "any_used_doc_types": [
+              "mfl",
+              "hmc"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "先尝试备份镜像并比较主备校验与读取状态，重复失败再检查存储/启动控制模块；不能直接给无条件换 BCM 的结论或编造正式手册步骤。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "先尝试备份镜像并比较主备校验与读取状态，重复失败再检查存储/启动控制模块；不能直接给无条件换 BCM 的结论或编造正式手册步骤。"
+          }
+        }
       ]
     },
     {
       "id": "MT-SPEC-04-gppa-heartbeat-lost",
-      "metadata": {"category": "具体故障定位与现场验证", "coverage": ["fmeca_query", "fault_history_query"], "expected_records": ["FM-SYN-019", "91820002**0001", "HIS-SYN-007"]},
+      "metadata": {
+        "category": "具体故障定位与现场验证",
+        "coverage": [
+          "fmeca_query",
+          "fault_history_query"
+        ],
+        "expected_records": [
+          "FM-SYN-019",
+          "91820002**0001",
+          "HIS-SYN-007"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "specific_fault",
+          "related_question"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "FM-SYN-019",
+          "91820002**0001",
+          "HIS-SYN-007",
+          "MFL-SYN-019",
+          "SCOPE-03",
+          "SCOPE-02",
+          "SCOPE-07",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "FM-SYN-019",
+          "91820002**0001",
+          "HIS-SYN-007",
+          "MFL-SYN-019"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "locate", "question": "A 通道任务停止更新、心跳超时，系统已经切到 B 通道，这是什么故障模式？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["GPP-A|A 通道|挂起|心跳"]}},
-        {"id": "history", "question": "以前遇到过吗？当时是复位就恢复了，还是最终换了板子？",
-         "assertions": {"required_tools": ["fault_history_query"], "required_used_doc_types": ["fault_history"], "any_used_record_ids": ["HIS-SYN-007"], "required_answer_facets": ["history_action", "history_result"]}}
+        {
+          "id": "locate",
+          "question": "A 通道任务停止更新、心跳超时，系统已经切到 B 通道，这是什么故障模式？",
+          "assertions": {
+            "required_doc_types": [
+              "fmeca"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "history",
+          "question": "以前遇到过吗？当时是复位就恢复了，还是最终换了板子？",
+          "assertions": {
+            "required_used_doc_types": [
+              "fault_history"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "HIS-SYN-007 是高 I/O 总线死锁，复位仅短时恢复，最终更换 GPP-A 后完成压力验证；不能回答只需复位或说历史未换件。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "HIS-SYN-007 是高 I/O 总线死锁，复位仅短时恢复，最终更换 GPP-A 后完成压力验证；不能回答只需复位或说历史未换件。"
+          }
+        }
       ]
     },
     {
       "id": "MT-SPEC-05-msm-checksum-mismatch",
-      "metadata": {"category": "具体故障定位与现场验证", "coverage": ["fmeca_query", "fault_history_query"], "expected_records": ["FM-SYN-026", "91820004", "HIS-SYN-009"]},
+      "metadata": {
+        "category": "具体故障定位与现场验证",
+        "coverage": [
+          "fmeca_query",
+          "fault_history_query"
+        ],
+        "expected_records": [
+          "FM-SYN-026",
+          "91820004",
+          "HIS-SYN-009"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "specific_fault",
+          "related_question"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "FM-SYN-026",
+          "HIS-SYN-009",
+          "MFL-SYN-026",
+          "91820004**0001",
+          "91820004**0002",
+          "91820004**0003",
+          "91820004010125",
+          "91820004010127",
+          "91820004020126",
+          "SCOPE-03",
+          "SCOPE-02",
+          "SCOPE-07",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "FM-SYN-026",
+          "HIS-SYN-009",
+          "MFL-SYN-026"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "locate", "question": "模板能读出来，但校验值不一致导致系统拒绝使用，属于哪条故障模式？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["模板|校验|MSM|副本"]}},
-        {"id": "history", "question": "历史上有模板相关的排故记录吗？最终怎么解决的？",
-         "assertions": {"required_tools": ["fault_history_query"], "required_used_doc_types": ["fault_history"], "any_used_record_ids": ["HIS-SYN-009"], "required_answer_facets": ["history_time", "history_action", "history_result"]}}
+        {
+          "id": "locate",
+          "question": "模板能读出来，但校验值不一致导致系统拒绝使用，属于哪条故障模式？",
+          "assertions": {
+            "required_doc_types": [
+              "fmeca"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "history",
+          "question": "历史上有模板相关的排故记录吗？最终怎么解决的？",
+          "assertions": {
+            "required_used_doc_types": [
+              "fault_history"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "必须区分当前 FM-SYN-026 模板已读出但校验失败与 HIS-SYN-009 读取失败；相近案例是介质坏块、备份区正常后更换 MSM，不能称两者完全同一故障。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "必须区分当前 FM-SYN-026 模板已读出但校验失败与 HIS-SYN-009 读取失败；相近案例是介质坏块、备份区正常后更换 MSM，不能称两者完全同一故障。"
+          }
+        }
       ]
     },
     {
       "id": "MT-SPEC-06-fpga-config-fail",
-      "metadata": {"category": "具体故障定位与现场验证", "coverage": ["fmeca_query", "fault_history_query"], "expected_records": ["FM-SYN-028", "FM-SYN-029", "91820005", "HIS-SYN-010"]},
+      "metadata": {
+        "category": "具体故障定位与现场验证",
+        "coverage": [
+          "fmeca_query",
+          "fault_history_query"
+        ],
+        "expected_records": [
+          "FM-SYN-028",
+          "91820005",
+          "HIS-SYN-010"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "specific_fault",
+          "related_question"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "FM-SYN-028",
+          "HIS-SYN-010",
+          "MFL-SYN-028",
+          "91820005**0001",
+          "91820005**0002",
+          "91820005**0003",
+          "91820005020128",
+          "SCOPE-03",
+          "SCOPE-02",
+          "SCOPE-07",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "FM-SYN-028",
+          "HIS-SYN-010",
+          "MFL-SYN-028"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "locate", "question": "可编程逻辑器件的配置一直加载不上去，对应什么故障模式？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["FPA|逻辑|配置|时序"]}},
-        {"id": "history", "question": "以前这类问题最后是配置问题还是硬件问题？",
-         "assertions": {"required_tools": ["fault_history_query"], "required_used_doc_types": ["fault_history"], "any_used_record_ids": ["HIS-SYN-010"], "required_answer_facets": ["history_action", "history_result"]}}
+        {
+          "id": "locate",
+          "question": "可编程逻辑器件的配置一直加载不上去，对应什么故障模式？",
+          "assertions": {
+            "required_doc_types": [
+              "fmeca"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "history",
+          "question": "以前这类问题最后是配置问题还是硬件问题？",
+          "assertions": {
+            "required_used_doc_types": [
+              "fault_history"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "HIS-SYN-010 主备配置文件校验正确而数据线 D3 间歇低，根因是配置接口缓冲器硬件失效；对应 FM-SYN-028，不是 FM-SYN-029 时序裕度不足。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "HIS-SYN-010 主备配置文件校验正确而数据线 D3 间歇低，根因是配置接口缓冲器硬件失效；对应 FM-SYN-028，不是 FM-SYN-029 时序裕度不足。"
+          }
+        }
       ]
     },
     {
       "id": "MT-SPEC-07-bca-arbitration",
-      "metadata": {"category": "具体故障定位与现场验证", "coverage": ["fmeca_query", "fault_history_query"], "expected_records": ["FM-SYN-033", "91830001", "HIS-SYN-011"]},
+      "metadata": {
+        "category": "具体故障定位与现场验证",
+        "coverage": [
+          "fmeca_query",
+          "fault_history_query"
+        ],
+        "expected_records": [
+          "FM-SYN-033",
+          "91830001",
+          "HIS-SYN-011",
+          "FM-SYN-031"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "specific_fault",
+          "related_question",
+          "multi_object_comparison"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "FM-SYN-033",
+          "HIS-SYN-011",
+          "FM-SYN-031",
+          "MFL-SYN-033",
+          "MFL-SYN-031",
+          "91830001**0001",
+          "91830001**0002",
+          "91830001**0003",
+          "SCOPE-03",
+          "SCOPE-02",
+          "SCOPE-07",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "FM-SYN-033",
+          "HIS-SYN-011",
+          "FM-SYN-031",
+          "MFL-SYN-033",
+          "MFL-SYN-031"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "locate", "question": "A 通道总线上出现仲裁错误，高通信负载时数据延迟或丢失，是哪条故障模式？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["BCA|仲裁|地址|时序"]}},
-        {"id": "distinguish", "question": "这跟“A 通道接收超时”在现象上有什么不同？排查顺序应该怎么排？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_used_doc_types": ["fmeca"], "answer_regex": ["仲裁|冲突|地址", "接收|超时|物理层|幅值"]}}
+        {
+          "id": "locate",
+          "question": "A 通道总线上出现仲裁错误，高通信负载时数据延迟或丢失，是哪条故障模式？",
+          "assertions": {
+            "required_doc_types": [
+              "fmeca"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "distinguish",
+          "question": "这跟“A 通道接收超时”在现象上有什么不同？排查顺序应该怎么排？",
+          "assertions": {
+            "required_used_doc_types": [
+              "fmeca"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "FM-SYN-033 仲裁错误是高负载冲突重试与地址/时序，FM-SYN-031 接收超时是有效帧收不到；给出利用总线监视器、计数、物理层再核对地址配置的区分过程，不把二者混成同一行。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "FM-SYN-033 仲裁错误是高负载冲突重试与地址/时序，FM-SYN-031 接收超时是有效帧收不到；给出利用总线监视器、计数、物理层再核对地址配置的区分过程，不把二者混成同一行。"
+          }
+        }
       ]
     },
     {
       "id": "MT-SPEC-08-fbm-frame-corrupt",
-      "metadata": {"category": "具体故障定位与现场验证", "coverage": ["fmeca_query", "fault_history_query"], "expected_records": ["FM-SYN-047", "91840002", "HIS-SYN-016"]},
+      "metadata": {
+        "category": "具体故障定位与现场验证",
+        "coverage": [
+          "fmeca_query",
+          "fault_history_query"
+        ],
+        "expected_records": [
+          "FM-SYN-047",
+          "91840002",
+          "HIS-SYN-016"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "specific_fault",
+          "related_question"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "FM-SYN-047",
+          "HIS-SYN-016",
+          "MFL-SYN-047",
+          "91840002**0001",
+          "91840002**0002",
+          "91840002**0003",
+          "SCOPE-03",
+          "SCOPE-02",
+          "SCOPE-07",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "FM-SYN-047",
+          "HIS-SYN-016",
+          "MFL-SYN-047"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "locate", "question": "帧缓存里读出的数据内容损坏，画面出现异常色块，对应哪条故障模式？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["FBM|帧|缓存|损坏"]}},
-        {"id": "history", "question": "之前有帧数据损坏的排故记录吗？当时根因指向哪里？",
-         "assertions": {"required_tools": ["fault_history_query"], "required_used_doc_types": ["fault_history"], "any_used_record_ids": ["HIS-SYN-016"], "required_answer_facets": ["history_action", "history_result"]}}
+        {
+          "id": "locate",
+          "question": "帧缓存里读出的数据内容损坏，画面出现异常色块，对应哪条故障模式？",
+          "assertions": {
+            "required_doc_types": [
+              "fmeca"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "history",
+          "question": "之前有帧数据损坏的排故记录吗？当时根因指向哪里？",
+          "assertions": {
+            "required_used_doc_types": [
+              "fault_history"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "HIS-SYN-016 错误集中固定缓存地址、离线重复位错且电源/时序正常，支持 FBM 存储单元退化；不能只重复当前色块现象。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "HIS-SYN-016 错误集中固定缓存地址、离线重复位错且电源/时序正常，支持 FBM 存储单元退化；不能只重复当前色块现象。"
+          }
+        }
       ]
     },
     {
       "id": "MT-SPEC-09-dcs-oscillation",
-      "metadata": {"category": "具体故障定位与现场验证", "coverage": ["fmeca_query", "fault_history_query"], "expected_records": ["FM-SYN-053", "91840004", "HIS-SYN-018"]},
+      "metadata": {
+        "category": "具体故障定位与现场验证",
+        "coverage": [
+          "fmeca_query",
+          "fault_history_query"
+        ],
+        "expected_records": [
+          "FM-SYN-053",
+          "91840004",
+          "HIS-SYN-018",
+          "FM-SYN-052"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "specific_fault",
+          "related_question",
+          "multi_object_comparison"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "FM-SYN-053",
+          "HIS-SYN-018",
+          "FM-SYN-052",
+          "MFL-SYN-053",
+          "MFL-SYN-052",
+          "91840004**0001",
+          "91840004**0002",
+          "91840004**0003",
+          "SCOPE-03",
+          "SCOPE-02",
+          "SCOPE-07",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "FM-SYN-053",
+          "HIS-SYN-018",
+          "FM-SYN-052",
+          "MFL-SYN-053",
+          "MFL-SYN-052"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "locate", "question": "显示通道在主备之间来回切换、状态振荡，这是哪条故障模式？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["DCS|切换|振荡|通道"]}},
-        {"id": "history", "question": "有通道切换卡滞相关的历史案例吗？两者的判据差异是什么？",
-         "assertions": {"required_tools": ["fault_history_query"], "required_used_doc_types": ["fault_history"], "any_used_record_ids": ["HIS-SYN-018"], "required_answer_facets": ["history_action", "history_result"]}}
+        {
+          "id": "locate",
+          "question": "显示通道在主备之间来回切换、状态振荡，这是哪条故障模式？",
+          "assertions": {
+            "required_doc_types": [
+              "fmeca"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "history",
+          "question": "有通道切换卡滞相关的历史案例吗？两者的判据差异是什么？",
+          "assertions": {
+            "required_used_doc_types": [
+              "fault_history"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "明确 HIS-SYN-018 是卡滞在 A 路、命令 B 但回读 A，当前 FM-SYN-053 是往返振荡；分别说明命令/回读/实际源与健康判据/迟滞，不合并根因。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "明确 HIS-SYN-018 是卡滞在 A 路、命令 B 但回读 A，当前 FM-SYN-053 是往返振荡；分别说明命令/回读/实际源与健康判据/迟滞，不合并根因。"
+          }
+        }
       ]
     },
     {
       "id": "MT-SPEC-10-sam-ad-saturation",
-      "metadata": {"category": "具体故障定位与现场验证", "coverage": ["fmeca_query", "mfl_query", "fault_history_query"], "expected_records": ["FM-SYN-059", "FM-SYN-058", "91850002", "HIS-SYN-020"]},
+      "metadata": {
+        "category": "具体故障定位与现场验证",
+        "coverage": [
+          "fmeca_query",
+          "mfl_query",
+          "fault_history_query"
+        ],
+        "expected_records": [
+          "FM-SYN-059",
+          "FM-SYN-058",
+          "91850002",
+          "HIS-SYN-020"
+        ],
+        "review_version": "gold-v3",
+        "evaluation_split": "development",
+        "split_note": "按场景家族保留20例不参与后续逐题调参；七类合成来源有交叉且已审阅，不声称盲测或独立真实数据泛化。",
+        "scenarios": [
+          "specific_fault",
+          "related_question",
+          "multi_object_comparison"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "FM-SYN-059",
+          "FM-SYN-058",
+          "HIS-SYN-020",
+          "MFL-SYN-059",
+          "MFL-SYN-058",
+          "91850002**0001",
+          "91850002**0002",
+          "91850002**0003",
+          "SCOPE-03",
+          "SCOPE-02",
+          "SCOPE-07",
+          "SCOPE-06"
+        ],
+        "gold_review": {
+          "status": "reviewed",
+          "date": "2026-09-05",
+          "basis": "合成源文档逐行/案例/表达式复核；SHA-256 与 1-based 坐标冻结；本轮细则在 semantic_criteria。",
+          "fixture_scope": "SYN-ICP-9000 / CONFIG-A / 文档 V1.0"
+        },
+        "source_records": [
+          "FM-SYN-059",
+          "FM-SYN-058",
+          "HIS-SYN-020",
+          "MFL-SYN-059",
+          "MFL-SYN-058"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
       "turns": [
-        {"id": "locate", "question": "某个温度或电压采集值固定成满量程码，其余测点都正常，这是什么故障？",
-         "assertions": {"required_tools": ["fmeca_query"], "required_doc_types": ["fmeca"], "answer_regex": ["SAM|采样|饱和|满量程|开路"]}},
-        {"id": "distinguish", "question": "怎么区分是采集前端饱和，还是传感器线路断了？历史案例里当时是怎么确认的？",
-         "assertions": {"any_tools": ["fault_history_query", "mfl_query"], "any_used_doc_types": ["fault_history", "mfl"], "any_used_record_ids": ["HIS-SYN-020", "FM-SYN-058"], "answer_regex": ["开路|饱和|阻值|压接|测量"]}}
+        {
+          "id": "locate",
+          "question": "某个温度或电压采集值固定成满量程码，其余测点都正常，这是什么故障？",
+          "assertions": {
+            "required_doc_types": [
+              "fmeca"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "见本轮语义标准及冻结源摘录；不固定回答用词。"
+          }
+        },
+        {
+          "id": "distinguish",
+          "question": "怎么区分是采集前端饱和，还是传感器线路断了？历史案例里当时是怎么确认的？",
+          "assertions": {
+            "any_used_doc_types": [
+              "fault_history",
+              "mfl"
+            ],
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "直接回应当前问题的各个分问，并利用用户本轮新增、纠正或限定的信息。追问应补上本轮所问的原因、重要性/先后、区别、验证或边界，不以重列上一轮事实代替。允许为核对、纠错作必要复述；表述、标题和词汇不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "将下面已复核的源摘录作为事实核对基准：对象、代码、故障模式行、API、历史条件/结果不能错配，缺失字段不能借邻居补齐。按用户问题选择相关事实，不要求平铺全部摘录。模糊问题允许有来源的其他候选或必要澄清；可能原因不能写成唯一确诊，案例试验不能冒充通用放行/维修标准。 正文引用也必须对应所述对象及事实，不能正确文字配另一行引用。 只核查实际陈述的事实；合理澄清、无资料或未确认关联说明不因没有事实引用而单独判错。父级系统职责不得整体归给子模块，特定阶段的流程前提不得扩成所有运行阶段的全任务必停。未确认跨表关联不等于另一资料没有记录、功能或API；当前问题未提供的条件只能明确作为条件推断，不能当成既定事实。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "满量程不足以唯一确定 FM-SYN-059；输入电平/量程/转换值区分饱和，开路诊断/连接连续性区分 FM-SYN-058。HIS-SYN-020 为针脚后退线路开路，重锁后恢复，不是转换器损坏。"
+              }
+            ]
+          },
+          "metadata": {
+            "checks": "满量程不足以唯一确定 FM-SYN-059；输入电平/量程/转换值区分饱和，开路诊断/连接连续性区分 FM-SYN-058。HIS-SYN-020 为针脚后退线路开路，重锁后恢复，不是转换器损坏。"
+          }
+        }
       ]
     }
   ]

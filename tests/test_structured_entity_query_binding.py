@@ -46,12 +46,13 @@ class StructuredEntityBindingTests(unittest.TestCase):
 
         binding = bind_structured_function_entity("外部通信链路中断", [row])
 
-        self.assertTrue(binding["bound"])
+        self.assertFalse(binding["bound"])
+        self.assertTrue(binding["candidate_bound"])
         self.assertFalse(binding["ambiguous"])
         self.assertEqual(
-            ["MOD-IFC-BCA", "FUNC-530"], binding["business_ids"]
+            ["MOD-IFC-BCA", "FUNC-530"], binding["candidate_business_ids"]
         )
-        self.assertIn("FUNC-530", binding["terms"])
+        self.assertIn("FUNC-530", binding["candidate_terms"])
         self.assertEqual("same_row_module_function_chain", binding["basis"])
 
     def test_explicit_function_id_bridges_to_same_row_module_id(self):
@@ -66,13 +67,14 @@ class StructuredEntityBindingTests(unittest.TestCase):
 
         binding = bind_structured_function_entity("FUNC-310是什么", [row])
 
-        self.assertTrue(binding["bound"])
+        self.assertFalse(binding["bound"])
+        self.assertTrue(binding["candidate_bound"])
         self.assertFalse(binding["ambiguous"])
         self.assertEqual(
-            {"FUNC-310", "MOD-IFC-GW"}, set(binding["business_ids"])
+            {"FUNC-310", "MOD-IFC-GW"}, set(binding["candidate_business_ids"])
         )
-        self.assertIn("MOD-IFC-GW", binding["terms"])
-        self.assertIn("网络网关模块", binding["terms"])
+        self.assertIn("MOD-IFC-GW", binding["candidate_terms"])
+        self.assertIn("网络网关模块", binding["candidate_terms"])
 
     def test_equal_module_and_function_matches_on_different_rows_fail_closed(self):
         rows = [
@@ -99,12 +101,13 @@ class StructuredEntityBindingTests(unittest.TestCase):
     def test_explicit_branch_binds_authoritative_module_and_linked_function(self):
         binding = bind_structured_function_entity("A路电源损坏", FUNCTION_ROWS)
 
-        self.assertTrue(binding["bound"])
+        self.assertFalse(binding["bound"])
+        self.assertTrue(binding["candidate_bound"])
         self.assertFalse(binding["ambiguous"])
         self.assertEqual(
-            ["MOD-PWR-PSUA", "FUNC-120"], binding["business_ids"]
+            ["MOD-PWR-PSUA", "FUNC-120"], binding["candidate_business_ids"]
         )
-        self.assertEqual([0, 1], binding["row_indexes"])
+        self.assertEqual([0, 1], binding["candidate_row_indexes"])
         for expected in (
             "MOD-PWR-PSUA",
             "A路电源模块",
@@ -112,8 +115,8 @@ class StructuredEntityBindingTests(unittest.TestCase):
             "FUNC-120",
             "A路稳压供电",
         ):
-            self.assertIn(expected, binding["terms"])
-        self.assertNotIn("FUNC-210", binding["terms"])
+            self.assertIn(expected, binding["candidate_terms"])
+        self.assertNotIn("FUNC-210", binding["candidate_terms"])
 
     def test_generic_power_word_does_not_choose_one_branch(self):
         rows = [
@@ -155,7 +158,9 @@ class StructuredEntityBindingTests(unittest.TestCase):
             state, FUNCTION_ROWS, terms_by_tool
         )
 
-        self.assertTrue(binding["bound"])
+        self.assertFalse(binding["bound"])
+        self.assertFalse(binding["cross_document_authorized"])
+        self.assertTrue(binding["candidate_bound"])
         self.assertEqual(
             ["MOD-PWR-PSUA", "FUNC-120"],
             [
@@ -176,6 +181,72 @@ class StructuredEntityBindingTests(unittest.TestCase):
             self.assertEqual("MOD-PWR-PSUA", terms_by_tool[tool][0])
             self.assertIn("FUNC-120", terms_by_tool[tool])
             self.assertNotIn("FUNC-210", terms_by_tool[tool])
+
+    def test_topology_subject_excludes_surviving_peer_from_identity_binding(self):
+        rows = [
+            *FUNCTION_ROWS[:2],
+            {
+                "doc_id": "doc-function",
+                "content_type": "function_component",
+                "component_id": "MOD-PWR-PSUB",
+                "name": "B路电源模块",
+                "abbreviation": "PSU-B",
+            },
+            {
+                "doc_id": "doc-function",
+                "content_type": "function_record",
+                "function_id": "FUNC-121",
+                "module_id": "MOD-PWR-PSUB",
+                "module_name": "B路电源模块",
+                "function_name": "B路稳压供电",
+            },
+        ]
+        state = {
+            "query": "B路稳压偏低，但A路仍能承担负载",
+            "query_frame": {
+                "entities": [
+                    "B路稳压偏低",
+                    "A路",
+                    "B路稳压电源/供电支路",
+                    "A路稳压电源/供电支路",
+                ],
+                "normalized_terms": ["单路失效", "B路电压低"],
+                "topology_dependency": {
+                    "required": True,
+                    "subject": "B路",
+                    "subject_kind": "supply_path",
+                },
+            },
+        }
+        terms_by_tool = {
+            tool: ["B路稳压偏低", "A路仍能承担负载"]
+            for tool in (
+                "function_locator",
+                "fmeca_query",
+                "rbd_query",
+                "hmc_query",
+                "mfl_query",
+                "fault_history_query",
+            )
+        }
+
+        selected, binding = diagnosis._apply_structured_entity_binding(
+            state, rows, terms_by_tool
+        )
+
+        self.assertFalse(binding["bound"])
+        self.assertTrue(binding["candidate_bound"])
+        self.assertEqual(
+            {"MOD-PWR-PSUB", "FUNC-121"}, set(binding["candidate_business_ids"])
+        )
+        self.assertEqual(
+            {"FUNC-121"},
+            {
+                row.get("component_id") or row.get("function_id")
+                for row in selected
+            },
+        )
+        self.assertNotIn("MOD-PWR-PSUA", terms_by_tool["rbd_query"])
 
     def test_generic_locator_containment_cannot_steer_relation_query_to_one_child(self):
         state = {
@@ -211,10 +282,8 @@ class StructuredEntityBindingTests(unittest.TestCase):
 
         self.assertEqual(hum_only, selected)
         self.assertFalse(binding["bound"])
-        self.assertEqual(
-            "generic_locator_match_not_used_as_cross_document_seed",
-            binding["basis"],
-        )
+        self.assertFalse(binding["cross_document_authorized"])
+        self.assertEqual([], binding["retrieval_terms"])
         self.assertEqual(["供电模块"], terms_by_tool["fmeca_query"])
         self.assertEqual(["供电模块"], terms_by_tool["rbd_query"])
 
@@ -398,7 +467,7 @@ class StructuredEntityRankingTests(unittest.TestCase):
 
     def test_fmeca_business_fields_keep_all_psua_rows_ahead_of_bcm(self):
         binding = bind_structured_function_entity("A路电源损坏", FUNCTION_ROWS)
-        terms = [*binding["terms"], "A路电源", "电源", "Power A Failure"]
+        terms = [*binding["candidate_terms"], "A路电源", "电源", "Power A Failure"]
         rows = [
             {
                 "code": "FM-SYN-016",
@@ -447,7 +516,7 @@ class StructuredEntityRankingTests(unittest.TestCase):
                 "func_management",
                 "fault_mode",
             ),
-            priority_terms=binding["terms"],
+            priority_terms=binding["candidate_terms"],
         )
 
         self.assertEqual(
@@ -507,9 +576,9 @@ class StructuredEntityRankingTests(unittest.TestCase):
         ):
             rows = diagnosis._query_diagrams(
                 "rbd",
-                [*binding["terms"], "电源"],
+                [*binding["candidate_terms"], "电源"],
                 2,
-                entity_terms=binding["terms"],
+                entity_terms=binding["candidate_terms"],
             )
 
         self.assertEqual(["rev-psua", "rev-bcm"], [row["revision_id"] for row in rows])
@@ -546,9 +615,9 @@ class StructuredEntityRankingTests(unittest.TestCase):
         ):
             rows = diagnosis._query_diagrams(
                 "rbd",
-                binding["terms"],
+                binding["candidate_terms"],
                 1,
-                entity_terms=binding["terms"],
+                entity_terms=binding["candidate_terms"],
             )
 
         self.assertEqual(["rev-legacy-nodes"], [row["revision_id"] for row in rows])
@@ -557,6 +626,48 @@ class StructuredEntityRankingTests(unittest.TestCase):
 
 
 class StructuredEntityDiagnosisFlowTests(unittest.TestCase):
+    def test_function_only_early_return_preserves_exact_binding(self):
+        state = {
+            "scope_route": "knowledge_base",
+            "query": "MOD-PWR-PSUA 是什么？",
+            "rewritten_query": "查询 MOD-PWR-PSUA 的名称与职责",
+            "intent": "entity_profile",
+            "query_targets": [{"intent": "entity_profile"}],
+            "query_frame": {
+                "entities": ["MOD-PWR-PSUA"],
+                "normalized_terms": ["MOD-PWR-PSUA"],
+                "coverage_scope": "focused_detail",
+                "required_answer_fields": ["record_name", "responsibility"],
+            },
+            "tool_queries": {"function_locator": ["MOD-PWR-PSUA"]},
+            "allowed_tools": ["function_locator"],
+            "sql_limit": 8,
+        }
+        with (
+            patch.object(
+                diagnosis.icp_repository,
+                "search_functions",
+                return_value=[FUNCTION_ROWS[1]],
+            ),
+            patch.object(
+                diagnosis.icp_repository,
+                "search_components",
+                return_value=[FUNCTION_ROWS[0]],
+            ),
+            patch.object(
+                diagnosis,
+                "_enrich_function_sources",
+                side_effect=lambda rows, _errors=None: list(rows),
+            ),
+        ):
+            result = asyncio.run(diagnosis.icp_diagnosis_node(state))
+
+        self.assertTrue(result["structured_entity_binding"]["bound"])
+        self.assertIn(
+            "MOD-PWR-PSUA",
+            result["structured_entity_binding"]["business_ids"],
+        )
+
     def test_hybrid_hydrated_function_chain_enriches_final_topology_identity(self):
         hydrated_function = {
             "id": 310,
@@ -657,9 +768,10 @@ class StructuredEntityDiagnosisFlowTests(unittest.TestCase):
         ):
             result = asyncio.run(diagnosis.icp_diagnosis_node(state))
 
+        # Natural-name hydration may improve FMECA/RBD recall, but it cannot
+        # mint a formal topology identity for the answer boundary.
         self.assertEqual(
-            ["MOD-IFC-GW", "FUNC-310"],
-            result["topology_dependency"]["canonical_business_ids"],
+            [], result["topology_dependency"]["canonical_business_ids"]
         )
         self.assertIn(
             "FM-SYN-032",
@@ -686,12 +798,14 @@ class StructuredEntityDiagnosisFlowTests(unittest.TestCase):
             {
                 "tool": "fmeca_query",
                 "count": 1,
-                "business_ids": ["MOD-IFC-GW", "FUNC-310"],
+                "business_ids": [],
+                "candidate_business_ids": ["MOD-IFC-GW", "FUNC-310"],
+                "cross_document_authorized": False,
             },
             hybrid_call["structured_identity_hydrated"],
         )
 
-    def test_topology_identity_survives_retrieval_only_followup(self):
+    def test_unproven_topology_identity_does_not_survive_retrieval_followup(self):
         dependency = {
             "required": True,
             "subject": "A路供电",
@@ -728,11 +842,10 @@ class StructuredEntityDiagnosisFlowTests(unittest.TestCase):
             result = asyncio.run(diagnosis.icp_diagnosis_node(state))
 
         self.assertEqual(
-            ["PSU-A", "FUNC-120"],
-            result["topology_dependency"]["canonical_business_ids"],
+            [], result["topology_dependency"]["canonical_business_ids"]
         )
         self.assertEqual(
-            "PostgreSQL 结构化业务ID精确交接",
+            "未绑定精确业务ID",
             result["topology_dependency"]["identity_basis"],
         )
 
@@ -794,7 +907,9 @@ class StructuredEntityDiagnosisFlowTests(unittest.TestCase):
             captured["fmeca_entity_terms"] = list(entity_terms)
             return fmeca_rows
 
-        def diagram_query(doc_type, terms, _limit, _errors, *, entity_terms=()):
+        def diagram_query(
+            doc_type, terms, _limit, _errors, *, entity_terms=(), query_frame=None
+        ):
             captured["doc_type"] = doc_type
             captured["rbd_terms"] = list(terms)
             captured["rbd_entity_terms"] = list(entity_terms)
@@ -822,11 +937,11 @@ class StructuredEntityDiagnosisFlowTests(unittest.TestCase):
             rbd_call["structured_fmeca_handoff"]["basis"],
         )
         self.assertEqual(
-            {"PSU-A", "FUNC-120"},
+            set(),
             set(result["topology_dependency"]["canonical_business_ids"]),
         )
         self.assertEqual(
-            "PostgreSQL 结构化业务ID精确交接",
+            "未绑定精确业务ID",
             result["topology_dependency"]["identity_basis"],
         )
 
@@ -857,7 +972,9 @@ class StructuredEntityDiagnosisFlowTests(unittest.TestCase):
             captured["fmeca_entity_terms"] = list(entity_terms)
             return []
 
-        def diagram_query(doc_type, terms, _limit, _errors, *, entity_terms=()):
+        def diagram_query(
+            doc_type, terms, _limit, _errors, *, entity_terms=(), query_frame=None
+        ):
             captured[f"{doc_type}_terms"] = list(terms)
             captured[f"{doc_type}_entity_terms"] = list(entity_terms)
             return []
@@ -898,7 +1015,11 @@ class StructuredEntityDiagnosisFlowTests(unittest.TestCase):
         )
         self.assertEqual(
             ["MOD-PWR-PSUA"],
-            function_call["structured_entity_binding"]["business_ids"],
+            function_call["structured_entity_binding"]["candidate_business_ids"],
+        )
+        self.assertEqual(
+            ["MOD-PWR-PSUA"],
+            result["structured_entity_binding"]["candidate_business_ids"],
         )
 
 

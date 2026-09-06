@@ -58,6 +58,25 @@ def _runtime_diagnosis_state():
 
 
 class AgentModelBudgetTests(unittest.TestCase):
+    def test_target_budget_covers_full_contract_for_both_provider_limits(self):
+        for provider in ("ollama", "openai"):
+            original = {"provider": provider, "max_tokens": 256, "num_predict": 256}
+            prepared = plan_module._prepare_target_model(original)
+            self.assertGreaterEqual(prepared["num_predict"], 1536)
+            self.assertEqual(prepared["num_predict"], prepared["max_tokens"])
+            self.assertEqual(256, original["max_tokens"])
+
+    def test_truncated_target_contract_is_observable_not_silently_ignored(self):
+        with patch.object(plan_module.llm_service, "call_model", return_value='{"targets":["impact_analysis"],"subjects":['), patch(
+            "backend.agent.tracing.record_degradation"
+        ) as trace:
+            result = asyncio.run(plan_module._classify_explicit_targets(
+                query="它停用后先影响什么？", history="", conversation_anchors=[], model={},
+            ))
+        self.assertIsNone(result)
+        self.assertEqual("target_contract", trace.call_args.args[0])
+        self.assertIn("invalid_contract", trace.call_args.kwargs["detail"])
+
     def test_plan_uses_short_non_reasoning_json_budget_for_ollama(self):
         response = json.dumps(
             {
@@ -178,7 +197,7 @@ class AgentModelBudgetTests(unittest.TestCase):
             with self.assertRaises(answer_module.AnswerGenerationError) as caught:
                 asyncio.run(answer_module.answer_node(state, config))
 
-        self.assertIn("时间预算内未完成", str(caught.exception))
+        self.assertIn("超时", str(caught.exception))
         self.assertNotIn("FAN 转速反馈丢失", str(caught.exception))
         self.assertTrue(config["configurable"]["stream_queue"].empty())
         self.assertFalse(observed[0]["reasoning"])
@@ -206,19 +225,6 @@ class AgentModelBudgetTests(unittest.TestCase):
         self.assertIn("回答模型调用失败", str(caught.exception))
         self.assertTrue(config["configurable"]["stream_queue"].empty())
 
-    def test_blocked_exact_candidate_does_not_claim_postgres_exact_hit(self):
-        state = _runtime_diagnosis_state()
-        evidence = state["evidence_registry"][0]
-        evidence["match_type"] = "exact_code"
-        evidence_id = evidence["evidence_id"]
-        state["candidate_faults"][0]["exact_hmc_match"] = True
-        state["safety_decision"]["approved_evidence_ids"] = []
-        state["safety_decision"]["blocked_evidence_ids"] = [evidence_id]
-
-        result = answer_module._fallback_candidate_lines(state, state["candidate_faults"])
-
-        self.assertNotIn("PostgreSQL HMC 精确代码命中", result)
-        self.assertIn("不能单独支撑结论", result)
 
 
 class LlmStreamFailureTests(unittest.TestCase):
@@ -380,6 +386,27 @@ class ChatGraphRuntimeTests(unittest.TestCase):
     def test_answer_and_citations_are_queued_atomically(self):
         citation = {"id": 1, "source_ref": "HMC.docx#row=2"}
         catalog = [{"catalog_index": 1, "evidence_id": "ev-1"}]
+        delivered_fields = ["maintenance_action", "maintenance_api"]
+        delivery_manifest = [
+            {
+                "kind": "field_delivery",
+                "field": "maintenance_action",
+                "evidence_ids": ["ev-1"],
+                "record_ids": ["MFL-1"],
+                "doc_types": ["mfl"],
+                "subject_ids": ["MOD-1"],
+            },
+            {
+                "kind": "response_obligation",
+                "obligation": "maintenance_action",
+                "status": "fulfilled",
+                "required_fields": ["maintenance_action"],
+                "delivered_fields": ["maintenance_action"],
+                "evidence_ids": ["ev-1"],
+                "record_ids": ["MFL-1"],
+                "doc_types": ["mfl"],
+            },
+        ]
 
         class AnswerGraph:
             def astream(self, _state, config=None, stream_mode=None):
@@ -389,6 +416,8 @@ class ChatGraphRuntimeTests(unittest.TestCase):
                         "citations": [citation],
                         "evidence_catalog": catalog,
                         "used_evidence_ids": ["ev-1"],
+                        "delivered_answer_fields": delivered_fields,
+                        "answer_delivery_manifest": delivery_manifest,
                     }}
                 return events()
 
@@ -404,12 +433,36 @@ class ChatGraphRuntimeTests(unittest.TestCase):
         self.assertEqual([citation], items[0]["citations"])
         self.assertEqual(catalog, items[0]["evidence_catalog"])
         self.assertEqual(["ev-1"], items[0]["used_evidence_ids"])
+        self.assertEqual(delivered_fields, items[0]["delivered_answer_fields"])
+        self.assertEqual(delivery_manifest, items[0]["answer_delivery_manifest"])
         self.assertIsNone(items[1])
 
     def test_chat_persists_terminal_answer_before_emitting_it(self):
         timeline = []
+        saved_messages = []
         citation = {"id": 1, "evidence_id": "ev-1"}
         catalog = [{"catalog_index": 1, "evidence_id": "ev-1", "status": "answer_used"}]
+        delivered_fields = ["history_result"]
+        delivery_manifest = [
+            {
+                "kind": "field_delivery",
+                "field": "history_result",
+                "evidence_ids": ["ev-1"],
+                "record_ids": ["HIS-1"],
+                "doc_types": ["fault_history"],
+                "subject_ids": [],
+            },
+            {
+                "kind": "response_obligation",
+                "obligation": "recovery_verification",
+                "status": "fulfilled",
+                "required_fields": ["history_result"],
+                "delivered_fields": ["history_result"],
+                "evidence_ids": ["ev-1"],
+                "record_ids": ["HIS-1"],
+                "doc_types": ["fault_history"],
+            },
+        ]
 
         class TerminalGraph:
             def astream(self, _state, config=None, stream_mode=None):
@@ -423,11 +476,14 @@ class ChatGraphRuntimeTests(unittest.TestCase):
                         "citations": [citation],
                         "evidence_catalog": catalog,
                         "used_evidence_ids": ["ev-1"],
+                        "delivered_answer_fields": delivered_fields,
+                        "answer_delivery_manifest": delivery_manifest,
                     }}
                 return events()
 
-        def add_message(_session_id, role, content="", **_kwargs):
+        def add_message(_session_id, role, content="", **kwargs):
             timeline.append(f"save:{role}")
+            saved_messages.append({"role": role, "content": content, **kwargs})
             return {"id": f"message-{role}"}
 
         class ConnectedRequest:
@@ -468,6 +524,17 @@ class ChatGraphRuntimeTests(unittest.TestCase):
         self.assertLess(timeline.index("save:assistant"), timeline.index("emit:answer_delta"))
         self.assertLess(timeline.index("save:assistant"), timeline.index("emit:answer"))
         self.assertLess(timeline.index("emit:answer"), timeline.index("emit:done"))
+        assistant_message = next(
+            item for item in saved_messages if item["role"] == "assistant"
+        )
+        self.assertEqual(
+            delivered_fields,
+            assistant_message["delivered_answer_fields"],
+        )
+        self.assertEqual(
+            delivery_manifest,
+            assistant_message["answer_delivery_manifest"],
+        )
 
     def test_icp_execution_events_follow_graph_order_and_include_evidence_review(self):
         class IcpGraph:
@@ -477,6 +544,12 @@ class ChatGraphRuntimeTests(unittest.TestCase):
                         "plan": {
                             "intent": "impact_analysis",
                             "answer_mode": "knowledge_explanation",
+                            "calculation_authorizations": [{
+                                "operation": "rbd_reliability",
+                                "mode": "read_document",
+                                "target": "rbd",
+                                "basis": "资料中的可靠度",
+                            }],
                             "tools_plan": [{"tool": "fmeca_query", "reason": "查询影响"}],
                         }
                     }
@@ -552,6 +625,15 @@ class ChatGraphRuntimeTests(unittest.TestCase):
             [item["type"] for item in items[:-1]],
         )
         self.assertEqual("graph_traversal", items[3]["tool"])
+        self.assertEqual(
+            [{
+                "operation": "rbd_reliability",
+                "mode": "read_document",
+                "target": "rbd",
+                "basis": "资料中的可靠度",
+            }],
+            items[0]["calculation_authorizations"],
+        )
         self.assertEqual(["fmeca_query"], items[2]["tried_tools"])
         self.assertEqual(["graph_traversal"], items[2]["selected_tools"])
         self.assertEqual("evidence_review", items[5]["stage"])

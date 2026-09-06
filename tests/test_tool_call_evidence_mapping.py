@@ -25,6 +25,7 @@ elif "psycopg2" in sys.modules and getattr(sys.modules["psycopg2"], "__spec__", 
 
 from backend.agent.contracts import make_evidence, make_tool_result
 from backend.agent.nodes import answer as answer_module
+from backend.agent.rbd_contract import bind_rbd_models
 from backend.agent.tools import icp_calculation as calculation_module
 from backend.agent.tools import icp_diagnosis as diagnosis_module
 
@@ -275,6 +276,7 @@ class ToolCallEvidenceMappingTests(unittest.TestCase):
         self.assertEqual("FMECA.xlsx#row=1", call["results_preview"][0]["source_ref"])
 
     def test_calculation_node_links_derived_evidence_without_full_graph_payload(self):
+        query = "计算 revision_id=revision-rbd-1 的可靠度"
         row = {
             "diagram_type": "rbd",
             "revision_id": "revision-rbd-1",
@@ -311,15 +313,34 @@ class ToolCallEvidenceMappingTests(unittest.TestCase):
             record_id="revision-rbd-1",
             review_status="confirmed",
             content="处理模块串联路径",
-            metadata={"is_active": True, "projection_status": "published"},
+            metadata={
+                "revision_id": "revision-rbd-1",
+                "validation_status": "manual_confirmed",
+                "is_active": True,
+                "projection_status": "published",
+            },
         )
+        selected, binding = bind_rbd_models(
+            [row],
+            required=True,
+            raw_user_query=query,
+            explicit_rbd_ids=["revision-rbd-1"],
+        )
+        self.assertEqual([row], selected)
         result = _run(
             calculation_module.icp_calculation_node(
                 {
-                    "query": "计算显示处理链路可靠度",
+                    "query": query,
+                    "calculation_authorizations": [{
+                        "operation": "rbd_reliability",
+                        "mode": "calculate",
+                        "target": "rbd",
+                        "basis": query,
+                    }],
                     "allowed_tools": ["rbd_calculator"],
                     "confirmed_graphs": [row],
                     "evidence_registry": [parent],
+                    "rbd_query_binding": binding,
                 }
             )
         )

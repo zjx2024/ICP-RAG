@@ -50,6 +50,67 @@ class AdaptiveToolRouteTests(unittest.TestCase):
         ):
             return _run(adaptive_tool_route_node(state))
 
+    @staticmethod
+    def _exact_hmc_state(
+        *,
+        query="查询 31810001-**-0001",
+        evidence_code="31810001**0001",
+        required_fields=(),
+    ):
+        components = {
+            "hmc_code": evidence_code,
+            "lcn": evidence_code[:8],
+            "hamc": evidence_code[8:10],
+            "hsc": evidence_code[10:],
+            "fault_symptom": "ICU 输入过压钳位失效",
+        }
+        evidence = make_evidence(
+            source_kind="postgres",
+            authority="authoritative_record",
+            evidence_level="L1_DIRECT",
+            claim_type="hmc_fault",
+            doc_type="hmc",
+            doc_id="doc-hmc",
+            record_id=evidence_code,
+            source_ref="HMC手册#row=1",
+            title=evidence_code,
+            content="ICU 输入过压钳位失效",
+            match_type="exact_code",
+            metadata={
+                **components,
+                "answer_fields": components,
+            },
+        )
+        return {
+            "query": query,
+            # These coarse labels are intentionally unrelated to shortcut
+            # authority; only the exact identity and typed obligations matter.
+            "intent": "hybrid",
+            "query_targets": [{"intent": "history_query"}],
+            "query_frame": {
+                "required_answer_fields": list(required_fields),
+            },
+            "authorized_tools": [
+                "hmc_query", "hybrid_search", "evidence_synthesis",
+            ],
+            "allowed_tools": ["hmc_query", "evidence_synthesis"],
+            "tool_results": [
+                make_tool_result(
+                    tool="hmc_query",
+                    status="ok",
+                    data={"count": 1},
+                    evidence_ids=[evidence["evidence_id"]],
+                )
+            ],
+            "evidence_registry": [evidence],
+            "graph_seed_bindings": [{
+                "logical_id": f"sg:b:hmc_code:{evidence_code}",
+                "entity_kind": "hmc_code",
+                "source_tool": "hmc_query",
+                "binding_status": "exact",
+            }],
+        }
+
     def test_record_identity_coverage_requires_id_and_primary_content_pair(self):
         identity_shapes = (
             (
@@ -187,6 +248,7 @@ class AdaptiveToolRouteTests(unittest.TestCase):
         )
         followups = adaptive_module._completion_followups(
             {
+                "query": "运行中复位",
                 "intent": "cause_analysis",
                 "query_targets": [{"intent": "cause_analysis"}],
                 "query_frame": {
@@ -219,6 +281,7 @@ class AdaptiveToolRouteTests(unittest.TestCase):
         )
         followups = adaptive_module._completion_followups(
             {
+                "query": "运行中复位",
                 "intent": "cause_analysis",
                 "query_targets": [{"intent": "cause_analysis"}],
                 "query_frame": {
@@ -226,6 +289,10 @@ class AdaptiveToolRouteTests(unittest.TestCase):
                     "required_answer_fields": ["fault_cause"],
                     "diagnostic_closure": {
                         "required": True,
+                        "required_dimensions": [
+                            "maintenance_action", "history_result",
+                        ],
+                        "basis": "运行中复位",
                         "reason": "当前异常需要有限处置闭环",
                     },
                 },
@@ -236,7 +303,7 @@ class AdaptiveToolRouteTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            ["mfl_query", "hmc_query", "fault_history_query"], followups
+            ["hmc_query", "fault_history_query", "mfl_query"], followups
         )
 
     def test_validated_fta_structure_covers_structural_chain_only(self):
@@ -303,6 +370,150 @@ class AdaptiveToolRouteTests(unittest.TestCase):
         self.assertEqual({}, result["graph_traversal_request"])
         self.assertNotIn("graph_traversal", result["allowed_tools"])
 
+    def test_exact_hmc_shortcut_uses_identity_and_field_coverage_not_intent(self):
+        state = self._exact_hmc_state(
+            required_fields=("hmc_identity", "hmc_symptom"),
+        )
+        state["query_frame"].update({
+            "source_obligations": [{
+                "tool": "hmc_query",
+                "doc_type": "hmc",
+                "fields": ["hmc_identity", "hmc_symptom"],
+            }],
+            "requested_source_tools": ["hmc_query"],
+        })
+
+        self.assertTrue(
+            adaptive_module._complete_exact_hmc_answer_available(state)
+        )
+
+    def test_exact_hmc_shortcut_rejects_uncovered_compound_and_closure_fields(self):
+        query = "查询 31810001-**-0001，并形成维修与历史恢复闭环"
+        state = self._exact_hmc_state(
+            query=query,
+            required_fields=("hmc_identity", "maintenance_api"),
+        )
+        state["query_targets"] = [
+            {"intent": "exact_code", "required_fields": ["hmc_identity"]},
+            {
+                "intent": "maintenance_query",
+                "required_fields": ["maintenance_api"],
+            },
+        ]
+        state["query_frame"]["diagnostic_closure"] = {
+            "required": True,
+            "required_dimensions": ["maintenance_action", "history_result"],
+            "basis": "形成维修与历史恢复闭环",
+        }
+        state["authorized_tools"].extend(["mfl_query", "fault_history_query"])
+
+        self.assertFalse(
+            adaptive_module._complete_exact_hmc_answer_available(state)
+        )
+        result = self._route(
+            state,
+            json.dumps({
+                "decision": "retrieve",
+                "next_tools": ["mfl_query", "fault_history_query"],
+                "reason": "补齐结构化义务",
+            }, ensure_ascii=False),
+        )
+        self.assertTrue(
+            {"mfl_query", "fault_history_query"}.issubset(
+                result["pending_tools"]
+            )
+        )
+        self.assertNotEqual(
+            "exact_hmc_shortcut", result["adaptive_decision"]["source"]
+        )
+
+    def test_exact_hmc_shortcut_rejects_wrong_code_evidence(self):
+        state = self._exact_hmc_state(evidence_code="31810001**0002")
+
+        self.assertFalse(
+            adaptive_module._complete_exact_hmc_answer_available(state)
+        )
+
+    def test_exact_hmc_shortcut_requires_full_raw_code_and_one_pg_identity(self):
+        incomplete = self._exact_hmc_state(
+            query="查询 LCN 31810001 HSC 0001"
+        )
+        multiple_codes = self._exact_hmc_state(
+            query="比较 31810001-**-0001 与 31810001-**-0002"
+        )
+        duplicate = self._exact_hmc_state()
+        second = dict(duplicate["evidence_registry"][0])
+        second.update({
+            "evidence_id": "ev-hmc-second-document",
+            "doc_id": "doc-hmc-second",
+            "source_ref": "另一份HMC手册#row=9",
+        })
+        duplicate["evidence_registry"].append(second)
+        duplicate["tool_results"][0]["evidence_ids"].append(
+            second["evidence_id"]
+        )
+
+        for state in (incomplete, multiple_codes, duplicate):
+            with self.subTest(query=state["query"], count=len(state["evidence_registry"])):
+                self.assertFalse(
+                    adaptive_module._complete_exact_hmc_answer_available(state)
+                )
+
+    def test_exact_hmc_shortcut_rejects_uncovered_explicit_source(self):
+        state = self._exact_hmc_state(
+            query="查询 31810001-**-0001，并回查维修清单",
+            required_fields=("hmc_identity",),
+        )
+        state["query_frame"]["source_obligations"] = [{
+            "tool": "mfl_query",
+            "doc_type": "mfl",
+            "fields": [],
+            "question_role": "evidence",
+        }]
+        state["query_frame"]["requested_source_tools"] = ["mfl_query"]
+        state["requested_source_tools"] = ["mfl_query"]
+        state["authorized_tools"].append("mfl_query")
+
+        self.assertFalse(
+            adaptive_module._complete_exact_hmc_answer_available(state)
+        )
+        result = self._route(
+            state,
+            json.dumps({
+                "decision": "retrieve",
+                "next_tools": ["mfl_query"],
+                "reason": "显式来源仍未执行",
+            }, ensure_ascii=False),
+        )
+        self.assertEqual(["mfl_query"], result["pending_tools"])
+
+    def test_exact_hmc_shortcut_rejects_relation_or_calculation_contract(self):
+        relation_query = "查询 31810001-**-0001，并核对它如何连接到下游"
+        relation_state = self._exact_hmc_state(query=relation_query)
+        relation_state["relation_expansion"] = {
+            "needed": True,
+            "relation_kind": "relation_path",
+            "reference_mode": "current_query",
+            "basis": "核对它如何连接到下游",
+        }
+        relation_state["authorized_tools"].append("graph_traversal")
+
+        calculation_query = "查询 31810001-**-0001，并计算该 RBD 的可靠度"
+        calculation_state = self._exact_hmc_state(query=calculation_query)
+        calculation_state["calculation_authorizations"] = [{
+            "operation": "rbd_reliability",
+            "mode": "calculate",
+            "target": "rbd",
+            "basis": "计算该 RBD 的可靠度",
+        }]
+        calculation_state["calculation_requests"] = ["rbd_reliability"]
+
+        for state in (relation_state, calculation_state):
+            with self.subTest(query=state["query"]):
+                self.assertFalse(
+                    adaptive_module._complete_exact_hmc_answer_available(state)
+                )
+
     def test_empty_direct_result_can_trigger_one_scoped_hybrid_followup(self):
         state = {
             "query": "滤波电容老化会有什么影响？",
@@ -356,6 +567,9 @@ class AdaptiveToolRouteTests(unittest.TestCase):
             "query": "该历史案例经哪些功能关联到哪个模块？",
             "intent": "history_query",
             "query_targets": [{"intent": "history_query"}],
+            "query_frame": {
+                "source_obligations": [{"tool": "fault_history_query"}],
+            },
             "authorized_tools": [
                 "fault_history_query", "hybrid_search", "graph_traversal", "evidence_synthesis"
             ],
@@ -396,7 +610,7 @@ class AdaptiveToolRouteTests(unittest.TestCase):
         )
         self.assertEqual("graph_traversal", route_after_adaptive_tools(result))
 
-    def test_cause_question_automatically_expands_graph_without_relation_words(self):
+    def test_cause_intent_does_not_override_model_answer_with_graph_or_fta(self):
         evidence = _evidence()
         state = {
             "query": "系统运行中总是无故反复重启，通常是什么原因？",
@@ -425,20 +639,17 @@ class AdaptiveToolRouteTests(unittest.TestCase):
                 }
             ],
         }
-        # 即使补查模型认为直接证据已经足够，原因分析仍应自动检查已有
-        # 业务实体的跨文档证据链；缺少 FTA 原因链时先定向补查，再携带
-        # 新旧实体进入图查询，用户无需主动说“关系”或“路径”。
         result = self._route(
             state,
             json.dumps({"decision": "answer", "next_tools": [], "reason": "已有原因记录"}),
         )
-        self.assertTrue(result["adaptive_graph_requested"])
-        self.assertEqual(["fta_query"], result["pending_tools"])
+        self.assertFalse(result["adaptive_graph_requested"])
+        self.assertEqual([], result["pending_tools"])
         self.assertEqual({}, result["graph_traversal_request"])
-        self.assertIn("原因分析", result["adaptive_decision"]["graph_trigger"])
-        self.assertEqual("adaptive_retrieval", route_after_adaptive_tools(result))
+        self.assertEqual("", result["adaptive_decision"]["graph_trigger"])
+        self.assertEqual("icp_calculation", route_after_adaptive_tools(result))
 
-    def test_fault_answer_fills_handling_and_history_slots_without_full_scan(self):
+    def test_model_answer_is_not_overridden_by_an_intent_fault_bundle(self):
         evidence = _evidence()
         state = {
             "query": "滤波电容老化会有什么影响？",
@@ -464,12 +675,8 @@ class AdaptiveToolRouteTests(unittest.TestCase):
             state,
             json.dumps({"decision": "answer", "next_tools": [], "reason": "影响已命中"}),
         )
-        self.assertEqual(
-            ["mfl_query", "hmc_query", "fault_history_query"],
-            result["pending_tools"],
-        )
-        self.assertNotIn("hybrid_search", result["pending_tools"])
-        self.assertEqual("adaptive_retrieval", result["next_action"])
+        self.assertEqual([], result["pending_tools"])
+        self.assertEqual("done", result["next_action"])
 
     def test_planner_can_request_implicit_cross_document_impact_expansion(self):
         evidence = _evidence()
@@ -477,6 +684,9 @@ class AdaptiveToolRouteTests(unittest.TestCase):
             "query": "滤波电容老化会有什么影响？",
             "intent": "impact_analysis",
             "query_targets": [{"intent": "impact_analysis"}],
+            "query_frame": {
+                "required_answer_fields": ["final_impact"],
+            },
             "relation_expansion": {
                 "needed": True,
                 "reason": "需要补全故障模式到模块和功能的跨文档影响链",
@@ -511,7 +721,7 @@ class AdaptiveToolRouteTests(unittest.TestCase):
         self.assertEqual("graph_traversal", route_after_adaptive_tools(result))
         self.assertIn("跨文档影响链", result["adaptive_decision"]["graph_trigger"])
 
-    def test_implicit_graph_need_is_deferred_until_followup_binds_an_entity(self):
+    def test_intent_alone_does_not_defer_an_unrequested_graph_lookup(self):
         state = {
             "query": "系统运行中反复重启，可能是什么原因？",
             "intent": "cause_analysis",
@@ -538,7 +748,7 @@ class AdaptiveToolRouteTests(unittest.TestCase):
             ),
         )
         self.assertEqual(["hybrid_search"], result["pending_tools"])
-        self.assertTrue(result["adaptive_graph_requested"])
+        self.assertFalse(result["adaptive_graph_requested"])
         self.assertEqual({}, result["graph_traversal_request"])
         self.assertEqual("adaptive_retrieval", route_after_adaptive_tools(result))
 
@@ -559,6 +769,11 @@ class AdaptiveToolRouteTests(unittest.TestCase):
             "query": "没有正确传出数据到外设",
             "intent": "cause_analysis",
             "query_targets": [{"intent": "cause_analysis"}],
+            "query_frame": {
+                "required_answer_fields": [
+                    "fault_cause", "structural_cause_chain",
+                ],
+            },
             "relation_expansion": {
                 "needed": True,
                 "reason": "需要补全外部数据通信故障的跨文档原因链",
@@ -642,6 +857,7 @@ class AdaptiveToolRouteTests(unittest.TestCase):
         state = {
             "intent": "cause_analysis",
             "query_targets": [{"intent": "cause_analysis"}],
+            "query_frame": {"required_answer_fields": ["fault_cause"]},
             "pending_tools": ["fmeca_query"],
             "allowed_tools": [
                 "hmc_query", "fmeca_query", "graph_traversal", "evidence_synthesis"
@@ -655,6 +871,14 @@ class AdaptiveToolRouteTests(unittest.TestCase):
             "domain_results": [],
             "confirmed_graphs": [],
             "diagnostic_support": 0.4,
+            "structured_entity_binding": {
+                "bound": True,
+                "ambiguous": False,
+                "business_ids": ["MOD-NAV-A"],
+                "terms": ["MOD-NAV-A", "NAVA"],
+                "row_indexes": [0],
+                "basis": "exact_business_id",
+            },
         }
         batch_update = {
             "tool_calls": [{"tool": "fmeca_query", "count": 1}],
@@ -679,6 +903,14 @@ class AdaptiveToolRouteTests(unittest.TestCase):
             "domain_results": [],
             "confirmed_graphs": [],
             "diagnostic_support": 0.7,
+            "structured_entity_binding": {
+                "bound": False,
+                "ambiguous": False,
+                "business_ids": [],
+                "terms": [],
+                "row_indexes": [],
+                "basis": "",
+            },
         }
         with patch.object(
             adaptive_module,
@@ -695,7 +927,275 @@ class AdaptiveToolRouteTests(unittest.TestCase):
         self.assertEqual(2, len(result["graph_seed_bindings"]))
         self.assertEqual(2, len(result["graph_traversal_request"]["seed_ids"]))
         self.assertEqual([], result["pending_tools"])
+        self.assertEqual(
+            ["MOD-NAV-A"],
+            result["structured_entity_binding"]["business_ids"],
+        )
         self.assertEqual("graph_traversal", route_after_adaptive_retrieval(result))
+
+    def test_followup_retrieval_preserves_cross_family_identity_boundaries(self):
+        """A batch which does not run HMC/MFL/RBD cannot reset their guards."""
+
+        state = {
+            "intent": "impact_analysis",
+            "query_targets": [{"intent": "impact_analysis"}],
+            "pending_tools": ["fmeca_query"],
+            "allowed_tools": ["fmeca_query", "evidence_synthesis"],
+            "authorized_doc_types": ["fmeca"],
+            "adaptive_graph_requested": False,
+            "graph_seed_bindings": [],
+            "candidate_faults": [],
+            "domain_results": [],
+            "confirmed_graphs": [],
+            "diagnostic_support": 0.2,
+            "hmc_mfl_binding": {
+                "required": True,
+                "bound": False,
+                "ambiguous": False,
+                "basis": "no_explicit_authoritative_relation",
+                "hmc_codes": ["91810001**0001"],
+                "mfl_codes": [],
+                "excluded_mfl_codes": ["MFL-NEIGHBOUR"],
+            },
+            "rbd_query_binding": {
+                "required": True,
+                "bound": False,
+                "ambiguous": False,
+                "basis": "single_unbound_candidate",
+                "record_ids": ["RBD-ONE"],
+                "candidate_record_ids": ["RBD-ONE"],
+            },
+        }
+        batch_update = {
+            "tool_calls": [],
+            "tool_results": [],
+            "evidence_registry": [],
+            "graph_seed_bindings": [],
+            "candidate_faults": [],
+            "domain_results": [],
+            "confirmed_graphs": [],
+            "diagnostic_support": 0.3,
+            "hmc_mfl_binding": {
+                "required": False,
+                "bound": False,
+                "basis": "",
+            },
+            "rbd_query_binding": {
+                "required": False,
+                "bound": False,
+                "basis": "",
+            },
+        }
+
+        with patch.object(
+            adaptive_module,
+            "icp_diagnosis_node",
+            new=AsyncMock(return_value=batch_update),
+        ):
+            result = _run(adaptive_retrieval_node(state))
+
+        self.assertTrue(result["hmc_mfl_binding"]["required"])
+        self.assertFalse(result["hmc_mfl_binding"]["bound"])
+        self.assertEqual(
+            ["MFL-NEIGHBOUR"],
+            result["hmc_mfl_binding"]["excluded_mfl_codes"],
+        )
+        self.assertTrue(result["rbd_query_binding"]["required"])
+        self.assertFalse(result["rbd_query_binding"]["bound"])
+        self.assertEqual(
+            ["RBD-ONE"],
+            result["rbd_query_binding"]["candidate_record_ids"],
+        )
+
+    def test_hmc_mfl_merge_rejects_an_unproven_bound_flag(self):
+        result = adaptive_module._merge_hmc_mfl_binding(
+            {
+                "required": True,
+                "bound": True,
+                "basis": "no_explicit_authoritative_relation",
+                "hmc_codes": ["91810001**0001"],
+                "mfl_codes": ["MFL-SIMILAR"],
+            },
+            {},
+        )
+
+        self.assertFalse(result["bound"])
+        self.assertEqual([], result["mfl_codes"])
+        self.assertEqual(["MFL-SIMILAR"], result["excluded_mfl_codes"])
+
+    def test_hmc_mfl_merge_fails_closed_when_target_code_changes(self):
+        def bound(hmc_code, mfl_code):
+            return {
+                "required": True,
+                "bound": True,
+                "ambiguous": False,
+                "basis": "explicit_authoritative_reference",
+                "hmc_codes": [hmc_code],
+                "mfl_codes": [mfl_code],
+            }
+
+        result = adaptive_module._merge_hmc_mfl_binding(
+            bound("91810001**0001", "MFL-A"),
+            bound("91810002**0001", "MFL-B"),
+        )
+
+        self.assertFalse(result["bound"])
+        self.assertTrue(result["ambiguous"])
+        self.assertEqual([], result["mfl_codes"])
+        self.assertEqual({"MFL-A", "MFL-B"}, set(result["excluded_mfl_codes"]))
+
+    def test_rbd_merge_rejects_untyped_multi_model_bound_flag(self):
+        result = adaptive_module._merge_rbd_query_binding(
+            {
+                "required": True,
+                "bound": True,
+                "ambiguous": False,
+                "basis": "unresolved",
+                "record_ids": ["RBD-A", "RBD-B"],
+                "candidate_record_ids": ["RBD-A", "RBD-B"],
+            },
+            {},
+        )
+
+        self.assertFalse(result["bound"])
+        self.assertTrue(result["ambiguous"])
+        self.assertEqual([], result["record_ids"])
+        self.assertEqual(
+            {"RBD-A", "RBD-B"}, set(result["candidate_record_ids"])
+        )
+
+    def test_rbd_merge_rejects_legacy_bound_basis_and_conflicting_candidate(self):
+        result = adaptive_module._merge_rbd_query_binding(
+            {
+                "required": True,
+                "bound": True,
+                "ambiguous": False,
+                "basis": "stable_rbd_identity",
+                "record_ids": ["RBD-A"],
+                "candidate_record_ids": ["RBD-A"],
+            },
+            {
+                "required": True,
+                "bound": False,
+                "ambiguous": False,
+                "basis": "single_unbound_candidate",
+                "record_ids": ["RBD-B"],
+                "candidate_record_ids": ["RBD-B"],
+            },
+        )
+
+        self.assertFalse(result["bound"])
+        self.assertTrue(result["ambiguous"])
+        self.assertEqual([], result["record_ids"])
+
+    def test_binding_merge_keeps_stronger_identity_and_audits_conflict(self):
+        previous = {
+            "bound": True,
+            "ambiguous": False,
+            "business_ids": ["MODULE-PRIMARY"],
+            "terms": ["primary"],
+            "row_indexes": [0],
+            "basis": "exact_business_id",
+        }
+        current = {
+            "bound": True,
+            "ambiguous": False,
+            "business_ids": ["MODULE-NEIGHBOUR"],
+            "terms": ["neighbour"],
+            "row_indexes": [1],
+            "basis": "identity_label_containment",
+        }
+
+        result = adaptive_module._merge_structured_entity_binding(previous, current)
+
+        self.assertTrue(result["bound"])
+        self.assertEqual(["MODULE-PRIMARY"], result["business_ids"])
+        self.assertEqual(
+            "kept_stronger_previous",
+            result["binding_conflicts"][-1]["resolution"],
+        )
+        self.assertEqual(
+            ["MODULE-NEIGHBOUR"],
+            result["binding_conflicts"][-1]["current"]["business_ids"],
+        )
+
+    def test_binding_merge_allows_stronger_current_identity_with_audit(self):
+        previous = {
+            "bound": True,
+            "ambiguous": False,
+            "business_ids": ["MODULE-CANDIDATE"],
+            "terms": ["candidate"],
+            "row_indexes": [0],
+            "basis": "specific_identity_overlap",
+        }
+        current = {
+            "bound": True,
+            "ambiguous": False,
+            "business_ids": ["MODULE-EXACT"],
+            "terms": ["exact"],
+            "row_indexes": [2],
+            "basis": "exact_business_id",
+        }
+
+        result = adaptive_module._merge_structured_entity_binding(previous, current)
+
+        self.assertTrue(result["bound"])
+        self.assertEqual(["MODULE-EXACT"], result["business_ids"])
+        self.assertEqual(
+            "kept_stronger_current",
+            result["binding_conflicts"][-1]["resolution"],
+        )
+
+    def test_binding_merge_fails_closed_on_equal_strength_conflict(self):
+        def binding(business_id):
+            return {
+                "bound": True,
+                "ambiguous": False,
+                "business_ids": [business_id],
+                "terms": [business_id],
+                "row_indexes": [0],
+                "basis": "exact_identity_label",
+            }
+
+        result = adaptive_module._merge_structured_entity_binding(
+            binding("MODULE-ONE"), binding("MODULE-TWO")
+        )
+
+        self.assertFalse(result["bound"])
+        self.assertTrue(result["ambiguous"])
+        self.assertEqual([], result["business_ids"])
+        self.assertEqual(
+            "ambiguous_equal_or_unknown_authority",
+            result["binding_conflicts"][-1]["resolution"],
+        )
+
+    def test_binding_merge_combines_compatible_bindings(self):
+        previous = {
+            "bound": True,
+            "ambiguous": False,
+            "business_ids": ["MODULE-SHARED", "FUNCTION-ONE"],
+            "terms": ["module"],
+            "row_indexes": [0],
+            "basis": "exact_identity_label",
+        }
+        current = {
+            "bound": True,
+            "ambiguous": False,
+            "business_ids": ["module-shared", "INTERFACE-ONE"],
+            "terms": ["interface"],
+            "row_indexes": [1],
+            "basis": "same_row_module_function_chain",
+        }
+
+        result = adaptive_module._merge_structured_entity_binding(previous, current)
+
+        self.assertTrue(result["bound"])
+        self.assertFalse(result["ambiguous"])
+        self.assertEqual(
+            ["MODULE-SHARED", "FUNCTION-ONE", "INTERFACE-ONE"],
+            result["business_ids"],
+        )
+        self.assertEqual("same_row_module_function_chain", result["basis"])
 
     def test_api_only_mfl_evidence_does_not_satisfy_repair_slot(self):
         evidence = make_evidence(
@@ -718,7 +1218,13 @@ class AdaptiveToolRouteTests(unittest.TestCase):
         state = {
             "query": "这个故障怎么处理？",
             "intent": "maintenance_query",
-            "query_targets": [{"intent": "maintenance_query"}],
+            "query_targets": [{
+                "intent": "maintenance_query",
+                "required_fields": ["maintenance_action"],
+            }],
+            "query_frame": {
+                "required_answer_fields": ["maintenance_action"],
+            },
             "authorized_tools": ["hmc_query", "mfl_query", "evidence_synthesis"],
             "allowed_tools": ["mfl_query", "evidence_synthesis"],
             "tool_results": [
@@ -760,7 +1266,13 @@ class AdaptiveToolRouteTests(unittest.TestCase):
         state = {
             "query": "这个故障怎么处理？",
             "intent": "maintenance_query",
-            "query_targets": [{"intent": "maintenance_query"}],
+            "query_targets": [{
+                "intent": "maintenance_query",
+                "required_fields": ["maintenance_action"],
+            }],
+            "query_frame": {
+                "required_answer_fields": ["maintenance_action"],
+            },
             "authorized_tools": ["hmc_query", "mfl_query", "evidence_synthesis"],
             "allowed_tools": ["mfl_query", "evidence_synthesis"],
             "tool_results": [
@@ -781,7 +1293,7 @@ class AdaptiveToolRouteTests(unittest.TestCase):
         self.assertEqual([], result["pending_tools"])
         self.assertIn("mfl_repair", adaptive_module._coverage_slots(state))
 
-    def test_maintenance_repair_evidence_still_fills_fmeca_cause_and_impact(self):
+    def test_maintenance_repair_does_not_expand_to_unrequested_cause_and_impact(self):
         evidence = make_evidence(
             source_kind="postgres",
             authority="authoritative_record",
@@ -801,7 +1313,13 @@ class AdaptiveToolRouteTests(unittest.TestCase):
         state = {
             "query": "这个故障怎么处理？",
             "intent": "maintenance_query",
-            "query_targets": [{"intent": "maintenance_query"}],
+            "query_targets": [{
+                "intent": "maintenance_query",
+                "required_fields": ["maintenance_action"],
+            }],
+            "query_frame": {
+                "required_answer_fields": ["maintenance_action"],
+            },
             "authorized_tools": ["fmeca_query", "mfl_query", "evidence_synthesis"],
             "allowed_tools": ["mfl_query", "evidence_synthesis"],
             "tool_results": [
@@ -821,12 +1339,12 @@ class AdaptiveToolRouteTests(unittest.TestCase):
             json.dumps({"decision": "answer", "next_tools": [], "reason": "已有维修动作"}),
         )
 
-        self.assertEqual(["fmeca_query"], result["pending_tools"])
+        self.assertEqual([], result["pending_tools"])
         self.assertIn("mfl_repair", adaptive_module._coverage_slots(state))
         self.assertNotIn("cause", adaptive_module._coverage_slots(state))
         self.assertNotIn("impact", adaptive_module._coverage_slots(state))
 
-    def test_impact_only_semantic_evidence_triggers_structured_fmeca_for_cause(self):
+    def test_impact_contract_does_not_add_an_unrequested_cause_lookup(self):
         evidence = _evidence("FM-IMPACT-PARTIAL")
         evidence.update(
             {
@@ -837,7 +1355,11 @@ class AdaptiveToolRouteTests(unittest.TestCase):
         state = {
             "query": "这个退化之后会带来什么后果？",
             "intent": "impact_analysis",
-            "query_targets": [{"intent": "impact_analysis"}],
+            "query_targets": [{
+                "intent": "impact_analysis",
+                "required_fields": ["final_impact"],
+            }],
+            "query_frame": {"required_answer_fields": ["final_impact"]},
             "authorized_tools": ["fmeca_query", "hybrid_search", "evidence_synthesis"],
             "allowed_tools": ["hybrid_search", "evidence_synthesis"],
             "tool_results": [
@@ -857,11 +1379,11 @@ class AdaptiveToolRouteTests(unittest.TestCase):
             json.dumps({"decision": "answer", "next_tools": [], "reason": "已有影响"}),
         )
 
-        self.assertEqual(["fmeca_query"], result["pending_tools"])
+        self.assertEqual([], result["pending_tools"])
         self.assertIn("impact", adaptive_module._coverage_slots(state))
         self.assertNotIn("cause", adaptive_module._coverage_slots(state))
 
-    def test_fta_cause_alone_still_fills_fmeca_impact_for_fault_answer(self):
+    def test_fta_cause_answer_does_not_add_an_unrequested_impact_lookup(self):
         evidence = make_evidence(
             source_kind="postgres",
             authority="authoritative_record",
@@ -872,11 +1394,16 @@ class AdaptiveToolRouteTests(unittest.TestCase):
             record_id="FTA-CAUSE-ONLY",
             title="FTA 原因链",
             content="结构化 FTA 原因链",
+            metadata={"answer_fields": {"fault_cause": "电源瞬断"}},
         )
         state = {
             "query": "设备运行中总是自行复位，是什么原因？",
             "intent": "cause_analysis",
-            "query_targets": [{"intent": "cause_analysis"}],
+            "query_targets": [{
+                "intent": "cause_analysis",
+                "required_fields": ["fault_cause"],
+            }],
+            "query_frame": {"required_answer_fields": ["fault_cause"]},
             "authorized_tools": [
                 "fmeca_query", "fta_query", "mfl_query", "hmc_query",
                 "fault_history_query", "evidence_synthesis",
@@ -899,7 +1426,7 @@ class AdaptiveToolRouteTests(unittest.TestCase):
             json.dumps({"decision": "answer", "next_tools": [], "reason": "已有原因链"}),
         )
 
-        self.assertIn("fmeca_query", result["pending_tools"])
+        self.assertEqual([], result["pending_tools"])
         self.assertIn("cause", adaptive_module._coverage_slots(state))
         self.assertNotIn("impact", adaptive_module._coverage_slots(state))
 
@@ -920,7 +1447,11 @@ class AdaptiveToolRouteTests(unittest.TestCase):
         state = {
             "query": "这个输入异常怎么区分和处理？",
             "intent": "maintenance_query",
-            "query_targets": [{"intent": "maintenance_query"}],
+            "query_targets": [{
+                "intent": "maintenance_query",
+                "required_fields": ["detection_method"],
+            }],
+            "query_frame": {"required_answer_fields": ["detection_method"]},
             "authorized_tools": ["fmeca_query", "hybrid_search", "evidence_synthesis"],
             "allowed_tools": ["hybrid_search", "evidence_synthesis"],
             "tool_results": [
@@ -990,7 +1521,13 @@ class AdaptiveToolRouteTests(unittest.TestCase):
         state = {
             "query": "之后会有什么后果？",
             "intent": "impact_analysis",
-            "query_targets": [{"intent": "impact_analysis"}],
+            "query_targets": [{
+                "intent": "impact_analysis",
+                "required_fields": ["local_impact", "final_impact"],
+            }],
+            "query_frame": {
+                "required_answer_fields": ["local_impact", "final_impact"],
+            },
             "authorized_tools": ["fmeca_query", "evidence_synthesis"],
             "allowed_tools": ["evidence_synthesis"],
             "tool_results": [],
@@ -1016,7 +1553,15 @@ class AdaptiveToolRouteTests(unittest.TestCase):
         state = {
             "query": "内部报文没有送到外接设备，哪里可能出错？",
             "intent": "cause_analysis",
-            "query_targets": [{"intent": "cause_analysis"}],
+            "query_targets": [{
+                "intent": "cause_analysis",
+                "required_fields": ["fault_cause", "structural_cause_chain"],
+            }],
+            "query_frame": {
+                "required_answer_fields": [
+                    "fault_cause", "structural_cause_chain",
+                ],
+            },
             "evidence_registry": [evidence],
         }
 
@@ -1065,7 +1610,13 @@ class AdaptiveToolRouteTests(unittest.TestCase):
         state = {
             "query": "以前怎么处理的？",
             "intent": "history_query",
-            "query_targets": [{"intent": "history_query"}],
+            "query_targets": [{
+                "intent": "history_query",
+                "required_fields": list(adaptive_module._HISTORY_SLOTS),
+            }],
+            "query_frame": {
+                "required_answer_fields": list(adaptive_module._HISTORY_SLOTS),
+            },
             "authorized_tools": ["fault_history_query", "evidence_synthesis"],
             "allowed_tools": ["evidence_synthesis"],
             "tool_results": [],
@@ -1106,7 +1657,13 @@ class AdaptiveToolRouteTests(unittest.TestCase):
         state = {
             "query": "以前怎么处理的？",
             "intent": "history_query",
-            "query_targets": [{"intent": "history_query"}],
+            "query_targets": [{
+                "intent": "history_query",
+                "required_fields": list(adaptive_module._HISTORY_SLOTS),
+            }],
+            "query_frame": {
+                "required_answer_fields": list(adaptive_module._HISTORY_SLOTS),
+            },
             "authorized_tools": ["fault_history_query", "evidence_synthesis"],
             "allowed_tools": ["evidence_synthesis"],
             "tool_results": [],
@@ -1139,7 +1696,13 @@ class AdaptiveToolRouteTests(unittest.TestCase):
         state = {
             "query": "外部数据经过哪些模块？",
             "intent": "architecture_query",
-            "query_targets": [{"intent": "architecture_query"}],
+            "query_targets": [{
+                "intent": "architecture_query",
+                "required_fields": ["architecture_interface"],
+            }],
+            "query_frame": {
+                "required_answer_fields": ["architecture_interface"],
+            },
             "authorized_tools": ["function_locator", "evidence_synthesis"],
             "allowed_tools": ["evidence_synthesis"],
             "tool_results": [],
@@ -1162,7 +1725,7 @@ class AdaptiveToolRouteTests(unittest.TestCase):
         )
         self.assertEqual([], interface_result["pending_tools"])
 
-    def test_rbd_claim_satisfies_reliability_structure_slot(self):
+    def test_rbd_claim_without_typed_field_does_not_satisfy_structure_slot(self):
         evidence = make_evidence(
             source_kind="postgres",
             authority="validated_relation",
@@ -1177,7 +1740,11 @@ class AdaptiveToolRouteTests(unittest.TestCase):
         state = {
             "query": "一条支路失效后还能完成任务吗？",
             "intent": "reliability_query",
-            "query_targets": [{"intent": "reliability_query"}],
+            "query_targets": [{
+                "intent": "reliability_query",
+                "required_fields": ["rbd_path_structure"],
+            }],
+            "query_frame": {"required_answer_fields": ["rbd_path_structure"]},
             "authorized_tools": ["rbd_query", "evidence_synthesis"],
             "allowed_tools": ["evidence_synthesis"],
             "tool_results": [],
@@ -1188,16 +1755,16 @@ class AdaptiveToolRouteTests(unittest.TestCase):
             state,
             json.dumps({"decision": "answer", "next_tools": [], "reason": "RBD 已覆盖"}),
         )
-        self.assertEqual([], result["pending_tools"])
+        self.assertEqual(["rbd_query"], result["pending_tools"])
 
     def test_explicit_target_slots_precede_secondary_sources_within_budget(self):
         state = {
             "intent": "cause_analysis",
             "query_targets": [
-                {"intent": "cause_analysis"},
-                {"intent": "maintenance_query"},
-                {"intent": "history_query"},
-                {"intent": "architecture_query"},
+                {"intent": "cause_analysis", "required_fields": ["fault_cause"]},
+                {"intent": "maintenance_query", "required_fields": ["maintenance_action"]},
+                {"intent": "history_query", "required_fields": ["history_result"]},
+                {"intent": "architecture_query", "required_fields": ["architecture_interface"]},
             ],
             "evidence_registry": [],
         }
@@ -1211,7 +1778,7 @@ class AdaptiveToolRouteTests(unittest.TestCase):
         )
         self.assertEqual(
             [
-                "fmeca_query", "mfl_query", "fault_history_query",
+                "fmeca_query", "hmc_query", "fault_history_query",
                 "function_locator", "fta_query",
             ],
             tools,

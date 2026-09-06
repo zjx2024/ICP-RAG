@@ -1,0 +1,3124 @@
+{
+  "schema_version": "icp-eval-gold-sources/v1",
+  "description": "仅供评测裁判读取的冻结合成源摘录；不发给被测智能体。修改原文必须重新复核 SHA 与坐标。",
+  "sources": {
+    "PRODUCT_SCOPE": [
+      {
+        "path": "AGENTS.md",
+        "sha256": "1eb862fc09943d42739ea616035b38d77a04cb28403e6aed673de176835c32c4",
+        "locators": [
+          {"kind": "lines", "start": 9, "end": 31},
+          {"kind": "lines", "start": 445, "end": 457}
+        ]
+      }
+    ],
+    "SCOPE-01": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 1, "row": 1},
+          {"kind": "table_row", "table": 1, "row": 2},
+          {"kind": "table_row", "table": 1, "row": 3},
+          {"kind": "table_row", "table": 1, "row": 4},
+          {"kind": "table_row", "table": 1, "row": 5},
+          {"kind": "table_row", "table": 1, "row": 6}
+        ]
+      }
+    ],
+    "SCOPE-02": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 1, "row": 1},
+          {"kind": "table_row", "table": 1, "row": 2},
+          {"kind": "table_row", "table": 1, "row": 3},
+          {"kind": "table_row", "table": 1, "row": 4},
+          {"kind": "table_row", "table": 1, "row": 5},
+          {"kind": "table_row", "table": 1, "row": 6}
+        ]
+      }
+    ],
+    "SCOPE-03": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 1, "row": 1},
+          {"kind": "table_row", "table": 1, "row": 2},
+          {"kind": "table_row", "table": 1, "row": 3},
+          {"kind": "table_row", "table": 1, "row": 4},
+          {"kind": "table_row", "table": 1, "row": 5},
+          {"kind": "table_row", "table": 1, "row": 6}
+        ]
+      }
+    ],
+    "SCOPE-04": [
+      {
+        "path": "test-docs/04_FTA故障树分析报告.docx",
+        "sha256": "2cc34f1102d804990e4d807d3e7eabea4461717d2592ef4fa54fc477cebb9f03",
+        "locators": [
+          {"kind": "table_row", "table": 1, "row": 1},
+          {"kind": "table_row", "table": 1, "row": 2},
+          {"kind": "table_row", "table": 1, "row": 3},
+          {"kind": "table_row", "table": 1, "row": 4},
+          {"kind": "table_row", "table": 1, "row": 5},
+          {"kind": "table_row", "table": 1, "row": 6}
+        ]
+      }
+    ],
+    "SCOPE-05": [
+      {
+        "path": "test-docs/05_RBD可靠性框图分析报告.docx",
+        "sha256": "92f87eb19ba1cbf51da87970cadcc9463a235b77f74874d2c0d83e3a09dede7b",
+        "locators": [
+          {"kind": "table_row", "table": 1, "row": 1},
+          {"kind": "table_row", "table": 1, "row": 2},
+          {"kind": "table_row", "table": 1, "row": 3},
+          {"kind": "table_row", "table": 1, "row": 4},
+          {"kind": "table_row", "table": 1, "row": 5},
+          {"kind": "table_row", "table": 1, "row": 6}
+        ]
+      }
+    ],
+    "SCOPE-06": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 1, "row": 1},
+          {"kind": "table_row", "table": 1, "row": 2},
+          {"kind": "table_row", "table": 1, "row": 3},
+          {"kind": "table_row", "table": 1, "row": 4},
+          {"kind": "table_row", "table": 1, "row": 5},
+          {"kind": "table_row", "table": 1, "row": 6}
+        ]
+      }
+    ],
+    "SCOPE-07": [
+      {
+        "path": "test-docs/07_故障历史查询文档.docx",
+        "sha256": "23b2148d8e6ee43febfbca4a11077e3523411a4acedb289ced3cedb59f259883",
+        "locators": [
+          {"kind": "table_row", "table": 1, "row": 1},
+          {"kind": "table_row", "table": 1, "row": 2},
+          {"kind": "table_row", "table": 1, "row": 3},
+          {"kind": "table_row", "table": 1, "row": 4},
+          {"kind": "table_row", "table": 1, "row": 5},
+          {"kind": "table_row", "table": 1, "row": 6}
+        ]
+      }
+    ],
+    "ARCH_SUPPORT": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "paragraph", "index": 9},
+          {"kind": "paragraph", "index": 13},
+          {"kind": "paragraph", "index": 25},
+          {"kind": "paragraph", "index": 28},
+          {"kind": "paragraph", "index": 32}
+        ]
+      }
+    ],
+    "91810001**0001": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 2, "row": 3, "header": 2}
+        ]
+      }
+    ],
+    "FM-SYN-001": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 2, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-001": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 2, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-002": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 3, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-002": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 3, "header": 1}
+        ]
+      }
+    ],
+    "MOD-DSP-OIM": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 18, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 18, "header": 1}
+        ]
+      }
+    ],
+    "FUNC-430": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 22, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-049": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 50, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-049": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 7, "row": 8, "header": 1}
+        ]
+      }
+    ],
+    "MOD-TCS-CGM": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 23, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 23, "header": 1}
+        ]
+      }
+    ],
+    "FUNC-610": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 29, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-064": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 9, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 10, "row": 6, "header": 1}
+        ]
+      }
+    ],
+    "SUB-IFC": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 4, "header": 1}
+        ]
+      }
+    ],
+    "MOD-PWR-ICU": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 2, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-064": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 65, "header": 1}
+        ]
+      }
+    ],
+    "91810002**0003": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 2, "row": 11, "header": 2}
+        ]
+      }
+    ],
+    "FM-SYN-006": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 7, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-006": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 7, "header": 1}
+        ]
+      }
+    ],
+    "91810004**0002": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 2, "row": 22, "header": 2}
+        ]
+      }
+    ],
+    "FM-SYN-011": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 12, "header": 1}
+        ]
+      }
+    ],
+    "HIS-SYN-004": [
+      {
+        "path": "test-docs/07_故障历史查询文档.docx",
+        "sha256": "23b2148d8e6ee43febfbca4a11077e3523411a4acedb289ced3cedb59f259883",
+        "locators": [
+          {"kind": "table_row", "table": 6, "row": 1},
+          {"kind": "table_row", "table": 6, "row": 2},
+          {"kind": "table_row", "table": 6, "row": 3},
+          {"kind": "table_row", "table": 6, "row": 4},
+          {"kind": "table_row", "table": 6, "row": 5},
+          {"kind": "table_row", "table": 6, "row": 6},
+          {"kind": "table_row", "table": 6, "row": 7},
+          {"kind": "table_row", "table": 6, "row": 8},
+          {"kind": "table_row", "table": 6, "row": 9},
+          {"kind": "paragraph", "index": 56},
+          {"kind": "paragraph", "index": 57},
+          {"kind": "paragraph", "index": 58},
+          {"kind": "paragraph", "index": 59},
+          {"kind": "paragraph", "index": 61},
+          {"kind": "paragraph", "index": 62},
+          {"kind": "paragraph", "index": 64},
+          {"kind": "paragraph", "index": 66},
+          {"kind": "paragraph", "index": 67},
+          {"kind": "paragraph", "index": 68},
+          {"kind": "paragraph", "index": 69}
+        ]
+      }
+    ],
+    "MFL-SYN-011": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 12, "header": 1}
+        ]
+      }
+    ],
+    "91820001**0001": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 3, "header": 2}
+        ]
+      }
+    ],
+    "FM-SYN-016": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 10, "row": 2, "header": 1}
+        ]
+      }
+    ],
+    "FTA-SYN-001": [
+      {
+        "path": "test-docs/04_FTA故障树分析报告.docx",
+        "sha256": "2cc34f1102d804990e4d807d3e7eabea4461717d2592ef4fa54fc477cebb9f03",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 3, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 3, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 3, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 4, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 4, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 4, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 4, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 4, "row": 6, "header": 1},
+          {"kind": "table_row", "table": 4, "row": 7, "header": 1},
+          {"kind": "table_row", "table": 4, "row": 8, "header": 1},
+          {"kind": "table_row", "table": 5, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 5, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 5, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 5, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 5, "row": 6, "header": 1},
+          {"kind": "table_row", "table": 5, "row": 7, "header": 1},
+          {"kind": "paragraph", "index": 15}
+        ]
+      }
+    ],
+    "MFL-SYN-016": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 17, "header": 1}
+        ]
+      }
+    ],
+    "91820003**0003": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 17, "header": 2}
+        ]
+      }
+    ],
+    "FM-SYN-024": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 10, "header": 1}
+        ]
+      }
+    ],
+    "HIS-SYN-008": [
+      {
+        "path": "test-docs/07_故障历史查询文档.docx",
+        "sha256": "23b2148d8e6ee43febfbca4a11077e3523411a4acedb289ced3cedb59f259883",
+        "locators": [
+          {"kind": "table_row", "table": 10, "row": 1},
+          {"kind": "table_row", "table": 10, "row": 2},
+          {"kind": "table_row", "table": 10, "row": 3},
+          {"kind": "table_row", "table": 10, "row": 4},
+          {"kind": "table_row", "table": 10, "row": 5},
+          {"kind": "table_row", "table": 10, "row": 6},
+          {"kind": "table_row", "table": 10, "row": 7},
+          {"kind": "table_row", "table": 10, "row": 8},
+          {"kind": "table_row", "table": 10, "row": 9},
+          {"kind": "paragraph", "index": 116},
+          {"kind": "paragraph", "index": 117},
+          {"kind": "paragraph", "index": 118},
+          {"kind": "paragraph", "index": 119},
+          {"kind": "paragraph", "index": 121},
+          {"kind": "paragraph", "index": 122},
+          {"kind": "paragraph", "index": 124},
+          {"kind": "paragraph", "index": 126},
+          {"kind": "paragraph", "index": 127},
+          {"kind": "paragraph", "index": 128},
+          {"kind": "paragraph", "index": 129}
+        ]
+      }
+    ],
+    "MFL-SYN-024": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 25, "header": 1}
+        ]
+      }
+    ],
+    "91830003**0002": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 10, "header": 2}
+        ]
+      }
+    ],
+    "FM-SYN-038": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 6, "row": 9, "header": 1}
+        ]
+      }
+    ],
+    "HIS-SYN-013": [
+      {
+        "path": "test-docs/07_故障历史查询文档.docx",
+        "sha256": "23b2148d8e6ee43febfbca4a11077e3523411a4acedb289ced3cedb59f259883",
+        "locators": [
+          {"kind": "table_row", "table": 15, "row": 1},
+          {"kind": "table_row", "table": 15, "row": 2},
+          {"kind": "table_row", "table": 15, "row": 3},
+          {"kind": "table_row", "table": 15, "row": 4},
+          {"kind": "table_row", "table": 15, "row": 5},
+          {"kind": "table_row", "table": 15, "row": 6},
+          {"kind": "table_row", "table": 15, "row": 7},
+          {"kind": "table_row", "table": 15, "row": 8},
+          {"kind": "table_row", "table": 15, "row": 9},
+          {"kind": "paragraph", "index": 191},
+          {"kind": "paragraph", "index": 192},
+          {"kind": "paragraph", "index": 193},
+          {"kind": "paragraph", "index": 194},
+          {"kind": "paragraph", "index": 196},
+          {"kind": "paragraph", "index": 197},
+          {"kind": "paragraph", "index": 199},
+          {"kind": "paragraph", "index": 201},
+          {"kind": "paragraph", "index": 202},
+          {"kind": "paragraph", "index": 203},
+          {"kind": "paragraph", "index": 204}
+        ]
+      }
+    ],
+    "MFL-SYN-038": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 39, "header": 1}
+        ]
+      }
+    ],
+    "91830004**0001": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 12, "header": 2}
+        ]
+      }
+    ],
+    "FM-SYN-040": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 6, "row": 11, "header": 1}
+        ]
+      }
+    ],
+    "HIS-SYN-014": [
+      {
+        "path": "test-docs/07_故障历史查询文档.docx",
+        "sha256": "23b2148d8e6ee43febfbca4a11077e3523411a4acedb289ced3cedb59f259883",
+        "locators": [
+          {"kind": "table_row", "table": 16, "row": 1},
+          {"kind": "table_row", "table": 16, "row": 2},
+          {"kind": "table_row", "table": 16, "row": 3},
+          {"kind": "table_row", "table": 16, "row": 4},
+          {"kind": "table_row", "table": 16, "row": 5},
+          {"kind": "table_row", "table": 16, "row": 6},
+          {"kind": "table_row", "table": 16, "row": 7},
+          {"kind": "table_row", "table": 16, "row": 8},
+          {"kind": "table_row", "table": 16, "row": 9},
+          {"kind": "paragraph", "index": 206},
+          {"kind": "paragraph", "index": 207},
+          {"kind": "paragraph", "index": 208},
+          {"kind": "paragraph", "index": 209},
+          {"kind": "paragraph", "index": 211},
+          {"kind": "paragraph", "index": 212},
+          {"kind": "paragraph", "index": 214},
+          {"kind": "paragraph", "index": 216},
+          {"kind": "paragraph", "index": 217},
+          {"kind": "paragraph", "index": 218},
+          {"kind": "paragraph", "index": 219}
+        ]
+      }
+    ],
+    "MFL-SYN-040": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 41, "header": 1}
+        ]
+      }
+    ],
+    "91840003**0001": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 9, "header": 2}
+        ]
+      }
+    ],
+    "91860001**0001": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 7, "row": 3, "header": 2}
+        ]
+      }
+    ],
+    "HIS-SYN-022": [
+      {
+        "path": "test-docs/07_故障历史查询文档.docx",
+        "sha256": "23b2148d8e6ee43febfbca4a11077e3523411a4acedb289ced3cedb59f259883",
+        "locators": [
+          {"kind": "table_row", "table": 24, "row": 1},
+          {"kind": "table_row", "table": 24, "row": 2},
+          {"kind": "table_row", "table": 24, "row": 3},
+          {"kind": "table_row", "table": 24, "row": 4},
+          {"kind": "table_row", "table": 24, "row": 5},
+          {"kind": "table_row", "table": 24, "row": 6},
+          {"kind": "table_row", "table": 24, "row": 7},
+          {"kind": "table_row", "table": 24, "row": 8},
+          {"kind": "table_row", "table": 24, "row": 9},
+          {"kind": "paragraph", "index": 326},
+          {"kind": "paragraph", "index": 327},
+          {"kind": "paragraph", "index": 328},
+          {"kind": "paragraph", "index": 329},
+          {"kind": "paragraph", "index": 331},
+          {"kind": "paragraph", "index": 332},
+          {"kind": "paragraph", "index": 334},
+          {"kind": "paragraph", "index": 336},
+          {"kind": "paragraph", "index": 337},
+          {"kind": "paragraph", "index": 338},
+          {"kind": "paragraph", "index": 339}
+        ]
+      }
+    ],
+    "91860003**0001": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 7, "row": 9, "header": 2}
+        ]
+      }
+    ],
+    "FM-SYN-070": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 9, "row": 8, "header": 1},
+          {"kind": "table_row", "table": 10, "row": 8, "header": 1}
+        ]
+      }
+    ],
+    "HIS-SYN-024": [
+      {
+        "path": "test-docs/07_故障历史查询文档.docx",
+        "sha256": "23b2148d8e6ee43febfbca4a11077e3523411a4acedb289ced3cedb59f259883",
+        "locators": [
+          {"kind": "table_row", "table": 26, "row": 1},
+          {"kind": "table_row", "table": 26, "row": 2},
+          {"kind": "table_row", "table": 26, "row": 3},
+          {"kind": "table_row", "table": 26, "row": 4},
+          {"kind": "table_row", "table": 26, "row": 5},
+          {"kind": "table_row", "table": 26, "row": 6},
+          {"kind": "table_row", "table": 26, "row": 7},
+          {"kind": "table_row", "table": 26, "row": 8},
+          {"kind": "table_row", "table": 26, "row": 9},
+          {"kind": "paragraph", "index": 356},
+          {"kind": "paragraph", "index": 357},
+          {"kind": "paragraph", "index": 358},
+          {"kind": "paragraph", "index": 359},
+          {"kind": "paragraph", "index": 361},
+          {"kind": "paragraph", "index": 362},
+          {"kind": "paragraph", "index": 364},
+          {"kind": "paragraph", "index": 366},
+          {"kind": "paragraph", "index": 367},
+          {"kind": "paragraph", "index": 368},
+          {"kind": "paragraph", "index": 369}
+        ]
+      }
+    ],
+    "FM-SYN-072": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 9, "row": 10, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-070": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 71, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-072": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 73, "header": 1}
+        ]
+      }
+    ],
+    "91810004**0001": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 2, "row": 21, "header": 2}
+        ]
+      }
+    ],
+    "91810004**0003": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 2, "row": 23, "header": 2}
+        ]
+      }
+    ],
+    "91810001**0002": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 2, "row": 4, "header": 2}
+        ]
+      }
+    ],
+    "91810001**0003": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 2, "row": 5, "header": 2}
+        ]
+      }
+    ],
+    "91810001010101": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 2, "row": 6, "header": 2}
+        ]
+      }
+    ],
+    "91810001010103": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 2, "row": 7, "header": 2}
+        ]
+      }
+    ],
+    "91810001020102": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 2, "row": 8, "header": 2}
+        ]
+      }
+    ],
+    "91810004010111": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 2, "row": 24, "header": 2}
+        ]
+      }
+    ],
+    "91810004020110": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 2, "row": 25, "header": 2}
+        ]
+      }
+    ],
+    "91810004020112": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 2, "row": 26, "header": 2}
+        ]
+      }
+    ],
+    "91810005**0001": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 2, "row": 27, "header": 2}
+        ]
+      }
+    ],
+    "91810005**0002": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 2, "row": 28, "header": 2}
+        ]
+      }
+    ],
+    "91810005**0003": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 2, "row": 29, "header": 2}
+        ]
+      }
+    ],
+    "91810005010113": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 2, "row": 30, "header": 2}
+        ]
+      }
+    ],
+    "91810005010115": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 2, "row": 31, "header": 2}
+        ]
+      }
+    ],
+    "91810005020114": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 2, "row": 32, "header": 2}
+        ]
+      }
+    ],
+    "FM-SYN-010": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 11, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-017": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 10, "row": 3, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-018": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 10, "row": 4, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-025": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 11, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-010": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 11, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-017": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 18, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-018": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 19, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-025": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 26, "header": 1}
+        ]
+      }
+    ],
+    "FTA-SYN-005": [
+      {
+        "path": "test-docs/04_FTA故障树分析报告.docx",
+        "sha256": "2cc34f1102d804990e4d807d3e7eabea4461717d2592ef4fa54fc477cebb9f03",
+        "locators": [
+          {"kind": "table_row", "table": 15, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 15, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 15, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 15, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 16, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 16, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 16, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 16, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 16, "row": 6, "header": 1},
+          {"kind": "table_row", "table": 16, "row": 7, "header": 1},
+          {"kind": "table_row", "table": 16, "row": 8, "header": 1},
+          {"kind": "table_row", "table": 16, "row": 9, "header": 1},
+          {"kind": "table_row", "table": 16, "row": 10, "header": 1},
+          {"kind": "table_row", "table": 16, "row": 11, "header": 1},
+          {"kind": "table_row", "table": 17, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 17, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 17, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 17, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 17, "row": 6, "header": 1},
+          {"kind": "table_row", "table": 17, "row": 7, "header": 1},
+          {"kind": "table_row", "table": 17, "row": 8, "header": 1},
+          {"kind": "table_row", "table": 17, "row": 9, "header": 1},
+          {"kind": "table_row", "table": 17, "row": 10, "header": 1},
+          {"kind": "paragraph", "index": 39}
+        ]
+      }
+    ],
+    "FM-SYN-013": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 14, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-009": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 10, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-021": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 7, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-067": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 9, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 10, "row": 7, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-068": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 9, "row": 6, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-071": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 9, "row": 9, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-013": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 14, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-009": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 10, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-021": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 22, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-067": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 68, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-068": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 69, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-071": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 72, "header": 1}
+        ]
+      }
+    ],
+    "FTA-SYN-004": [
+      {
+        "path": "test-docs/04_FTA故障树分析报告.docx",
+        "sha256": "2cc34f1102d804990e4d807d3e7eabea4461717d2592ef4fa54fc477cebb9f03",
+        "locators": [
+          {"kind": "table_row", "table": 12, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 12, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 12, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 12, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 13, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 13, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 13, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 13, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 13, "row": 6, "header": 1},
+          {"kind": "table_row", "table": 13, "row": 7, "header": 1},
+          {"kind": "table_row", "table": 13, "row": 8, "header": 1},
+          {"kind": "table_row", "table": 13, "row": 9, "header": 1},
+          {"kind": "table_row", "table": 14, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 14, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 14, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 14, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 14, "row": 6, "header": 1},
+          {"kind": "table_row", "table": 14, "row": 7, "header": 1},
+          {"kind": "table_row", "table": 14, "row": 8, "header": 1},
+          {"kind": "table_row", "table": 14, "row": 9, "header": 1},
+          {"kind": "paragraph", "index": 33}
+        ]
+      }
+    ],
+    "FM-SYN-043": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 7, "row": 2, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-052": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 7, "row": 11, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-050": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 7, "row": 9, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-051": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 7, "row": 10, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-053": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 7, "row": 12, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-043": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 44, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-052": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 53, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-050": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 51, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-051": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 52, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-053": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 54, "header": 1}
+        ]
+      }
+    ],
+    "FTA-SYN-003": [
+      {
+        "path": "test-docs/04_FTA故障树分析报告.docx",
+        "sha256": "2cc34f1102d804990e4d807d3e7eabea4461717d2592ef4fa54fc477cebb9f03",
+        "locators": [
+          {"kind": "table_row", "table": 9, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 9, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 9, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 9, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 10, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 10, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 10, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 10, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 10, "row": 6, "header": 1},
+          {"kind": "table_row", "table": 10, "row": 7, "header": 1},
+          {"kind": "table_row", "table": 10, "row": 8, "header": 1},
+          {"kind": "table_row", "table": 10, "row": 9, "header": 1},
+          {"kind": "table_row", "table": 10, "row": 10, "header": 1},
+          {"kind": "table_row", "table": 10, "row": 11, "header": 1},
+          {"kind": "table_row", "table": 10, "row": 12, "header": 1},
+          {"kind": "table_row", "table": 11, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 11, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 11, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 11, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 11, "row": 6, "header": 1},
+          {"kind": "table_row", "table": 11, "row": 7, "header": 1},
+          {"kind": "table_row", "table": 11, "row": 8, "header": 1},
+          {"kind": "table_row", "table": 11, "row": 9, "header": 1},
+          {"kind": "table_row", "table": 11, "row": 10, "header": 1},
+          {"kind": "paragraph", "index": 27}
+        ]
+      }
+    ],
+    "FM-SYN-034": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 6, "row": 5, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-042": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 6, "row": 13, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-031": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 6, "row": 2, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-032": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 6, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 10, "row": 5, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-033": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 6, "row": 4, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-034": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 35, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-042": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 43, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-031": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 32, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-032": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 33, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-033": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 34, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-069": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 9, "row": 7, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-069": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 70, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-020": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 6, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-023": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 9, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-045": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 7, "row": 4, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-020": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 21, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-023": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 24, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-045": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 46, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-061": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 8, "row": 8, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-062": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 8, "row": 9, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-063": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 8, "row": 10, "header": 1}
+        ]
+      }
+    ],
+    "FTA-SYN-006": [
+      {
+        "path": "test-docs/04_FTA故障树分析报告.docx",
+        "sha256": "2cc34f1102d804990e4d807d3e7eabea4461717d2592ef4fa54fc477cebb9f03",
+        "locators": [
+          {"kind": "table_row", "table": 18, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 18, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 18, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 18, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 19, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 19, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 19, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 19, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 19, "row": 6, "header": 1},
+          {"kind": "table_row", "table": 19, "row": 7, "header": 1},
+          {"kind": "table_row", "table": 19, "row": 8, "header": 1},
+          {"kind": "table_row", "table": 19, "row": 9, "header": 1},
+          {"kind": "table_row", "table": 20, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 20, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 20, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 20, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 20, "row": 6, "header": 1},
+          {"kind": "table_row", "table": 20, "row": 7, "header": 1},
+          {"kind": "table_row", "table": 20, "row": 8, "header": 1},
+          {"kind": "table_row", "table": 20, "row": 9, "header": 1},
+          {"kind": "paragraph", "index": 45}
+        ]
+      }
+    ],
+    "MFL-SYN-061": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 62, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-062": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 63, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-063": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 64, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-065": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 9, "row": 3, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-066": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 9, "row": 4, "header": 1}
+        ]
+      }
+    ],
+    "FTA-SYN-008": [
+      {
+        "path": "test-docs/04_FTA故障树分析报告.docx",
+        "sha256": "2cc34f1102d804990e4d807d3e7eabea4461717d2592ef4fa54fc477cebb9f03",
+        "locators": [
+          {"kind": "table_row", "table": 24, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 24, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 24, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 24, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 25, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 25, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 25, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 25, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 25, "row": 6, "header": 1},
+          {"kind": "table_row", "table": 25, "row": 7, "header": 1},
+          {"kind": "table_row", "table": 25, "row": 8, "header": 1},
+          {"kind": "table_row", "table": 26, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 26, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 26, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 26, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 26, "row": 6, "header": 1},
+          {"kind": "table_row", "table": 26, "row": 7, "header": 1},
+          {"kind": "table_row", "table": 26, "row": 8, "header": 1},
+          {"kind": "paragraph", "index": 57}
+        ]
+      }
+    ],
+    "MFL-SYN-065": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 66, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-066": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 67, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-004": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 5, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-007": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 8, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-019": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 5, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-022": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 8, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-004": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 5, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-007": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 8, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-019": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 20, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-022": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 23, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-014": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 15, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-015": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 16, "header": 1}
+        ]
+      }
+    ],
+    "HIS-SYN-005": [
+      {
+        "path": "test-docs/07_故障历史查询文档.docx",
+        "sha256": "23b2148d8e6ee43febfbca4a11077e3523411a4acedb289ced3cedb59f259883",
+        "locators": [
+          {"kind": "table_row", "table": 7, "row": 1},
+          {"kind": "table_row", "table": 7, "row": 2},
+          {"kind": "table_row", "table": 7, "row": 3},
+          {"kind": "table_row", "table": 7, "row": 4},
+          {"kind": "table_row", "table": 7, "row": 5},
+          {"kind": "table_row", "table": 7, "row": 6},
+          {"kind": "table_row", "table": 7, "row": 7},
+          {"kind": "table_row", "table": 7, "row": 8},
+          {"kind": "table_row", "table": 7, "row": 9},
+          {"kind": "paragraph", "index": 71},
+          {"kind": "paragraph", "index": 72},
+          {"kind": "paragraph", "index": 73},
+          {"kind": "paragraph", "index": 74},
+          {"kind": "paragraph", "index": 76},
+          {"kind": "paragraph", "index": 77},
+          {"kind": "paragraph", "index": 79},
+          {"kind": "paragraph", "index": 81},
+          {"kind": "paragraph", "index": 82},
+          {"kind": "paragraph", "index": 83},
+          {"kind": "paragraph", "index": 84}
+        ]
+      }
+    ],
+    "MFL-SYN-014": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 15, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-015": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 16, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-046": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 7, "row": 5, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-046": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 47, "header": 1}
+        ]
+      }
+    ],
+    "91810003**0001": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 2, "row": 15, "header": 2}
+        ]
+      }
+    ],
+    "HIS-SYN-003": [
+      {
+        "path": "test-docs/07_故障历史查询文档.docx",
+        "sha256": "23b2148d8e6ee43febfbca4a11077e3523411a4acedb289ced3cedb59f259883",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 1},
+          {"kind": "table_row", "table": 5, "row": 2},
+          {"kind": "table_row", "table": 5, "row": 3},
+          {"kind": "table_row", "table": 5, "row": 4},
+          {"kind": "table_row", "table": 5, "row": 5},
+          {"kind": "table_row", "table": 5, "row": 6},
+          {"kind": "table_row", "table": 5, "row": 7},
+          {"kind": "table_row", "table": 5, "row": 8},
+          {"kind": "table_row", "table": 5, "row": 9},
+          {"kind": "paragraph", "index": 41},
+          {"kind": "paragraph", "index": 42},
+          {"kind": "paragraph", "index": 43},
+          {"kind": "paragraph", "index": 44},
+          {"kind": "paragraph", "index": 46},
+          {"kind": "paragraph", "index": 47},
+          {"kind": "paragraph", "index": 49},
+          {"kind": "paragraph", "index": 51},
+          {"kind": "paragraph", "index": 52},
+          {"kind": "paragraph", "index": 53},
+          {"kind": "paragraph", "index": 54}
+        ]
+      }
+    ],
+    "91820001**0002": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 4, "header": 2}
+        ]
+      }
+    ],
+    "91820002**0001": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 9, "header": 2}
+        ]
+      }
+    ],
+    "HIS-SYN-007": [
+      {
+        "path": "test-docs/07_故障历史查询文档.docx",
+        "sha256": "23b2148d8e6ee43febfbca4a11077e3523411a4acedb289ced3cedb59f259883",
+        "locators": [
+          {"kind": "table_row", "table": 9, "row": 1},
+          {"kind": "table_row", "table": 9, "row": 2},
+          {"kind": "table_row", "table": 9, "row": 3},
+          {"kind": "table_row", "table": 9, "row": 4},
+          {"kind": "table_row", "table": 9, "row": 5},
+          {"kind": "table_row", "table": 9, "row": 6},
+          {"kind": "table_row", "table": 9, "row": 7},
+          {"kind": "table_row", "table": 9, "row": 8},
+          {"kind": "table_row", "table": 9, "row": 9},
+          {"kind": "paragraph", "index": 101},
+          {"kind": "paragraph", "index": 102},
+          {"kind": "paragraph", "index": 103},
+          {"kind": "paragraph", "index": 104},
+          {"kind": "paragraph", "index": 106},
+          {"kind": "paragraph", "index": 107},
+          {"kind": "paragraph", "index": 109},
+          {"kind": "paragraph", "index": 111},
+          {"kind": "paragraph", "index": 112},
+          {"kind": "paragraph", "index": 113},
+          {"kind": "paragraph", "index": 114}
+        ]
+      }
+    ],
+    "FM-SYN-026": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 12, "header": 1}
+        ]
+      }
+    ],
+    "HIS-SYN-009": [
+      {
+        "path": "test-docs/07_故障历史查询文档.docx",
+        "sha256": "23b2148d8e6ee43febfbca4a11077e3523411a4acedb289ced3cedb59f259883",
+        "locators": [
+          {"kind": "table_row", "table": 11, "row": 1},
+          {"kind": "table_row", "table": 11, "row": 2},
+          {"kind": "table_row", "table": 11, "row": 3},
+          {"kind": "table_row", "table": 11, "row": 4},
+          {"kind": "table_row", "table": 11, "row": 5},
+          {"kind": "table_row", "table": 11, "row": 6},
+          {"kind": "table_row", "table": 11, "row": 7},
+          {"kind": "table_row", "table": 11, "row": 8},
+          {"kind": "table_row", "table": 11, "row": 9},
+          {"kind": "paragraph", "index": 131},
+          {"kind": "paragraph", "index": 132},
+          {"kind": "paragraph", "index": 133},
+          {"kind": "paragraph", "index": 134},
+          {"kind": "paragraph", "index": 136},
+          {"kind": "paragraph", "index": 137},
+          {"kind": "paragraph", "index": 139},
+          {"kind": "paragraph", "index": 141},
+          {"kind": "paragraph", "index": 142},
+          {"kind": "paragraph", "index": 143},
+          {"kind": "paragraph", "index": 144}
+        ]
+      }
+    ],
+    "MFL-SYN-026": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 27, "header": 1}
+        ]
+      }
+    ],
+    "91820004**0001": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 21, "header": 2}
+        ]
+      }
+    ],
+    "91820004**0002": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 22, "header": 2}
+        ]
+      }
+    ],
+    "91820004**0003": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 23, "header": 2}
+        ]
+      }
+    ],
+    "91820004010125": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 24, "header": 2}
+        ]
+      }
+    ],
+    "91820004010127": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 25, "header": 2}
+        ]
+      }
+    ],
+    "91820004020126": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 26, "header": 2}
+        ]
+      }
+    ],
+    "FM-SYN-028": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 14, "header": 1}
+        ]
+      }
+    ],
+    "HIS-SYN-010": [
+      {
+        "path": "test-docs/07_故障历史查询文档.docx",
+        "sha256": "23b2148d8e6ee43febfbca4a11077e3523411a4acedb289ced3cedb59f259883",
+        "locators": [
+          {"kind": "table_row", "table": 12, "row": 1},
+          {"kind": "table_row", "table": 12, "row": 2},
+          {"kind": "table_row", "table": 12, "row": 3},
+          {"kind": "table_row", "table": 12, "row": 4},
+          {"kind": "table_row", "table": 12, "row": 5},
+          {"kind": "table_row", "table": 12, "row": 6},
+          {"kind": "table_row", "table": 12, "row": 7},
+          {"kind": "table_row", "table": 12, "row": 8},
+          {"kind": "table_row", "table": 12, "row": 9},
+          {"kind": "paragraph", "index": 146},
+          {"kind": "paragraph", "index": 147},
+          {"kind": "paragraph", "index": 148},
+          {"kind": "paragraph", "index": 149},
+          {"kind": "paragraph", "index": 151},
+          {"kind": "paragraph", "index": 152},
+          {"kind": "paragraph", "index": 154},
+          {"kind": "paragraph", "index": 156},
+          {"kind": "paragraph", "index": 157},
+          {"kind": "paragraph", "index": 158},
+          {"kind": "paragraph", "index": 159}
+        ]
+      }
+    ],
+    "MFL-SYN-028": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 29, "header": 1}
+        ]
+      }
+    ],
+    "91820005**0001": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 27, "header": 2}
+        ]
+      }
+    ],
+    "91820005**0002": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 28, "header": 2}
+        ]
+      }
+    ],
+    "91820005**0003": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 29, "header": 2}
+        ]
+      }
+    ],
+    "91820005020128": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 30, "header": 2}
+        ]
+      }
+    ],
+    "HIS-SYN-011": [
+      {
+        "path": "test-docs/07_故障历史查询文档.docx",
+        "sha256": "23b2148d8e6ee43febfbca4a11077e3523411a4acedb289ced3cedb59f259883",
+        "locators": [
+          {"kind": "table_row", "table": 13, "row": 1},
+          {"kind": "table_row", "table": 13, "row": 2},
+          {"kind": "table_row", "table": 13, "row": 3},
+          {"kind": "table_row", "table": 13, "row": 4},
+          {"kind": "table_row", "table": 13, "row": 5},
+          {"kind": "table_row", "table": 13, "row": 6},
+          {"kind": "table_row", "table": 13, "row": 7},
+          {"kind": "table_row", "table": 13, "row": 8},
+          {"kind": "table_row", "table": 13, "row": 9},
+          {"kind": "paragraph", "index": 161},
+          {"kind": "paragraph", "index": 162},
+          {"kind": "paragraph", "index": 163},
+          {"kind": "paragraph", "index": 164},
+          {"kind": "paragraph", "index": 166},
+          {"kind": "paragraph", "index": 167},
+          {"kind": "paragraph", "index": 169},
+          {"kind": "paragraph", "index": 171},
+          {"kind": "paragraph", "index": 172},
+          {"kind": "paragraph", "index": 173},
+          {"kind": "paragraph", "index": 174}
+        ]
+      }
+    ],
+    "91830001**0001": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 3, "header": 2}
+        ]
+      }
+    ],
+    "91830001**0002": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 4, "header": 2}
+        ]
+      }
+    ],
+    "91830001**0003": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 5, "header": 2}
+        ]
+      }
+    ],
+    "FM-SYN-047": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 7, "row": 6, "header": 1}
+        ]
+      }
+    ],
+    "HIS-SYN-016": [
+      {
+        "path": "test-docs/07_故障历史查询文档.docx",
+        "sha256": "23b2148d8e6ee43febfbca4a11077e3523411a4acedb289ced3cedb59f259883",
+        "locators": [
+          {"kind": "table_row", "table": 18, "row": 1},
+          {"kind": "table_row", "table": 18, "row": 2},
+          {"kind": "table_row", "table": 18, "row": 3},
+          {"kind": "table_row", "table": 18, "row": 4},
+          {"kind": "table_row", "table": 18, "row": 5},
+          {"kind": "table_row", "table": 18, "row": 6},
+          {"kind": "table_row", "table": 18, "row": 7},
+          {"kind": "table_row", "table": 18, "row": 8},
+          {"kind": "table_row", "table": 18, "row": 9},
+          {"kind": "paragraph", "index": 236},
+          {"kind": "paragraph", "index": 237},
+          {"kind": "paragraph", "index": 238},
+          {"kind": "paragraph", "index": 239},
+          {"kind": "paragraph", "index": 241},
+          {"kind": "paragraph", "index": 242},
+          {"kind": "paragraph", "index": 244},
+          {"kind": "paragraph", "index": 246},
+          {"kind": "paragraph", "index": 247},
+          {"kind": "paragraph", "index": 248},
+          {"kind": "paragraph", "index": 249}
+        ]
+      }
+    ],
+    "MFL-SYN-047": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 48, "header": 1}
+        ]
+      }
+    ],
+    "91840002**0001": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 6, "header": 2}
+        ]
+      }
+    ],
+    "91840002**0002": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 7, "header": 2}
+        ]
+      }
+    ],
+    "91840002**0003": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 8, "header": 2}
+        ]
+      }
+    ],
+    "HIS-SYN-018": [
+      {
+        "path": "test-docs/07_故障历史查询文档.docx",
+        "sha256": "23b2148d8e6ee43febfbca4a11077e3523411a4acedb289ced3cedb59f259883",
+        "locators": [
+          {"kind": "table_row", "table": 20, "row": 1},
+          {"kind": "table_row", "table": 20, "row": 2},
+          {"kind": "table_row", "table": 20, "row": 3},
+          {"kind": "table_row", "table": 20, "row": 4},
+          {"kind": "table_row", "table": 20, "row": 5},
+          {"kind": "table_row", "table": 20, "row": 6},
+          {"kind": "table_row", "table": 20, "row": 7},
+          {"kind": "table_row", "table": 20, "row": 8},
+          {"kind": "table_row", "table": 20, "row": 9},
+          {"kind": "paragraph", "index": 266},
+          {"kind": "paragraph", "index": 267},
+          {"kind": "paragraph", "index": 268},
+          {"kind": "paragraph", "index": 269},
+          {"kind": "paragraph", "index": 271},
+          {"kind": "paragraph", "index": 272},
+          {"kind": "paragraph", "index": 274},
+          {"kind": "paragraph", "index": 276},
+          {"kind": "paragraph", "index": 277},
+          {"kind": "paragraph", "index": 278},
+          {"kind": "paragraph", "index": 279}
+        ]
+      }
+    ],
+    "91840004**0001": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 12, "header": 2}
+        ]
+      }
+    ],
+    "91840004**0002": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 13, "header": 2}
+        ]
+      }
+    ],
+    "91840004**0003": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 14, "header": 2}
+        ]
+      }
+    ],
+    "FM-SYN-059": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 8, "row": 6, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-058": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 8, "row": 5, "header": 1}
+        ]
+      }
+    ],
+    "HIS-SYN-020": [
+      {
+        "path": "test-docs/07_故障历史查询文档.docx",
+        "sha256": "23b2148d8e6ee43febfbca4a11077e3523411a4acedb289ced3cedb59f259883",
+        "locators": [
+          {"kind": "table_row", "table": 22, "row": 1},
+          {"kind": "table_row", "table": 22, "row": 2},
+          {"kind": "table_row", "table": 22, "row": 3},
+          {"kind": "table_row", "table": 22, "row": 4},
+          {"kind": "table_row", "table": 22, "row": 5},
+          {"kind": "table_row", "table": 22, "row": 6},
+          {"kind": "table_row", "table": 22, "row": 7},
+          {"kind": "table_row", "table": 22, "row": 8},
+          {"kind": "table_row", "table": 22, "row": 9},
+          {"kind": "paragraph", "index": 296},
+          {"kind": "paragraph", "index": 297},
+          {"kind": "paragraph", "index": 298},
+          {"kind": "paragraph", "index": 299},
+          {"kind": "paragraph", "index": 301},
+          {"kind": "paragraph", "index": 302},
+          {"kind": "paragraph", "index": 304},
+          {"kind": "paragraph", "index": 306},
+          {"kind": "paragraph", "index": 307},
+          {"kind": "paragraph", "index": 308},
+          {"kind": "paragraph", "index": 309}
+        ]
+      }
+    ],
+    "MFL-SYN-059": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 60, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-058": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 59, "header": 1}
+        ]
+      }
+    ],
+    "91850002**0001": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 6, "row": 6, "header": 2}
+        ]
+      }
+    ],
+    "91850002**0002": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 6, "row": 7, "header": 2}
+        ]
+      }
+    ],
+    "91850002**0003": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 6, "row": 8, "header": 2}
+        ]
+      }
+    ],
+    "91820001**0003": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 5, "header": 2}
+        ]
+      }
+    ],
+    "91820003**0001": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 15, "header": 2}
+        ]
+      }
+    ],
+    "91820003**0002": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 16, "header": 2}
+        ]
+      }
+    ],
+    "91820003010123": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 18, "header": 2}
+        ]
+      }
+    ],
+    "91820003020122": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 19, "header": 2}
+        ]
+      }
+    ],
+    "91820003020124": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 20, "header": 2}
+        ]
+      }
+    ],
+    "FM-SYN-027": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 13, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-027": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 28, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-035": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 6, "row": 6, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-035": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 36, "header": 1}
+        ]
+      }
+    ],
+    "91830002**0001": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 6, "header": 2}
+        ]
+      }
+    ],
+    "91830002**0002": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 7, "header": 2}
+        ]
+      }
+    ],
+    "91830002**0003": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 8, "header": 2}
+        ]
+      }
+    ],
+    "91830004**0003": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 14, "header": 2}
+        ]
+      }
+    ],
+    "FM-SYN-056": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 8, "row": 3, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-057": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 8, "row": 4, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-056": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 57, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-057": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 58, "header": 1}
+        ]
+      }
+    ],
+    "91850001**0001": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 6, "row": 3, "header": 2}
+        ]
+      }
+    ],
+    "91850001**0002": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 6, "row": 4, "header": 2}
+        ]
+      }
+    ],
+    "91850001**0003": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 6, "row": 5, "header": 2}
+        ]
+      }
+    ],
+    "91850003**0001": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 6, "row": 9, "header": 2}
+        ]
+      }
+    ],
+    "91850003**0002": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 6, "row": 10, "header": 2}
+        ]
+      }
+    ],
+    "91850003**0003": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 6, "row": 11, "header": 2}
+        ]
+      }
+    ],
+    "FUNC-110": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 3, "header": 1}
+        ]
+      }
+    ],
+    "FTA-SYN-002": [
+      {
+        "path": "test-docs/04_FTA故障树分析报告.docx",
+        "sha256": "2cc34f1102d804990e4d807d3e7eabea4461717d2592ef4fa54fc477cebb9f03",
+        "locators": [
+          {"kind": "table_row", "table": 6, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 6, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 6, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 6, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 6, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 7, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 8, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 9, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 10, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 11, "header": 1},
+          {"kind": "table_row", "table": 8, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 8, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 8, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 8, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 8, "row": 6, "header": 1},
+          {"kind": "table_row", "table": 8, "row": 7, "header": 1},
+          {"kind": "table_row", "table": 8, "row": 8, "header": 1},
+          {"kind": "table_row", "table": 8, "row": 9, "header": 1},
+          {"kind": "table_row", "table": 8, "row": 10, "header": 1},
+          {"kind": "paragraph", "index": 21}
+        ]
+      }
+    ],
+    "FUNC-220": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 10, "header": 1}
+        ]
+      }
+    ],
+    "FUNC-221": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 11, "header": 1}
+        ]
+      }
+    ],
+    "FUNC-420": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 21, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-055": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 8, "row": 2, "header": 1}
+        ]
+      }
+    ],
+    "FUNC-510": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 25, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-055": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 56, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-060": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 8, "row": 7, "header": 1}
+        ]
+      }
+    ],
+    "FUNC-520": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 26, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-060": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 61, "header": 1}
+        ]
+      }
+    ],
+    "FUNC-630": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 31, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-003": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 4, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-005": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 6, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-012": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 13, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-039": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 40, "header": 1}
+        ]
+      }
+    ],
+    "HIS-SYN-017": [
+      {
+        "path": "test-docs/07_故障历史查询文档.docx",
+        "sha256": "23b2148d8e6ee43febfbca4a11077e3523411a4acedb289ced3cedb59f259883",
+        "locators": [
+          {"kind": "table_row", "table": 19, "row": 1},
+          {"kind": "table_row", "table": 19, "row": 2},
+          {"kind": "table_row", "table": 19, "row": 3},
+          {"kind": "table_row", "table": 19, "row": 4},
+          {"kind": "table_row", "table": 19, "row": 5},
+          {"kind": "table_row", "table": 19, "row": 6},
+          {"kind": "table_row", "table": 19, "row": 7},
+          {"kind": "table_row", "table": 19, "row": 8},
+          {"kind": "table_row", "table": 19, "row": 9},
+          {"kind": "paragraph", "index": 251},
+          {"kind": "paragraph", "index": 252},
+          {"kind": "paragraph", "index": 253},
+          {"kind": "paragraph", "index": 254},
+          {"kind": "paragraph", "index": 256},
+          {"kind": "paragraph", "index": 257},
+          {"kind": "paragraph", "index": 259},
+          {"kind": "paragraph", "index": 261},
+          {"kind": "paragraph", "index": 262},
+          {"kind": "paragraph", "index": 263},
+          {"kind": "paragraph", "index": 264}
+        ]
+      }
+    ],
+    "HIS-SYN-006": [
+      {
+        "path": "test-docs/07_故障历史查询文档.docx",
+        "sha256": "23b2148d8e6ee43febfbca4a11077e3523411a4acedb289ced3cedb59f259883",
+        "locators": [
+          {"kind": "table_row", "table": 8, "row": 1},
+          {"kind": "table_row", "table": 8, "row": 2},
+          {"kind": "table_row", "table": 8, "row": 3},
+          {"kind": "table_row", "table": 8, "row": 4},
+          {"kind": "table_row", "table": 8, "row": 5},
+          {"kind": "table_row", "table": 8, "row": 6},
+          {"kind": "table_row", "table": 8, "row": 7},
+          {"kind": "table_row", "table": 8, "row": 8},
+          {"kind": "table_row", "table": 8, "row": 9},
+          {"kind": "paragraph", "index": 86},
+          {"kind": "paragraph", "index": 87},
+          {"kind": "paragraph", "index": 88},
+          {"kind": "paragraph", "index": 89},
+          {"kind": "paragraph", "index": 91},
+          {"kind": "paragraph", "index": 92},
+          {"kind": "paragraph", "index": 94},
+          {"kind": "paragraph", "index": 96},
+          {"kind": "paragraph", "index": 97},
+          {"kind": "paragraph", "index": 98},
+          {"kind": "paragraph", "index": 99}
+        ]
+      }
+    ],
+    "SUB-PWR": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 2, "header": 1}
+        ]
+      }
+    ],
+    "FUNC-100": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 5, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 5, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 5, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 5, "row": 6, "header": 1},
+          {"kind": "table_row", "table": 5, "row": 7, "header": 1}
+        ]
+      }
+    ],
+    "FUNC-130": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 6, "header": 1}
+        ]
+      }
+    ],
+    "FUNC-140": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 7, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-012": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 13, "header": 1}
+        ]
+      }
+    ],
+    "FUNC-310": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 15, "header": 1}
+        ]
+      }
+    ],
+    "FUNC-311": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 16, "header": 1}
+        ]
+      }
+    ],
+    "FUNC-320": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 17, "header": 1}
+        ]
+      }
+    ],
+    "FUNC-330": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 18, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-041": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 6, "row": 12, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-041": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 42, "header": 1}
+        ]
+      }
+    ],
+    "SUB-DSP": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 5, "header": 1}
+        ]
+      }
+    ],
+    "FUNC-410": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 20, "header": 1}
+        ]
+      }
+    ],
+    "FUNC-440": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 23, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-044": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 7, "row": 3, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-048": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 7, "row": 7, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-054": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 7, "row": 13, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-044": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 45, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-048": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 49, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-054": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 55, "header": 1}
+        ]
+      }
+    ],
+    "SUB-HMS": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 6, "header": 1}
+        ]
+      }
+    ],
+    "FUNC-530": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 27, "header": 1}
+        ]
+      }
+    ],
+    "SUB-TCS": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 7, "header": 1}
+        ]
+      }
+    ],
+    "FUNC-620": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 30, "header": 1}
+        ]
+      }
+    ],
+    "SUB-GPP": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 3, "header": 1}
+        ]
+      }
+    ],
+    "RBD-SYN-001": [
+      {
+        "path": "test-docs/05_RBD可靠性框图分析报告.docx",
+        "sha256": "92f87eb19ba1cbf51da87970cadcc9463a235b77f74874d2c0d83e3a09dede7b",
+        "locators": [
+          {"kind": "paragraph", "index": 10},
+          {"kind": "paragraph", "index": 11},
+          {"kind": "paragraph", "index": 12},
+          {"kind": "paragraph", "index": 17},
+          {"kind": "table_row", "table": 3, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 3, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 3, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 3, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 3, "row": 6, "header": 1},
+          {"kind": "table_row", "table": 4, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 4, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 4, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 4, "row": 5, "header": 1}
+        ]
+      }
+    ],
+    "RBD-SYN-002": [
+      {
+        "path": "test-docs/05_RBD可靠性框图分析报告.docx",
+        "sha256": "92f87eb19ba1cbf51da87970cadcc9463a235b77f74874d2c0d83e3a09dede7b",
+        "locators": [
+          {"kind": "paragraph", "index": 18},
+          {"kind": "paragraph", "index": 19},
+          {"kind": "paragraph", "index": 20},
+          {"kind": "paragraph", "index": 25},
+          {"kind": "table_row", "table": 5, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 5, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 5, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 5, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 5, "row": 6, "header": 1},
+          {"kind": "table_row", "table": 5, "row": 7, "header": 1},
+          {"kind": "table_row", "table": 5, "row": 8, "header": 1},
+          {"kind": "table_row", "table": 5, "row": 9, "header": 1},
+          {"kind": "table_row", "table": 6, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 6, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 6, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 6, "row": 5, "header": 1}
+        ]
+      }
+    ],
+    "RBD-SYN-003": [
+      {
+        "path": "test-docs/05_RBD可靠性框图分析报告.docx",
+        "sha256": "92f87eb19ba1cbf51da87970cadcc9463a235b77f74874d2c0d83e3a09dede7b",
+        "locators": [
+          {"kind": "paragraph", "index": 26},
+          {"kind": "paragraph", "index": 27},
+          {"kind": "paragraph", "index": 28},
+          {"kind": "paragraph", "index": 33},
+          {"kind": "table_row", "table": 7, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 6, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 7, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 8, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 9, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 10, "header": 1},
+          {"kind": "table_row", "table": 8, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 8, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 8, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 8, "row": 5, "header": 1}
+        ]
+      }
+    ],
+    "RBD-SYN-004": [
+      {
+        "path": "test-docs/05_RBD可靠性框图分析报告.docx",
+        "sha256": "92f87eb19ba1cbf51da87970cadcc9463a235b77f74874d2c0d83e3a09dede7b",
+        "locators": [
+          {"kind": "paragraph", "index": 34},
+          {"kind": "paragraph", "index": 35},
+          {"kind": "paragraph", "index": 36},
+          {"kind": "paragraph", "index": 41},
+          {"kind": "table_row", "table": 9, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 9, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 9, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 9, "row": 5, "header": 1},
+          {"kind": "table_row", "table": 9, "row": 6, "header": 1},
+          {"kind": "table_row", "table": 9, "row": 7, "header": 1},
+          {"kind": "table_row", "table": 9, "row": 8, "header": 1},
+          {"kind": "table_row", "table": 9, "row": 9, "header": 1},
+          {"kind": "table_row", "table": 9, "row": 10, "header": 1},
+          {"kind": "table_row", "table": 9, "row": 11, "header": 1},
+          {"kind": "table_row", "table": 10, "row": 2, "header": 1},
+          {"kind": "table_row", "table": 10, "row": 3, "header": 1},
+          {"kind": "table_row", "table": 10, "row": 4, "header": 1},
+          {"kind": "table_row", "table": 10, "row": 5, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-003": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 4, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-005": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 6, "header": 1}
+        ]
+      }
+    ],
+    "HIS-SYN-002": [
+      {
+        "path": "test-docs/07_故障历史查询文档.docx",
+        "sha256": "23b2148d8e6ee43febfbca4a11077e3523411a4acedb289ced3cedb59f259883",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 1},
+          {"kind": "table_row", "table": 4, "row": 2},
+          {"kind": "table_row", "table": 4, "row": 3},
+          {"kind": "table_row", "table": 4, "row": 4},
+          {"kind": "table_row", "table": 4, "row": 5},
+          {"kind": "table_row", "table": 4, "row": 6},
+          {"kind": "table_row", "table": 4, "row": 7},
+          {"kind": "table_row", "table": 4, "row": 8},
+          {"kind": "table_row", "table": 4, "row": 9},
+          {"kind": "paragraph", "index": 26},
+          {"kind": "paragraph", "index": 27},
+          {"kind": "paragraph", "index": 28},
+          {"kind": "paragraph", "index": 29},
+          {"kind": "paragraph", "index": 31},
+          {"kind": "paragraph", "index": 32},
+          {"kind": "paragraph", "index": 34},
+          {"kind": "paragraph", "index": 36},
+          {"kind": "paragraph", "index": 37},
+          {"kind": "paragraph", "index": 38},
+          {"kind": "paragraph", "index": 39}
+        ]
+      }
+    ],
+    "FUNC-230": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 5, "row": 12, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-008": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 9, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-008": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 9, "header": 1}
+        ]
+      }
+    ],
+    "91810002**0001": [
+      {
+        "path": "test-docs/02_HMC故障代码手册.docx",
+        "sha256": "c08f99e47794a8f6e7c582d6360437a50ddb737c6643989041d94c3f1b9f4bc4",
+        "locators": [
+          {"kind": "table_row", "table": 2, "row": 9, "header": 2}
+        ]
+      }
+    ],
+    "MOD-GPP-MSM": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 10, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 10, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-037": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 6, "row": 8, "header": 1}
+        ]
+      }
+    ],
+    "FM-SYN-039": [
+      {
+        "path": "test-docs/03_FMECA分析报告.docx",
+        "sha256": "3c72ddf51953066b49d35936bf7ba72d8e74e3e107535ff41eb76a6c1e8909e4",
+        "locators": [
+          {"kind": "table_row", "table": 6, "row": 10, "header": 1}
+        ]
+      }
+    ],
+    "MFL-SYN-037": [
+      {
+        "path": "test-docs/06_MFL维修故障清单.docx",
+        "sha256": "d6dd47f0962b50b188789d17a4e967fb021964383ecd2771b1041f7e55dcd966",
+        "locators": [
+          {"kind": "table_row", "table": 3, "row": 38, "header": 1}
+        ]
+      }
+    ],
+    "MOD-IFC-NGW": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 14, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 14, "header": 1}
+        ]
+      }
+    ],
+    "MOD-IFC-BCA": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 12, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 12, "header": 1}
+        ]
+      }
+    ],
+    "MOD-IFC-BCB": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 13, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 13, "header": 1}
+        ]
+      }
+    ],
+    "MOD-IFC-PCU": [
+      {
+        "path": "test-docs/01_系统架构与功能说明.docx",
+        "sha256": "dd20b3773e93f2dafbb410dbf58a1d19a0219d3e00916861705b6ca723043943",
+        "locators": [
+          {"kind": "table_row", "table": 4, "row": 15, "header": 1},
+          {"kind": "table_row", "table": 7, "row": 15, "header": 1}
+        ]
+      }
+    ]
+  }
+}

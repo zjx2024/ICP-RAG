@@ -193,12 +193,85 @@ class _HugeGraph:
 class _Postgres:
     def __init__(self):
         self.statuses = []
+        self.result_patches = []
 
     def update_icp_document_status(self, doc_id, status):
         self.statuses.append((doc_id, status))
 
+    def patch_icp_document_result(self, doc_id, result_patch):
+        self.result_patches.append((doc_id, result_patch))
+
 
 class DiagramProjectionPureTests(unittest.TestCase):
+    def test_diagram_lifecycle_keeps_master_without_revision_pending(self):
+        class Repository:
+            def list_diagrams_by_document(self, doc_id):
+                return [
+                    {"diagram_id": "published", "diagram_type": "function_locator"},
+                    {"diagram_id": "isolated", "diagram_type": "function_locator"},
+                    {"diagram_id": "empty", "diagram_type": "function_locator"},
+                    {"diagram_id": "other", "diagram_type": "fta"},
+                ]
+
+            def list_revisions(self, diagram_id):
+                if diagram_id == "published":
+                    return [
+                        {
+                            "validation_status": "provisional",
+                            "projection_status": "published",
+                            "is_active": True,
+                        }
+                    ]
+                if diagram_id == "isolated":
+                    return [
+                        {
+                            "validation_status": "quarantined",
+                            "projection_status": "not_projected",
+                            "is_active": False,
+                        }
+                    ]
+                if diagram_id == "other":
+                    return [{"validation_status": "pending"}]
+                return []
+
+        with patch.object(kg_service, "diagram_repository", Repository()):
+            summary = kg_service._diagram_lifecycle_summary(
+                "doc-1", "function_locator"
+            )
+
+        self.assertEqual(
+            {
+                "total": 3,
+                "published": 1,
+                "quarantined": 1,
+                "no_explicit_structure": 0,
+                "unresolved_without_revision": 1,
+                "pending": 1,
+                "terminal": False,
+            },
+            summary,
+        )
+
+    def test_diagram_lifecycle_keeps_unresolved_latest_revision_pending(self):
+        class Repository:
+            def list_diagrams_by_document(self, doc_id):
+                return [{"diagram_id": "pending", "diagram_type": "rbd"}]
+
+            def list_revisions(self, diagram_id):
+                return [
+                    {
+                        "validation_status": "provisional",
+                        "projection_status": "failed",
+                        "is_active": False,
+                    }
+                ]
+
+        with patch.object(kg_service, "diagram_repository", Repository()):
+            summary = kg_service._diagram_lifecycle_summary("doc-1", "rbd")
+
+        self.assertFalse(summary["terminal"])
+        self.assertEqual(1, summary["pending"])
+
     def test_candidate_evidence_urls_ignore_storage_keys_and_unsafe_values(self):
         urls = types_router._candidate_evidence_image_urls(
             [
@@ -315,6 +388,68 @@ class DiagramProjectionPureTests(unittest.TestCase):
 
 
 class DiagramProjectionBackgroundTests(unittest.IsolatedAsyncioTestCase):
+    async def test_published_and_quarantined_do_not_hide_missing_revision(self):
+        revision = _revision()
+
+        class Repository(_ProjectionRepository):
+            def list_diagrams_by_document(self, doc_id):
+                return [
+                    {"diagram_id": "diagram-1", "diagram_type": "fta"},
+                    {"diagram_id": "diagram-2", "diagram_type": "fta"},
+                    {"diagram_id": "diagram-3", "diagram_type": "fta"},
+                ]
+
+            def list_revisions(self, diagram_id):
+                if diagram_id == "diagram-1":
+                    return [dict(self.revision)]
+                if diagram_id == "diagram-2":
+                    return [
+                        {
+                            "validation_status": "quarantined",
+                            "projection_status": "not_projected",
+                            "is_active": False,
+                        }
+                    ]
+                return []
+
+        repository = Repository(revision)
+        graph = _HugeGraph()
+        tasks = _TaskManager()
+        postgres = _Postgres()
+        with patch.object(kg_service, "diagram_repository", repository), patch.object(
+            kg_service, "hugegraph_client", graph
+        ), patch.object(kg_service, "task_manager", tasks), patch.object(
+            kg_service, "postgres_client", postgres
+        ):
+            await kg_service.generate_icp_kg_background(
+                "task-1",
+                "doc-1",
+                "fta",
+                "fta.docx",
+                revision_ids=["revision-2"],
+            )
+
+        self.assertEqual("kg_pending", tasks.result["status"])
+        self.assertEqual(
+            {
+                "total": 3,
+                "published": 1,
+                "quarantined": 1,
+                "no_explicit_structure": 0,
+                "unresolved_without_revision": 1,
+                "pending": 1,
+                "terminal": False,
+            },
+            tasks.result["diagram_lifecycle"],
+        )
+        self.assertEqual(("doc-1", "kg_pending"), postgres.statuses[-1])
+        self.assertEqual("doc-1", postgres.result_patches[-1][0])
+        self.assertTrue(postgres.result_patches[-1][1]["kg_pending"])
+        self.assertEqual(
+            tasks.result["diagram_lifecycle"],
+            postgres.result_patches[-1][1]["graph_projection"]["diagram_lifecycle"],
+        )
+
     async def test_complete_pipeline_refreshes_common_graph_after_activation(self):
         revision = _revision()
         repository = _ProjectionRepository(revision)

@@ -100,8 +100,10 @@ class AgentDBReadTransactionTests(unittest.TestCase):
         )
         self.assertIn("evidence_catalog", insert[0])
         self.assertIn("delivered_answer_fields", insert[0])
-        # 新增的 delivered_answer_fields 位于参数末尾；evidence_catalog 是倒数第二列
-        self.assertEqual(evidence_catalog, json.loads(insert[1][-2]))
+        self.assertIn("answer_delivery_manifest", insert[0])
+        # 对象级交付清单位于末尾；兼容字段和证据目录依次在其前面。
+        self.assertEqual(evidence_catalog, json.loads(insert[1][-3]))
+        self.assertIsNone(insert[1][-2])
         self.assertIsNone(insert[1][-1])
         self.assertEqual(citations, result["citations"])
         self.assertEqual(evidence_catalog, result["evidence_catalog"])
@@ -117,6 +119,20 @@ class AgentDBReadTransactionTests(unittest.TestCase):
             " ".join(sql.split())
             for sql, _params in connection.executions
             if "ADD COLUMN IF NOT EXISTS evidence_catalog" in sql
+        ]
+        self.assertEqual(1, len(migration_sql))
+
+    def test_init_tables_adds_answer_delivery_manifest_idempotently(self):
+        connection = _FakeConnection()
+        with patch("backend.agent.db.postgres_client.conn", connection):
+            database = AgentDB()
+            database.init_tables()
+            database.init_tables()
+
+        migration_sql = [
+            " ".join(sql.split())
+            for sql, _params in connection.executions
+            if "ADD COLUMN IF NOT EXISTS answer_delivery_manifest" in sql
         ]
         self.assertEqual(1, len(migration_sql))
 

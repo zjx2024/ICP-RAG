@@ -177,6 +177,36 @@ def deterministic_graph_source_ref(graph: Mapping[str, Any]) -> str:
     return ""
 
 
+def explicit_fta_gate_relations(graph: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    """Project explicit adjacency and gate labels, never cut sets/probability.
+
+    Callers must enforce formal graph authority. Keeping operands attached to
+    their gate avoids reducing a mixed AND/OR tree to a bag of event names.
+    Ambiguous/missing operators are not silently replaced by OR.
+    """
+    vertices = _vertices(graph)
+    by_id = {str(node.get("id")): node for node in vertices if node.get("id") is not None}
+    outgoing: Dict[str, List[Dict[str, Any]]] = {}
+    for edge in _edges(graph):
+        source, target = str(edge.get("source") or ""), str(edge.get("target") or "")
+        if source not in by_id or target not in by_id:
+            return []
+        outgoing.setdefault(source, []).append(edge)
+    relations: List[Dict[str, Any]] = []
+    for source, edges in outgoing.items():
+        node = by_id[source]
+        properties = _properties(node)
+        operators = {str(value).strip().upper() for value in (
+            properties.get("gate_type"), properties.get("type"),
+            *(_properties(edge).get("gate_type") for edge in edges),
+        ) if str(value or "").strip().upper() in {"AND", "OR", "XOR"}}
+        if len(operators) != 1:
+            return []
+        relations.append({"event_id": source, "event_name": _node_name(node), "gate_type": next(iter(operators)),
+            "inputs": [{"event_id": str(edge["target"]), "event_name": _node_name(by_id[str(edge["target"])])} for edge in edges]})
+    return relations
+
+
 def summarize_graph_structure(
     graph: Mapping[str, Any],
     *,
@@ -221,9 +251,8 @@ def summarize_graph_structure(
         if gate_types:
             parts.append(f"逻辑门：{_with_total(gate_types, gate_total)}")
         if event_excerpts:
-            # 摘要只报基本事件数量，不把 name（description）明细列给回答模型：
-            # 明细交由 _ensure_fta_structure_only_completeness 从图确定性补全，
-            # 否则模型会把同一列举复述成重复段落（或把 {‘name’: …} 抄成字面量）。
+            # Compact UI summary. The answer model receives structured event
+            # and gate fields separately; no terminal prose appender is needed.
             parts.append(f"基本事件共 {event_total} 项")
         if modeling_assumption:
             parts.append(f"建模说明：{modeling_assumption}")

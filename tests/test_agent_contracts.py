@@ -1,17 +1,44 @@
 import unittest
 
-from backend.agent.answer_contract import focused_answer_contract
+from backend.agent.answer_contract import (
+    focused_answer_contract,
+    normalize_answer_fields,
+    required_answer_fields,
+)
 from backend.agent.contracts import (
+    EXACT_MATCH_TYPES,
     answer_mode_for_intent,
+    binding_basis_rank,
     deduplicate_evidence,
     evidence_identity,
     make_evidence,
     make_tool_result,
+    match_type_is_exact,
+    match_type_precision,
 )
 from backend.agent.state import create_initial_state
 
 
 class EvidenceContractTests(unittest.TestCase):
+    def test_free_form_facets_never_expand_answer_or_tool_obligations(self):
+        for facets in (
+            ["可靠性"],
+            ["严酷度与影响"],
+            ["成功路径和冗余"],
+            ["换一种说法询问同一件事"],
+        ):
+            with self.subTest(facets=facets):
+                self.assertEqual(
+                    [],
+                    normalize_answer_fields([], requested_facets=facets),
+                )
+                self.assertEqual(
+                    [],
+                    required_answer_fields(
+                        {"query_frame": {"requested_facets": facets}}
+                    ),
+                )
+
     def test_initial_symptom_diagnosis_is_not_narrowed_by_one_field(self):
         state = {
             "intent": "symptom_diagnosis",
@@ -21,6 +48,15 @@ class EvidenceContractTests(unittest.TestCase):
             "query_frame": {
                 "coverage_scope": "focused_detail",
                 "required_answer_fields": ["failure_mode"],
+                "response_mode": {
+                    "mode": "diagnostic",
+                    "basis": "当前故障现象",
+                },
+                "diagnostic_closure": {
+                    "required": True,
+                    "required_dimensions": ["failure_mode"],
+                    "basis": "当前故障现象",
+                },
             },
         }
 
@@ -51,6 +87,17 @@ class EvidenceContractTests(unittest.TestCase):
                     "history_solution",
                     "history_result",
                 ],
+                "diagnostic_closure": {
+                    "required": True,
+                    "required_dimensions": [
+                        "failure_mode",
+                        "fault_cause",
+                        "local_impact",
+                        "maintenance_action",
+                        "history_result",
+                    ],
+                    "basis": "当前多维诊断",
+                },
             },
         }
 
@@ -171,6 +218,61 @@ class EvidenceContractTests(unittest.TestCase):
         result = deduplicate_evidence(items)
         self.assertEqual(["ev-1", "ev-2"], [item["evidence_id"] for item in result])
         self.assertEqual("new", result[0]["content"])
+
+    def test_deduplicate_preserves_exact_match_identity_from_earlier_query(self):
+        result = deduplicate_evidence(
+            [
+                {
+                    "evidence_id": "ev-hmc",
+                    "content": "精确查询内容",
+                    "match_type": "exact_components",
+                },
+                {
+                    "evidence_id": "ev-hmc",
+                    "content": "后续水合的完整内容",
+                    "match_type": "semantic_id_hydration",
+                },
+            ]
+        )
+
+        self.assertEqual("后续水合的完整内容", result[0]["content"])
+        self.assertEqual("exact_components", result[0]["match_type"])
+
+    def test_every_registered_exact_identity_survives_semantic_hydration(self):
+        for exact_match_type in EXACT_MATCH_TYPES:
+            with self.subTest(match_type=exact_match_type):
+                result = deduplicate_evidence(
+                    [
+                        {
+                            "evidence_id": "ev-shared",
+                            "content": "direct",
+                            "match_type": exact_match_type,
+                        },
+                        {
+                            "evidence_id": "ev-shared",
+                            "content": "hydrated",
+                            "match_type": "semantic_id_hydration",
+                        },
+                    ]
+                )
+
+                self.assertEqual("hydrated", result[0]["content"])
+                self.assertEqual(exact_match_type, result[0]["match_type"])
+
+    def test_match_type_and_binding_strength_are_central_fail_closed_contracts(self):
+        self.assertTrue(match_type_is_exact("exact_structured_identity"))
+        self.assertTrue(match_type_is_exact("exact_fta_reference"))
+        self.assertTrue(match_type_is_exact("exact_record_identity"))
+        self.assertFalse(match_type_is_exact("exact_unreviewed_plugin_label"))
+        self.assertGreater(
+            match_type_precision("exact_record_identity"),
+            match_type_precision("semantic_id_hydration"),
+        )
+        self.assertGreater(
+            binding_basis_rank("exact_business_id"),
+            binding_basis_rank("identity_label_containment"),
+        )
+        self.assertEqual(0, binding_basis_rank("unregistered_basis"))
 
 
 class ToolResultContractTests(unittest.TestCase):

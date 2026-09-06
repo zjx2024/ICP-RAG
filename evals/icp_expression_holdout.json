@@ -1,0 +1,663 @@
+{
+  "name": "R4 冻结后独立表达留出（不等于独立真实数据）",
+  "version": "2026-09-06-expression-holdout-v1",
+  "description": "在R4实现与离线回归后登记的新问法，未用于生产分支调参。8例24轮；来源仍是同一合成库，不能声称盲测数据或专家适航验收。后续若据本文件调参即转为普通回归，需另建留出。",
+  "defaults": {
+    "assertions": {
+      "required_event_types": [
+        "answer",
+        "done"
+      ],
+      "semantic_criteria": [
+        {
+          "id": "current_turn",
+          "criterion": "围绕本轮原问题逐项回答新增维度、纠正、限定与对话核对；必要复述允许，但重列证据不等于解释或比较。按实际前文核对，不假定上轮已成功作答。措辞与标题不限。"
+        },
+        {
+          "id": "source_fidelity",
+          "criterion": "对照冻结源摘录及正文引用，核查对象、记录行、来源归属、条件、因果与数值。相似记录不等于同一记录，未确认关联不等于原文无资料。未知程序、阈值与API不得补造，历史结论不能当当前唯一诊断，案例验证不能冒充通用放行标准。允许依据不足时清楚限定或澄清。"
+        }
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "EO-01",
+      "metadata": {
+        "category": "independent_expression_holdout",
+        "evaluation_split": "expression_holdout",
+        "scenarios": [
+          "summary_verification",
+          "related_question",
+          "vague_symptom"
+        ],
+        "gold_sources": [
+          "ARCH_SUPPORT",
+          "PRODUCT_SCOPE"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "question": "别从型号编号讲起：这套系统从外部输入到屏幕输出，大体怎样分工？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "围绕本轮原问题逐项回答新增维度、纠正、限定与对话核对；必要复述允许，但重列证据不等于解释或比较。按实际前文核对，不假定上轮已成功作答。措辞与标题不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "对照冻结源摘录及正文引用，核查对象、记录行、来源归属、条件、因果与数值。相似记录不等于同一记录，未确认关联不等于原文无资料。未知程序、阈值与API不得补造，历史结论不能当当前唯一诊断，案例验证不能冒充通用放行标准。允许依据不足时清楚限定或澄清。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "解释系统层面的数据流与配套支持，不能把整个系统职责归给某一块板。"
+              }
+            ]
+          }
+        },
+        {
+          "id": "t2",
+          "question": "把纯粹的业务流和让它能工作的支持部分分开看，最容易漏掉谁？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "围绕本轮原问题逐项回答新增维度、纠正、限定与对话核对；必要复述允许，但重列证据不等于解释或比较。按实际前文核对，不假定上轮已成功作答。措辞与标题不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "对照冻结源摘录及正文引用，核查对象、记录行、来源归属、条件、因果与数值。相似记录不等于同一记录，未确认关联不等于原文无资料。未知程序、阈值与API不得补造，历史结论不能当当前唯一诊断，案例验证不能冒充通用放行标准。允许依据不足时清楚限定或澄清。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "区分业务数据链与供电、时基/热、健康监测等支持；不将这些误称为不存在。"
+              }
+            ]
+          }
+        },
+        {
+          "id": "t3",
+          "question": "这样归类之后一级子系统的数量变了吗？核对刚才有没有把显示和供电算进去。",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "围绕本轮原问题逐项回答新增维度、纠正、限定与对话核对；必要复述允许，但重列证据不等于解释或比较。按实际前文核对，不假定上轮已成功作答。措辞与标题不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "对照冻结源摘录及正文引用，核查对象、记录行、来源归属、条件、因果与数值。相似记录不等于同一记录，未确认关联不等于原文无资料。未知程序、阈值与API不得补造，历史结论不能当当前唯一诊断，案例验证不能冒充通用放行标准。允许依据不足时清楚限定或澄清。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "按源资料说明一级子系统仍六个，分类不是增删；按实际前文核对供电/显示是否已包含。"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "EO-02",
+      "metadata": {
+        "category": "independent_expression_holdout",
+        "evaluation_split": "expression_holdout",
+        "scenarios": [
+          "specific_fault",
+          "related_question",
+          "summary_verification"
+        ],
+        "gold_sources": [
+          "HIS-SYN-011",
+          "PRODUCT_SCOPE"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "question": "请读 HIS-SYN-011，只说明当时碰到了什么问题以及什么条件下发现。",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "围绕本轮原问题逐项回答新增维度、纠正、限定与对话核对；必要复述允许，但重列证据不等于解释或比较。按实际前文核对，不假定上轮已成功作答。措辞与标题不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "对照冻结源摘录及正文引用，核查对象、记录行、来源归属、条件、因果与数值。相似记录不等于同一记录，未确认关联不等于原文无资料。未知程序、阈值与API不得补造，历史结论不能当当前唯一诊断，案例验证不能冒充通用放行标准。允许依据不足时清楚限定或澄清。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "保持案例身份，说明联试、A通道外部持续发送但接收不计数、B通道正常及已记载条件。"
+              }
+            ]
+          }
+        },
+        {
+          "id": "t2",
+          "question": "先不要重讲经过。哪个前后变化让他们保留了原来的板卡？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "围绕本轮原问题逐项回答新增维度、纠正、限定与对话核对；必要复述允许，但重列证据不等于解释或比较。按实际前文核对，不假定上轮已成功作答。措辞与标题不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "对照冻结源摘录及正文引用，核查对象、记录行、来源归属、条件、因果与数值。相似记录不等于同一记录，未确认关联不等于原文无资料。未知程序、阈值与API不得补造，历史结论不能当当前唯一诊断，案例验证不能冒充通用放行标准。允许依据不足时清楚限定或澄清。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "说明连接器/终端针脚处理后A通道恢复与保留BCA的依据，而非仅重列步骤。"
+              }
+            ]
+          }
+        },
+        {
+          "id": "t3",
+          "question": "这个结论能直接变成现场的放行标准吗？把案例的恢复证据和仍应查正式程序的部分分开。",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "围绕本轮原问题逐项回答新增维度、纠正、限定与对话核对；必要复述允许，但重列证据不等于解释或比较。按实际前文核对，不假定上轮已成功作答。措辞与标题不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "对照冻结源摘录及正文引用，核查对象、记录行、来源归属、条件、因果与数值。相似记录不等于同一记录，未确认关联不等于原文无资料。未知程序、阈值与API不得补造，历史结论不能当当前唯一诊断，案例验证不能冒充通用放行标准。允许依据不足时清楚限定或澄清。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "给出连续2h无丢帧、A/B计数一致和幅值满足限值等已记载验证；不编造具体幅值阈值或直接授权放行。"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "EO-03",
+      "metadata": {
+        "category": "independent_expression_holdout",
+        "evaluation_split": "expression_holdout",
+        "scenarios": [
+          "object_correction",
+          "neighbor_isolation",
+          "related_question"
+        ],
+        "gold_sources": [
+          "MFL-SYN-006",
+          "MFL-SYN-004",
+          "PRODUCT_SCOPE"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "question": "只读维修清单 MFL-SYN-006：现场能直接通过它给出的具名接口取到这个故障吗？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "围绕本轮原问题逐项回答新增维度、纠正、限定与对话核对；必要复述允许，但重列证据不等于解释或比较。按实际前文核对，不假定上轮已成功作答。措辞与标题不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "对照冻结源摘录及正文引用，核查对象、记录行、来源归属、条件、因果与数值。相似记录不等于同一记录，未确认关联不等于原文无资料。未知程序、阈值与API不得补造，历史结论不能当当前唯一诊断，案例验证不能冒充通用放行标准。允许依据不足时清楚限定或澄清。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "区分API不可直接上报/名称缺失与调用说明有文字；不可借004等邻居的具名API。"
+              }
+            ]
+          }
+        },
+        {
+          "id": "t2",
+          "question": "但调用方法那一格不是有字吗？这和前面说的是否矛盾？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "围绕本轮原问题逐项回答新增维度、纠正、限定与对话核对；必要复述允许，但重列证据不等于解释或比较。按实际前文核对，不假定上轮已成功作答。措辞与标题不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "对照冻结源摘录及正文引用，核查对象、记录行、来源归属、条件、因果与数值。相似记录不等于同一记录，未确认关联不等于原文无资料。未知程序、阈值与API不得补造，历史结论不能当当前唯一诊断，案例验证不能冒充通用放行标准。允许依据不足时清楚限定或澄清。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "解释字段职责：描述调用/使用思路不补出缺失的API名称或推翻不可直接上报标记。"
+              }
+            ]
+          }
+        },
+        {
+          "id": "t3",
+          "question": "我换个对象，现在只看 MFL-SYN-004。给出这条自己的接口能力，不沿用刚才那条的结论。",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "围绕本轮原问题逐项回答新增维度、纠正、限定与对话核对；必要复述允许，但重列证据不等于解释或比较。按实际前文核对，不假定上轮已成功作答。措辞与标题不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "对照冻结源摘录及正文引用，核查对象、记录行、来源归属、条件、因果与数值。相似记录不等于同一记录，未确认关联不等于原文无资料。未知程序、阈值与API不得补造，历史结论不能当当前唯一诊断，案例验证不能冒充通用放行标准。允许依据不足时清楚限定或澄清。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "当前明确纠正优先，依据004行的API能力而非006结论。"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "EO-04",
+      "metadata": {
+        "category": "independent_expression_holdout",
+        "evaluation_split": "expression_holdout",
+        "scenarios": [
+          "multi_object_comparison",
+          "object_correction",
+          "specific_fault"
+        ],
+        "gold_sources": [
+          "FM-SYN-005",
+          "FM-SYN-006",
+          "PRODUCT_SCOPE"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "question": "FM-SYN-005 和 FM-SYN-006 都会让 A 路退出，为什么不能光凭退出就选其中一条？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "围绕本轮原问题逐项回答新增维度、纠正、限定与对话核对；必要复述允许，但重列证据不等于解释或比较。按实际前文核对，不假定上轮已成功作答。措辞与标题不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "对照冻结源摘录及正文引用，核查对象、记录行、来源归属、条件、因果与数值。相似记录不等于同一记录，未确认关联不等于原文无资料。未知程序、阈值与API不得补造，历史结论不能当当前唯一诊断，案例验证不能冒充通用放行标准。允许依据不足时清楚限定或澄清。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "保留两个不同模式；比较各自条件/原因/检测证据，不凭相似后果唯一诊断。"
+              }
+            ]
+          }
+        },
+        {
+          "id": "t2",
+          "question": "收窄一下：现在只讨论前一条，独立电压采样与保护锁存各能帮助核对什么？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "围绕本轮原问题逐项回答新增维度、纠正、限定与对话核对；必要复述允许，但重列证据不等于解释或比较。按实际前文核对，不假定上轮已成功作答。措辞与标题不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "对照冻结源摘录及正文引用，核查对象、记录行、来源归属、条件、因果与数值。相似记录不等于同一记录，未确认关联不等于原文无资料。未知程序、阈值与API不得补造，历史结论不能当当前唯一诊断，案例验证不能冒充通用放行标准。允许依据不足时清楚限定或澄清。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "前一条是005，解释其检测方法与区分意义，条件推断须限定，不跳到006或另一个模式。"
+              }
+            ]
+          }
+        },
+        {
+          "id": "t3",
+          "question": "What evidence is still needed before calling that the confirmed cause? Answer in Chinese.",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "围绕本轮原问题逐项回答新增维度、纠正、限定与对话核对；必要复述允许，但重列证据不等于解释或比较。按实际前文核对，不假定上轮已成功作答。措辞与标题不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "对照冻结源摘录及正文引用，核查对象、记录行、来源归属、条件、因果与数值。相似记录不等于同一记录，未确认关联不等于原文无资料。未知程序、阈值与API不得补造，历史结论不能当当前唯一诊断，案例验证不能冒充通用放行标准。允许依据不足时清楚限定或澄清。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "保持005对象，说明仍需保护锁存、独立采样和切换时序的实际核对；已列可能原因不等于确诊，不造维修门限。"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "EO-05",
+      "metadata": {
+        "category": "independent_expression_holdout",
+        "evaluation_split": "expression_holdout",
+        "scenarios": [
+          "related_question",
+          "no_evidence",
+          "specific_fault"
+        ],
+        "gold_sources": [
+          "RBD-SYN-003",
+          "PRODUCT_SCOPE"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "question": "先不算数，RBD-SYN-003 描述的到底是哪项功能的模型？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "围绕本轮原问题逐项回答新增维度、纠正、限定与对话核对；必要复述允许，但重列证据不等于解释或比较。按实际前文核对，不假定上轮已成功作答。措辞与标题不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "对照冻结源摘录及正文引用，核查对象、记录行、来源归属、条件、因果与数值。相似记录不等于同一记录，未确认关联不等于原文无资料。未知程序、阈值与API不得补造，历史结论不能当当前唯一诊断，案例验证不能冒充通用放行标准。允许依据不足时清楚限定或澄清。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "定位外部通信功能模型，不能引用无关Function Locator替代模型身份。"
+              }
+            ]
+          }
+        },
+        {
+          "id": "t2",
+          "question": "假设它给出了系统可工作的组合，这是否等于已经解释了某一次故障的物理原因？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "围绕本轮原问题逐项回答新增维度、纠正、限定与对话核对；必要复述允许，但重列证据不等于解释或比较。按实际前文核对，不假定上轮已成功作答。措辞与标题不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "对照冻结源摘录及正文引用，核查对象、记录行、来源归属、条件、因果与数值。相似记录不等于同一记录，未确认关联不等于原文无资料。未知程序、阈值与API不得补造，历史结论不能当当前唯一诊断，案例验证不能冒充通用放行标准。允许依据不足时清楚限定或澄清。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "区分成功结构/可靠性模型与实际根因、维修程序，不能把结构直接当确诊。"
+              }
+            ]
+          }
+        },
+        {
+          "id": "t3",
+          "question": "保持不计算：如果要以后求具体任务时长的可靠度，需要核对哪些模型输入和适用条件？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "围绕本轮原问题逐项回答新增维度、纠正、限定与对话核对；必要复述允许，但重列证据不等于解释或比较。按实际前文核对，不假定上轮已成功作答。措辞与标题不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "对照冻结源摘录及正文引用，核查对象、记录行、来源归属、条件、因果与数值。相似记录不等于同一记录，未确认关联不等于原文无资料。未知程序、阈值与API不得补造，历史结论不能当当前唯一诊断，案例验证不能冒充通用放行标准。允许依据不足时清楚限定或澄清。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "说明模型参数、任务时间和适用/有效性需核对；不输出新算值或自行调用数值计算。"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "EO-06",
+      "metadata": {
+        "category": "independent_expression_holdout",
+        "evaluation_split": "expression_holdout",
+        "scenarios": [
+          "out_of_scope",
+          "clarification_recovery",
+          "topic_return"
+        ],
+        "gold_sources": [
+          "PRODUCT_SCOPE",
+          "ARCH_SUPPORT"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "question": "明天会不会下雨？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "围绕本轮原问题逐项回答新增维度、纠正、限定与对话核对；必要复述允许，但重列证据不等于解释或比较。按实际前文核对，不假定上轮已成功作答。措辞与标题不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "对照冻结源摘录及正文引用，核查对象、记录行、来源归属、条件、因果与数值。相似记录不等于同一记录，未确认关联不等于原文无资料。未知程序、阈值与API不得补造，历史结论不能当当前唯一诊断，案例验证不能冒充通用放行标准。允许依据不足时清楚限定或澄清。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "不把航空电子知识库当天气源，可简要说明范围；不编造天气。"
+              }
+            ]
+          }
+        },
+        {
+          "id": "t2",
+          "question": "那还是回到设备。有个地方不太对，但我还没说是供电、显示还是通信。",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "围绕本轮原问题逐项回答新增维度、纠正、限定与对话核对；必要复述允许，但重列证据不等于解释或比较。按实际前文核对，不假定上轮已成功作答。措辞与标题不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "对照冻结源摘录及正文引用，核查对象、记录行、来源归属、条件、因果与数值。相似记录不等于同一记录，未确认关联不等于原文无资料。未知程序、阈值与API不得补造，历史结论不能当当前唯一诊断，案例验证不能冒充通用放行标准。允许依据不足时清楚限定或澄清。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "承认对象与现象信息不足，提出能区分方向的问题；不能唯一锁定某模式。"
+              }
+            ]
+          }
+        },
+        {
+          "id": "t3",
+          "question": "不是让你诊断，先告诉我需要向你提供哪些观察，尤其是发生前后有什么变化。",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "围绕本轮原问题逐项回答新增维度、纠正、限定与对话核对；必要复述允许，但重列证据不等于解释或比较。按实际前文核对，不假定上轮已成功作答。措辞与标题不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "对照冻结源摘录及正文引用，核查对象、记录行、来源归属、条件、因果与数值。相似记录不等于同一记录，未确认关联不等于原文无资料。未知程序、阈值与API不得补造，历史结论不能当当前唯一诊断，案例验证不能冒充通用放行标准。允许依据不足时清楚限定或澄清。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "回应能力/输入要求，围绕观察现象、条件、告警及变化；不把尚未提供的观察当已知。"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "EO-07",
+      "metadata": {
+        "category": "independent_expression_holdout",
+        "evaluation_split": "expression_holdout",
+        "scenarios": [
+          "exact_code",
+          "nonadjacent_reference",
+          "topic_return",
+          "neighbor_isolation"
+        ],
+        "gold_sources": [
+          "91810001**0001",
+          "91830001**0001",
+          "PRODUCT_SCOPE",
+          "ARCH_SUPPORT",
+          "MFL-SYN-001"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "question": "LCN 91810001、HSC 0001。请以权威报码记录解释，不猜 HAMC。",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "围绕本轮原问题逐项回答新增维度、纠正、限定与对话核对；必要复述允许，但重列证据不等于解释或比较。按实际前文核对，不假定上轮已成功作答。措辞与标题不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "对照冻结源摘录及正文引用，核查对象、记录行、来源归属、条件、因果与数值。相似记录不等于同一记录，未确认关联不等于原文无资料。未知程序、阈值与API不得补造，历史结论不能当当前唯一诊断，案例验证不能冒充通用放行标准。允许依据不足时清楚限定或澄清。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "精确条件查询，保留权威返回的HAMC或在不唯一时澄清，不以邻居报码替代。"
+              }
+            ]
+          }
+        },
+        {
+          "id": "t2",
+          "question": "暂时插一句：这套系统里负责外部数据接入的是哪一级子系统？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "围绕本轮原问题逐项回答新增维度、纠正、限定与对话核对；必要复述允许，但重列证据不等于解释或比较。按实际前文核对，不假定上轮已成功作答。措辞与标题不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "对照冻结源摘录及正文引用，核查对象、记录行、来源归属、条件、因果与数值。相似记录不等于同一记录，未确认关联不等于原文无资料。未知程序、阈值与API不得补造，历史结论不能当当前唯一诊断，案例验证不能冒充通用放行标准。允许依据不足时清楚限定或澄清。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "回答IFC子系统，换题不应继续维修旧报码。"
+              }
+            ]
+          }
+        },
+        {
+          "id": "t3",
+          "question": "回到第一个报码，维修清单的处理或状态接口真的已经证明属于它了吗？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "围绕本轮原问题逐项回答新增维度、纠正、限定与对话核对；必要复述允许，但重列证据不等于解释或比较。按实际前文核对，不假定上轮已成功作答。措辞与标题不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "对照冻结源摘录及正文引用，核查对象、记录行、来源归属、条件、因果与数值。相似记录不等于同一记录，未确认关联不等于原文无资料。未知程序、阈值与API不得补造，历史结论不能当当前唯一诊断，案例验证不能冒充通用放行标准。允许依据不足时清楚限定或澄清。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "非相邻返回首轮身份；HMC/MFL无显式关联不能声称已证同码，但未确认关联不等于MFL原文没有相关记录/API；不混入通信报码。"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "EO-08",
+      "metadata": {
+        "category": "independent_expression_holdout",
+        "evaluation_split": "expression_holdout",
+        "scenarios": [
+          "specific_fault",
+          "related_question",
+          "no_evidence"
+        ],
+        "gold_sources": [
+          "FTA-SYN-001",
+          "PRODUCT_SCOPE"
+        ],
+        "gold_source_index": "evals/icp_eval_gold_sources.json"
+      },
+      "turns": [
+        {
+          "id": "t1",
+          "question": "请介绍 FTA-SYN-001 分析的顶事件，先别求概率。",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "围绕本轮原问题逐项回答新增维度、纠正、限定与对话核对；必要复述允许，但重列证据不等于解释或比较。按实际前文核对，不假定上轮已成功作答。措辞与标题不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "对照冻结源摘录及正文引用，核查对象、记录行、来源归属、条件、因果与数值。相似记录不等于同一记录，未确认关联不等于原文无资料。未知程序、阈值与API不得补造，历史结论不能当当前唯一诊断，案例验证不能冒充通用放行标准。允许依据不足时清楚限定或澄清。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "依据所给故障树辨识顶事件，不未经授权计算概率。"
+              }
+            ]
+          }
+        },
+        {
+          "id": "t2",
+          "question": "列出的可能原因是替代关系还是需要共同发生，应该凭什么区分？",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "围绕本轮原问题逐项回答新增维度、纠正、限定与对话核对；必要复述允许，但重列证据不等于解释或比较。按实际前文核对，不假定上轮已成功作答。措辞与标题不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "对照冻结源摘录及正文引用，核查对象、记录行、来源归属、条件、因果与数值。相似记录不等于同一记录，未确认关联不等于原文无资料。未知程序、阈值与API不得补造，历史结论不能当当前唯一诊断，案例验证不能冒充通用放行标准。允许依据不足时清楚限定或澄清。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "以明确逻辑门/结构证据说明关系与证据等级；结构不完整时限定，不按常识补造门。"
+              }
+            ]
+          }
+        },
+        {
+          "id": "t3",
+          "question": "有了这些结构信息，能不能直接决定换哪块件？我问的是证据边界，不要给新诊断。",
+          "assertions": {
+            "semantic_criteria": [
+              {
+                "id": "current_turn",
+                "criterion": "围绕本轮原问题逐项回答新增维度、纠正、限定与对话核对；必要复述允许，但重列证据不等于解释或比较。按实际前文核对，不假定上轮已成功作答。措辞与标题不限。"
+              },
+              {
+                "id": "source_fidelity",
+                "criterion": "对照冻结源摘录及正文引用，核查对象、记录行、来源归属、条件、因果与数值。相似记录不等于同一记录，未确认关联不等于原文无资料。未知程序、阈值与API不得补造，历史结论不能当当前唯一诊断，案例验证不能冒充通用放行标准。允许依据不足时清楚限定或澄清。"
+              },
+              {
+                "id": "new_dimension",
+                "criterion": "解释故障树结构与具体维修决策的边界，不能把逻辑候选变唯一故障/更换程序，不新增计算。"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

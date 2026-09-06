@@ -1579,6 +1579,72 @@ class IcpRepository:
                 row["steps"] = [item[1] for item in cur.fetchall()]
             return rows
 
+    def get_records_by_business_selectors(
+        self, doc_type: str, selectors: Sequence[Mapping[str, Any]],
+    ) -> Dict[str, Any]:
+        """Re-read bounded, document-scoped conversation identities, not old prose.
+
+        Each selector must identify exactly one active row. LIMIT 2 detects
+        ambiguity rather than silently taking the newest variant. This proves
+        only the specified identity's lookup, never absence across a document
+        or the whole knowledge base. Exceptions propagate to the tool result.
+        """
+        tables = {"hmc": ("fault_hmc", "hmc_code"), "fmeca": ("fmea", "code"),
+                  "mfl": ("mfl", "mfl_code"), "fault_history": ("fault_history_cases", "case_id")}
+        if doc_type not in tables or len(selectors) > 12:
+            raise ValueError("unsupported or unbounded business selectors")
+        table, code_column = tables[doc_type]
+        rows, reads = [], []
+        seen = set()
+        with postgres_client.conn.cursor() as cur:
+            for selector in selectors:
+                doc_id = str(selector.get("doc_id") or "").strip()
+                if not doc_id:
+                    raise ValueError("business selector requires document identity")
+                values = {"doc_id": doc_id}
+                if doc_type == "hmc" and selector.get("variant_id"):
+                    values["variant_id"] = str(selector["variant_id"])
+                elif doc_type == "hmc":
+                    if not all(selector.get(key) for key in ("lcn", "hamc", "hsc")):
+                        raise ValueError("HMC selector requires a variant or complete components")
+                    values.update({key: str(selector[key]) for key in ("lcn", "hamc", "hsc")})
+                    if selector.get("source_ref"):
+                        values["source_ref"] = str(selector["source_ref"])
+                elif selector.get("record_id"):
+                    values[code_column] = str(selector["record_id"])
+                else:
+                    raise ValueError("business selector requires record identity")
+                key = tuple(values.items())
+                if key in seen:
+                    continue
+                seen.add(key)
+                conditions = " AND ".join(f"t.{column}=%s" for column in values)
+                cur.execute(
+                    f"SELECT t.* FROM {table} t JOIN icp_documents d ON d.doc_id=t.doc_id "
+                    "WHERE d.status IN ('indexed','kg_pending','kg_done') "
+                    f"AND {conditions} LIMIT 2", tuple(values.values()),
+                )
+                matched = self._rows_to_dicts(cur, cur.fetchall())
+                reads.append({"selector": dict(selector), "doc_type": doc_type,
+                              "status": "found" if len(matched) == 1 else "ambiguous" if matched else "not_found",
+                              "scope": "selected_identity_in_active_document"})
+                if len(matched) != 1:
+                    continue
+                row = matched[0]
+                if doc_type == "fault_history":
+                    cur.execute("SELECT step_no, content FROM fault_history_steps WHERE case_pk=%s ORDER BY step_no",
+                                (row["id"],))
+                    row["steps"] = [step[1] for step in cur.fetchall()]
+                # Kept separate from projected answer fields: a complete PG
+                # row is not a complete read of the original Word document.
+                row["record_read"] = {"status": "complete_structured_record",
+                                      "selector": dict(selector), "original_document_read": False}
+                row["match_type"] = "exact_conversation_reference"
+                if doc_type == "hmc":
+                    row["hmc_anchor_selector"] = dict(selector)
+                rows.append(row)
+        return {"rows": rows, "reads": reads}
+
     def get_records_by_storage_locators(
         self,
         doc_type: str,

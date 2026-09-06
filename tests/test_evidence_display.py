@@ -67,8 +67,8 @@ class StructuredEvidenceDisplayTests(unittest.TestCase):
             title="通信中断",
         )
 
-        # 摘要只报数量，不把 name（description）明细列给回答模型；明细由
-        # answer 的确定性补全（_ensure_fta_structure_only_completeness）给出。
+        # The compact UI summary reports count; structured answer fields carry
+        # event/gate details for generation and citation verification.
         self.assertIn("基本事件共 15 项", summary)
         self.assertNotIn("基本事件（节选）", summary)
         self.assertNotIn("事件 1（", summary)

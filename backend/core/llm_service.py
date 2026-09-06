@@ -174,9 +174,11 @@ class LLMClient:
         """
         started = time.time()
         ok = False
+        response = ""
         try:
             response = self._call_model(messages, model_config)
-            ok = not str(response or "").startswith("[LLM")
+            text = str(response or "").strip()
+            ok = bool(text) and not text.startswith(("[LLM", "[AI调用失败]"))
             return response
         finally:
             elapsed_ms = (time.time() - started) * 1000

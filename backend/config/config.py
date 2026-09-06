@@ -60,6 +60,10 @@ class Config:
     HUGEGRAPH_HOST = os.getenv("HUGEGRAPH_HOST", "localhost")
     HUGEGRAPH_PORT = int(os.getenv("HUGEGRAPH_PORT", 8081))
     HUGEGRAPH_GRAPH_NAME = os.getenv("HUGEGRAPH_GRAPH_NAME", "hugegraph")
+    # HugeGraph 1.7 exposes Gremlin globals as
+    # ``{graphspace}-{graph}`` / ``__g_{graphspace}-{graph}``.  An explicit
+    # empty value retains compatibility with legacy unqualified bindings.
+    HUGEGRAPH_GRAPHSPACE = os.getenv("HUGEGRAPH_GRAPHSPACE", "DEFAULT").strip()
     
     SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
     SERVER_PORT = int(os.getenv("SERVER_PORT", 9999))

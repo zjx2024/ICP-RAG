@@ -72,7 +72,17 @@ services:
     environment:
       HUGEGRAPH_HOME: /hugegraph-server
     healthcheck:
-      test: ["CMD-SHELL", "curl -s http://localhost:8080/graphs/hugegraph"]
+      # ICP 的正式图查询通过 vertices/edges REST 投影读回并在应用内遍历；
+      # 仅检查图元数据会把“服务启动了但投影不可读”误报为健康。
+      test:
+        - CMD-SHELL
+        - >-
+          curl --compressed -fsS --max-time 5
+          'http://localhost:8080/graphs/hugegraph/graph/vertices?limit=1'
+          | grep -q '"vertices"'
+          && curl --compressed -fsS --max-time 5
+          'http://localhost:8080/graphs/hugegraph/graph/edges?limit=1'
+          | grep -q '"edges"'
       interval: 10s
       timeout: 10s
       retries: 20
@@ -129,6 +139,9 @@ services:
       ICP_REQUIRE_STRONG_POSTGRES_PASSWORD: "${ICP_REQUIRE_STRONG_POSTGRES_PASSWORD:-false}"
       HUGEGRAPH_HOST: hugegraph
       HUGEGRAPH_PORT: 8080
+      # Use the non-colon fallback so an explicitly empty value can retain
+      # compatibility with deployments exposing legacy unqualified bindings.
+      HUGEGRAPH_GRAPHSPACE: "${HUGEGRAPH_GRAPHSPACE-DEFAULT}"
 
       # 本地 ArtifactStore 挂载点。/images 只暴露其 images 子目录，
       # 原始文档等其他对象不会被静态服务公开。

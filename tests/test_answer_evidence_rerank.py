@@ -2,10 +2,8 @@ import asyncio
 import unittest
 from unittest.mock import patch
 
-from backend.agent.nodes.answer import (
-    _context_evidence,
-    _with_answer_evidence_rerank,
-)
+from backend.agent.nodes.answer import _context_evidence
+from backend.agent.nodes.answer import _with_answer_evidence_rerank
 
 
 def _evidence(evidence_id: str, title: str, content: str) -> dict:
@@ -34,6 +32,7 @@ class AnswerEvidenceRerankTests(unittest.TestCase):
                 "record_code": "FM-SYN-002",
                 "product_flag": "ICU / FUNC-110",
                 "failure_mode": "输入滤波性能退化",
+                "explicit_references": {"mfl": ["MFL-SYN-002"]},
             }
         }
         unrelated = _evidence(
@@ -56,6 +55,7 @@ class AnswerEvidenceRerankTests(unittest.TestCase):
             "检查连接、接地和滤波器件。",
         )
         linked_mfl["doc_type"] = "mfl"
+        linked_mfl["record_id"] = "MFL-SYN-002"
         linked_mfl["claim_type"] = "maintenance_locator"
         linked_mfl["metadata"] = {
             "answer_fields": {
@@ -69,6 +69,7 @@ class AnswerEvidenceRerankTests(unittest.TestCase):
             "检查保护门限和跳闸前波形。",
         )
         unrelated_mfl["doc_type"] = "mfl"
+        unrelated_mfl["record_id"] = "MFL-SYN-011"
         unrelated_mfl["claim_type"] = "maintenance_locator"
         unrelated_mfl["metadata"] = {
             "answer_fields": {
@@ -131,7 +132,7 @@ class AnswerEvidenceRerankTests(unittest.TestCase):
         self.assertEqual("local-reranker", updated["answer_evidence_rerank"]["model"])
         selected = _context_evidence(updated)
         self.assertEqual(
-            ["e-network", "e-history", "e-fan"],
+            ["e-network", "e-history", "e-display", "e-fan"],
             [item["evidence_id"] for item in selected],
         )
 
@@ -214,7 +215,7 @@ class AnswerEvidenceRerankTests(unittest.TestCase):
             {item["evidence_id"] for item in selected},
         )
 
-    def test_answer_window_excludes_opposite_receive_direction_history(self):
+    def test_query_direction_words_do_not_delete_approved_history(self):
         current = _evidence(
             "e-egress",
             "对外发送链路",
@@ -237,11 +238,11 @@ class AnswerEvidenceRerankTests(unittest.TestCase):
         }
 
         self.assertEqual(
-            ["e-egress"],
+            ["e-egress", "e-ingress-history"],
             [item["evidence_id"] for item in _context_evidence(state)],
         )
 
-    def test_explicit_outbound_channel_wording_rejects_receive_mode(self):
+    def test_outbound_wording_alone_does_not_delete_receive_mode(self):
         outbound = _evidence(
             "e-egress",
             "A通道发送中断",
@@ -264,7 +265,7 @@ class AnswerEvidenceRerankTests(unittest.TestCase):
         }
 
         self.assertEqual(
-            ["e-egress"],
+            ["e-egress", "e-ingress"],
             [item["evidence_id"] for item in _context_evidence(state)],
         )
 

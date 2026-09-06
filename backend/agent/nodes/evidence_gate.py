@@ -5,15 +5,33 @@
 ``safety_decision``。
 """
 from __future__ import annotations
+from backend.agent.diagram_query_scope import diagram_in_scope
 
-from typing import Any, Dict, Iterable, List, Sequence, Set, Tuple
+import json
+from typing import Any, Dict, Iterable, List, Mapping, Sequence, Set, Tuple
 
+from backend.agent.answer_contract import normalize_answer_fields
+from backend.agent.clarification_contract import (
+    make_clarification_fallback,
+    make_clarification_identity,
+    make_clarification_reason,
+    make_missing_input_requirement,
+    normalize_clarification_reasons,
+    normalize_missing_input_requirements,
+    unique_contract_items,
+)
 from backend.agent.contracts import (
-    answer_mode_for_intent,
+    ANSWER_MODES,
     deduplicate_evidence,
     make_tool_result,
 )
-from backend.agent.tool_policy import detect_calculation_requests, extract_hmc_components
+from backend.agent.rbd_contract import validate_rbd_authority
+from backend.agent.tool_policy import (
+    calculation_requests_from_authorizations,
+    extract_hmc_components,
+    grounded_typed_hmc_components,
+    normalize_relation_expansion_contract,
+)
 from backend.icp.diagram_validation import (
     FORMAL_VALIDATION_STATUSES,
     VALIDATION_FAILED,
@@ -39,7 +57,18 @@ _GRAPH_CLAIM_TYPES = {
     "relation_path",
 }
 _CALCULATION_TOOLS = {"fta_analyzer", "rbd_calculator"}
-_STRUCTURED_HMC_MATCH_TYPES = {"exact_code", "exact_components"}
+_STRUCTURED_HMC_MATCH_TYPES = {
+    "exact_code", "exact_components", "exact_conversation_reference",
+    "ambiguous_components",
+}
+_FORMAL_TOPOLOGY_FIELDS = {
+    "relation_path",
+    "structural_cause_chain",
+    "impact_propagation",
+    "rbd_path_structure",
+    "rbd_redundancy_structure",
+    "rbd_single_failure_boundary",
+}
 _POSTGRES_TOOL_DOC_TYPES = {
     "function_locator": "function_locator",
     "hmc_query": "hmc",
@@ -53,6 +82,115 @@ _POSTGRES_TOOL_DOC_TYPES = {
 
 def _clean(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _formal_topology_requested(state: Mapping[str, Any]) -> bool:
+    """Return a deny-only signal for a current-turn topology obligation.
+
+    Relation execution authority is revalidated from its closed contract. A
+    canonical answer field may additionally request a topology result; fields
+    cannot authorize a tool, but they may safely make the evidence gate more
+    conservative when no formal relation was obtained.
+    """
+
+    selected_anchor_ids = [
+        _clean(anchor.get("anchor_id") or anchor.get("evidence_id"))
+        for anchor in (state.get("selected_conversation_anchors") or [])
+        if isinstance(anchor, Mapping)
+        and _clean(anchor.get("anchor_id") or anchor.get("evidence_id"))
+    ]
+    relation = normalize_relation_expansion_contract(
+        state.get("relation_expansion"),
+        raw_user_query=state.get("query"),
+        offered_anchor_ids=selected_anchor_ids,
+    )
+    frame = state.get("query_frame")
+    frame = frame if isinstance(frame, Mapping) else {}
+    requested_fields = set(
+        normalize_answer_fields(frame.get("required_answer_fields"))
+    )
+    return bool(
+        relation.get("needed") is True
+        or requested_fields & _FORMAL_TOPOLOGY_FIELDS
+    )
+
+
+def _approved_item_supports_formal_topology(item: Mapping[str, Any]) -> bool:
+    """Require a usable formal graph and an exact traversal start identity."""
+
+    material = dict(item)
+    if not _is_graph_evidence(material) or not _graph_revision_is_usable(material):
+        return False
+    if _clean(item.get("authority")) not in {"confirmed_relation", "validated_relation"}:
+        return False
+    metadata = item.get("metadata")
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    seed_status = _clean(metadata.get("seed_binding_status"))
+    if _clean(item.get("source_kind")) == "hugegraph" and seed_status != "exact":
+        # A formally re-authorized edge can still start from a semantic entity
+        # candidate. It is useful context, but it cannot prove that the path is
+        # the topology of the object the user meant.
+        return False
+    return True
+
+
+def _planned_answer_mode(state: Dict[str, Any]) -> str:
+    """Read the presentation mode already validated by the planning stage.
+
+    ``intent`` is a coarse retrieval label and must not be promoted into a
+    diagnosis/architecture decision after planning.  Older callers that do not
+    carry ``answer_mode`` get the neutral explanation mode; this keeps the gate
+    fail-closed without rebuilding open semantics from another state field.
+    """
+
+    value = _clean(state.get("answer_mode"))
+    return value if value in ANSWER_MODES else "knowledge_explanation"
+
+
+def _calculation_evidence_is_authorized(
+    item: Dict[str, Any],
+    calculation_requests: Set[str],
+) -> bool:
+    """Bind a deterministic derivation to this turn's structured operation."""
+
+    if _clean(item.get("authority")) != "deterministic_derivation":
+        return True
+    claim_type = _clean(item.get("claim_type"))
+    if claim_type.startswith("rbd_"):
+        return "rbd_reliability" in calculation_requests
+    if claim_type == "fta_probability":
+        return "fta_probability" in calculation_requests
+    if claim_type.startswith("fta_"):
+        return bool(
+            calculation_requests & {"fta_cut_sets", "fta_probability"}
+        )
+    return False
+
+
+def _query_binding_excluded(item: Dict[str, Any]) -> bool:
+    """Return whether an authoritative row lacks this turn's exact binding.
+
+    The record remains valid PostgreSQL evidence and therefore stays in the
+    registry.  It is excluded only from this turn's reasoning context, for
+    example when another FMECA record won an exact identity or when an MFL row
+    has no explicit relationship to the exact HMC target.
+    """
+
+    metadata = item.get("metadata") or {}
+    return bool(
+        isinstance(metadata, dict)
+        and metadata.get("query_binding_excluded") is True
+    )
+
+
+def _rbd_authority_sensitive(item: Mapping[str, Any]) -> bool:
+    """Whether an item could otherwise support a formal RBD claim."""
+
+    return bool(
+        _clean(item.get("doc_type")) == "rbd"
+        and _clean(item.get("authority"))
+        in {"validated_relation", "confirmed_relation", "deterministic_derivation"}
+    )
 
 
 def _unique(values: Iterable[str]) -> List[str]:
@@ -452,11 +590,39 @@ def _hmc_request_match_type(state: Dict[str, Any]) -> str:
         components = extract_hmc_components(original_query)
         if components:
             return "exact_code" if components.get("hamc") else "exact_components"
+        frame = state.get("query_frame")
+        typed = grounded_typed_hmc_components(
+            frame.get("hmc_components") if isinstance(frame, dict) else None,
+            raw_user_query=original_query,
+            source=(
+                frame.get("hmc_components_source")
+                if isinstance(frame, dict)
+                else None
+            ),
+        )
+        if typed:
+            return "exact_code" if typed.get("hamc") else "exact_components"
+        from backend.agent.user_context_binding import selected_user_hmc_components
+        selected_input = selected_user_hmc_components(state)
+        if selected_input:
+            return "exact_code" if selected_input.get("hamc") else "exact_components"
+        for anchor in state.get("selected_conversation_anchors") or []:
+            if not isinstance(anchor, Mapping) or anchor.get("doc_type") != "hmc":
+                continue
+            if not _clean(anchor.get("doc_id")):
+                continue
+            fields = anchor.get("answer_fields") or {}
+            if not isinstance(fields, Mapping):
+                fields = {}
+            stored = extract_hmc_components(_clean(anchor.get("record_id")))
+            if fields.get("variant_id") or all(fields.get(key) for key in ("lcn", "hamc", "hsc")) or (stored and stored.get("hamc")):
+                return "exact_code"
         return ""
 
-    # Older callers and focused contract tests may not carry the original query.
-    # Prefer an explicit execution parameter, then retain the legacy intent as a
-    # final compatibility signal.
+    # Older callers may not carry the original query.  An explicit execution
+    # parameter is still a typed machine fact; the coarse ``exact_code`` intent
+    # is not.  In particular, intent alone cannot manufacture three missing HMC
+    # components or authorize an exact-query failure claim.
     for result in state.get("tool_results", []) or []:
         if _clean(result.get("tool")) != "hmc_query":
             continue
@@ -466,17 +632,173 @@ def _hmc_request_match_type(state: Dict[str, Any]) -> str:
             return match_type
         if isinstance(params, dict) and isinstance(params.get("exact"), bool):
             return "exact_code" if params["exact"] else ""
-    rewritten_query = _clean(state.get("rewritten_query"))
-    if rewritten_query:
-        components = extract_hmc_components(rewritten_query)
-        if components:
-            return "exact_code" if components.get("hamc") else "exact_components"
-        return ""
-    return "exact_code" if _clean(state.get("intent")) == "exact_code" else ""
+    return ""
 
 
 def _complete_hmc_was_requested(state: Dict[str, Any]) -> bool:
     return _hmc_request_match_type(state) == "exact_code"
+
+
+def _state_clarification_contract(
+    state: Dict[str, Any],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Read only previously validated/machine-owned clarification state."""
+
+    requirements = normalize_missing_input_requirements(
+        state.get("missing_input_requirements")
+    )
+    identity_slots = [
+        item
+        for item in normalize_missing_input_requirements(
+            state.get("unresolved_identity_slots")
+        )
+        if item.get("kind") == "identity_slot"
+    ]
+    reasons = normalize_clarification_reasons(state.get("clarification_reasons"))
+
+    # Direct unit callers and calculation nodes may expose the machine slot
+    # without first passing through diagnosis.  Strings are state identifiers,
+    # not natural-language questions, so wrapping them remains deterministic.
+    raw_parameters = state.get("missing_parameters")
+    if isinstance(raw_parameters, Sequence) and not isinstance(
+        raw_parameters, (str, bytes)
+    ):
+        for raw in raw_parameters:
+            slot = _clean(
+                raw.get("slot") or raw.get("name")
+                if isinstance(raw, dict)
+                else raw
+            )
+            if not slot:
+                continue
+            requirements.append(
+                make_missing_input_requirement(
+                    kind="calculation_parameter",
+                    slot=slot,
+                    source_kind="state",
+                    source_name="missing_parameters",
+                    identity=make_clarification_identity(
+                        fields={"parameter": slot}
+                    ),
+                )
+            )
+
+    raw_identity_slots = state.get("unresolved_identity_slots")
+    if isinstance(raw_identity_slots, Sequence) and not isinstance(
+        raw_identity_slots, (str, bytes)
+    ):
+        for raw in raw_identity_slots:
+            if isinstance(raw, dict) and raw.get("kind") == "identity_slot":
+                continue
+            slot = _clean(
+                raw.get("slot") or raw.get("name")
+                if isinstance(raw, dict)
+                else raw
+            )
+            if not slot:
+                continue
+            item = make_missing_input_requirement(
+                kind="identity_slot",
+                slot=slot,
+                source_kind="state",
+                source_name="unresolved_identity_slots",
+                identity=make_clarification_identity(fields={"slot": slot}),
+            )
+            requirements.append(item)
+            identity_slots.append(item)
+    return (
+        unique_contract_items(requirements),
+        unique_contract_items(identity_slots),
+        unique_contract_items(reasons),
+    )
+
+
+def _calculation_missing_requirements(
+    items: Sequence[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Extract named deterministic algorithm gaps, not prose limitations."""
+
+    result: List[Dict[str, Any]] = []
+    for item in items:
+        metadata = item.get("metadata") or {}
+        payload: Dict[str, Any] = {}
+        try:
+            parsed = json.loads(str(item.get("content") or "{}"))
+            if isinstance(parsed, dict):
+                payload = parsed
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = {}
+        identity_base = {
+            "doc_type": _clean(item.get("doc_type")),
+            "record_ids": [_clean(item.get("record_id"))],
+        }
+        declared = []
+        if isinstance(metadata, dict):
+            raw_declared = metadata.get("missing_parameters") or metadata.get("missing_fields")
+            if isinstance(raw_declared, Sequence) and not isinstance(
+                raw_declared, (str, bytes)
+            ):
+                declared = [_clean(value) for value in raw_declared if _clean(value)]
+        for slot in declared:
+            result.append(
+                make_missing_input_requirement(
+                    kind="calculation_parameter",
+                    slot=slot,
+                    source_kind="evidence",
+                    source_name=_clean(item.get("evidence_id")) or "calculation",
+                    identity=make_clarification_identity(**identity_base),
+                    evidence_ids=[item.get("evidence_id")],
+                )
+            )
+
+        missing_blocks = payload.get("missing_reliability_blocks")
+        if isinstance(missing_blocks, list) and missing_blocks:
+            block_ids = [
+                _clean(
+                    value.get("id") or value.get("block_id") or value.get("name")
+                    if isinstance(value, dict)
+                    else value
+                )
+                for value in missing_blocks
+            ]
+            result.append(
+                make_missing_input_requirement(
+                    kind="calculation_parameter",
+                    slot="block_reliability",
+                    source_kind="evidence",
+                    source_name=_clean(item.get("evidence_id")) or "rbd_calculation",
+                    identity=make_clarification_identity(
+                        **identity_base,
+                        fields={"block_ids": ",".join(value for value in block_ids if value)},
+                    ),
+                    evidence_ids=[item.get("evidence_id")],
+                )
+            )
+
+        missing_nodes = payload.get("missing_probability_nodes")
+        if isinstance(missing_nodes, list) and missing_nodes:
+            node_ids = [
+                _clean(
+                    value.get("id") or value.get("event_id") or value.get("name")
+                    if isinstance(value, dict)
+                    else value
+                )
+                for value in missing_nodes
+            ]
+            result.append(
+                make_missing_input_requirement(
+                    kind="calculation_parameter",
+                    slot="basic_event_probability",
+                    source_kind="evidence",
+                    source_name=_clean(item.get("evidence_id")) or "fta_calculation",
+                    identity=make_clarification_identity(
+                        **identity_base,
+                        fields={"event_ids": ",".join(value for value in node_ids if value)},
+                    ),
+                    evidence_ids=[item.get("evidence_id")],
+                )
+            )
+    return unique_contract_items(result)
 
 
 async def evidence_gate_node(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -486,18 +808,31 @@ async def evidence_gate_node(state: Dict[str, Any]) -> Dict[str, Any]:
     旧的候选、置信度、上下文或追问字段。
     """
     evidence = deduplicate_evidence(state.get("evidence_registry", []) or [])
-    existing_clarification = _clean(state.get("clarification_question"))
-    query_frame = state.get("query_frame") if isinstance(state.get("query_frame"), dict) else {}
-    diagnostic_closure = query_frame.get("diagnostic_closure")
-    # The planner has already made the semantic distinction between an
-    # abstract explanation and an observed current incident.  Keep the latter
-    # out of the Top-K explanation pruning path, otherwise the direct MFL/HMC
-    # repair record can be discarded while a generic detection row survives.
-    answer_mode = (
-        "fault_diagnosis"
-        if isinstance(diagnostic_closure, dict) and diagnostic_closure.get("required") is True
-        else answer_mode_for_intent(state.get("intent"))
+    calculation_requests = set(
+        calculation_requests_from_authorizations(
+            state.get("calculation_authorizations"),
+            raw_user_query=_clean(state.get("query")),
+        )
     )
+    (
+        missing_input_requirements,
+        unresolved_identity_slots,
+        clarification_reasons,
+    ) = _state_clarification_contract(state)
+    raw_fallback = state.get("clarification_fallback")
+    clarification_fallback = make_clarification_fallback(
+        required=bool(
+            isinstance(raw_fallback, dict)
+            and raw_fallback.get("kind") == "generic_clarification"
+            and raw_fallback.get("required") is True
+        )
+    )
+    query_frame = state.get("query_frame") if isinstance(state.get("query_frame"), dict) else {}
+    # The planning stage has already converted its validated response/field
+    # contract into this legacy presentation label.  Re-deriving it from
+    # ``intent`` here would let a coarse or perturbed retrieval label widen a
+    # knowledge answer into diagnosis-specific pruning and safety obligations.
+    answer_mode = _planned_answer_mode(state)
     diagnosis_intent = answer_mode in {"fault_diagnosis", "exact_code_lookup"}
     architecture_intent = answer_mode == "architecture_knowledge"
     # 只有真正的旧链路（既没有统一证据，也没有新 ToolResult）才进入兼容态。
@@ -508,17 +843,32 @@ async def evidence_gate_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "status": "unassessed",
             "scope_status": "unknown",
             "can_claim_unique": False,
-            "requires_clarification": bool(existing_clarification),
+            "requires_clarification": bool(
+                missing_input_requirements
+                or unresolved_identity_slots
+                or clarification_fallback.get("required") is True
+            ),
             "context_evidence_ids": [],
             "approved_evidence_ids": [],
             "blocked_evidence_ids": [],
             "blocked_claims": ["unique_diagnosis"] if diagnosis_intent else [],
             "warnings": ["当前节点尚未产生统一 Evidence，保留旧链路兼容行为"],
-            "questions": [existing_clarification] if existing_clarification else [],
+            "missing_input_requirements": missing_input_requirements,
+            "unresolved_identity_slots": unresolved_identity_slots,
+            "clarification_reasons": clarification_reasons,
+            "clarification_fallback": clarification_fallback,
+            # Compatibility key remains deliberately empty.  The answer model
+            # owns wording and must not be overwritten by a gate sentence.
+            "questions": [],
         }
         return {
             "context_evidence_ids": [],
             "approved_evidence_ids": [],
+            "missing_input_requirements": missing_input_requirements,
+            "unresolved_identity_slots": unresolved_identity_slots,
+            "clarification_reasons": clarification_reasons,
+            "clarification_fallback": clarification_fallback,
+            "clarification_question": "",
             "safety_decision": decision,
             "tool_results": [
                 make_tool_result(
@@ -530,12 +880,49 @@ async def evidence_gate_node(state: Dict[str, Any]) -> Dict[str, Any]:
             ],
         }
 
+    rbd_query_binding = state.get("rbd_query_binding") or {}
+    rbd_authority_required = bool(
+        (
+            isinstance(rbd_query_binding, Mapping)
+            and rbd_query_binding.get("required") is True
+        )
+        or "rbd_query" in set(state.get("allowed_tools") or [])
+        or "rbd_reliability" in calculation_requests
+        or any(_rbd_authority_sensitive(item) for item in evidence)
+    )
+    rbd_source_models = [
+        item
+        for item in evidence
+        if _clean(item.get("doc_type")) == "rbd"
+        and _clean(item.get("authority"))
+        in {"validated_relation", "confirmed_relation"}
+        and _clean(item.get("claim_type")) == "rbd_structure"
+    ]
+    rbd_authority_validation = (
+        validate_rbd_authority(
+            rbd_query_binding,
+            models=rbd_source_models,
+            raw_user_query=state.get("query"),
+            selected_anchors=state.get("selected_conversation_anchors") or [],
+        )
+        if rbd_authority_required
+        else {"valid": True, "reason": "", "revision_ids": []}
+    )
+    rbd_authority_invalid = bool(
+        rbd_authority_required and not rbd_authority_validation.get("valid")
+    )
+
     all_ids = {_clean(item.get("evidence_id")) for item in evidence if _clean(item.get("evidence_id"))}
     excluded_items = [
         item
         for item in evidence
         if _clean(item.get("review_status")) == "rejected"
         or _graph_evidence_is_excluded(item)
+        or _query_binding_excluded(item)
+        or not _calculation_evidence_is_authorized(item, calculation_requests)
+        or (rbd_authority_invalid and _rbd_authority_sensitive(item))
+        or (state.get("fta_query_binding") and _clean(item.get("doc_type")) == "fta"
+            and not diagram_in_scope(item, state["fta_query_binding"], query=str(state.get("query") or "")))
     ]
     excluded_ids = {
         _clean(item.get("evidence_id"))
@@ -562,6 +949,37 @@ async def evidence_gate_node(state: Dict[str, Any]) -> Dict[str, Any]:
         for item in excluded_items
         if _is_graph_evidence(item)
     ]
+    if rbd_authority_invalid:
+        warnings.append(
+            "RBD 模型身份合同未通过稳定标识、正式状态与图修订一致性复验"
+            f"（{_clean(rbd_authority_validation.get('reason')) or 'unresolved'}）；"
+            "相关正式结构与计算证据已从推理上下文排除"
+        )
+    for item in excluded_items:
+        if (
+            _clean(item.get("authority")) == "deterministic_derivation"
+            and not _calculation_evidence_is_authorized(
+                item, calculation_requests
+            )
+        ):
+            warnings.append(
+                f"证据 {_clean(item.get('evidence_id'))}: 本轮没有与该派生结果"
+                "匹配的结构化计算授权，已从推理上下文排除"
+            )
+    for item in excluded_items:
+        if not _query_binding_excluded(item):
+            continue
+        metadata = item.get("metadata") or {}
+        reason = (
+            "与本轮精确 HMC 对象没有权威显式关系"
+            if isinstance(metadata, dict)
+            and metadata.get("hmc_relation_unverified") is True
+            else "非本轮精确结构化记录绑定目标"
+        )
+        warnings.append(
+            f"证据 {_clean(item.get('evidence_id'))}: {reason}，"
+            "已保留审计但从推理上下文排除"
+        )
     unusable_graph = any(_is_graph_evidence(item) for item in excluded_items)
 
     # 先审批非计算证据，计算证据的 derived_from 再依赖这一集合。
@@ -598,10 +1016,30 @@ async def evidence_gate_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     approved_ids = [_clean(item.get("evidence_id")) for item in approved_items]
     has_approved_graph = any(_is_graph_evidence(item) for item in approved_items)
+    has_approved_formal_topology = any(
+        _approved_item_supports_formal_topology(item)
+        for item in approved_items
+    )
     selected_tools = {_clean(item) for item in (state.get("allowed_tools") or []) if _clean(item)}
-    calculation_requested = bool(selected_tools & _CALCULATION_TOOLS)
+    calculation_requested = bool(calculation_requests)
+    calculator_selected_without_authority = bool(
+        selected_tools & _CALCULATION_TOOLS
+    ) and not calculation_requested
+    unauthorized_calculation_evidence = any(
+        _clean(item.get("authority")) == "deterministic_derivation"
+        and not _calculation_evidence_is_authorized(item, calculation_requests)
+        for item in evidence
+    )
+    calculation_attempted = bool(
+        calculation_requested
+        or calculator_selected_without_authority
+        or unauthorized_calculation_evidence
+    )
     blocked_claims = ["unique_diagnosis"] if diagnosis_intent else []
-    if unusable_graph and not has_approved_graph:
+    if (
+        (_formal_topology_requested(state) and not has_approved_formal_topology)
+        or (unusable_graph and not has_approved_graph)
+    ):
         blocked_claims.append("formal_topology")
     has_approved_calculation = any(
         _clean(item.get("authority")) == "deterministic_derivation" for item in approved_items
@@ -613,18 +1051,14 @@ async def evidence_gate_node(state: Dict[str, Any]) -> Dict[str, Any]:
         and isinstance(item.get("metadata"), dict)
         and item["metadata"].get("numeric_complete") is False
     ]
-    raw_calculation_requests = state.get("calculation_requests")
-    if raw_calculation_requests is None:
-        # Compatibility for saved/running states created before the structured
-        # field existed. Authorization still reads only the original user text.
-        raw_calculation_requests = detect_calculation_requests(state.get("query"))
-    calculation_requests = {
-        _clean(item) for item in (raw_calculation_requests or []) if _clean(item)
-    }
     numeric_result_requested = bool(
         calculation_requests & {"fta_probability", "rbd_reliability"}
     )
-    if calculation_requested and not has_approved_calculation:
+    if (
+        (calculation_requested and not has_approved_calculation)
+        or calculator_selected_without_authority
+        or unauthorized_calculation_evidence
+    ):
         blocked_claims.append("formal_calculation")
     if numeric_result_requested and incomplete_numeric_calculations:
         blocked_claims.append("formal_numeric_result")
@@ -637,7 +1071,6 @@ async def evidence_gate_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state.get("tool_results", []) or [],
         approved_items,
     )
-    intent = _clean(state.get("intent"))
     hmc_query_selected = "hmc_query" in selected_tools or any(
         _clean(item.get("tool")) == "hmc_query"
         for item in (state.get("tool_results", []) or [])
@@ -646,9 +1079,6 @@ async def evidence_gate_node(state: Dict[str, Any]) -> Dict[str, Any]:
     complete_hmc_requested = hmc_request_match_type == "exact_code"
     component_hmc_requested = hmc_request_match_type == "exact_components"
     structured_hmc_requested = complete_hmc_requested or component_hmc_requested
-    incomplete_hmc_request = (
-        intent == "exact_code" and hmc_query_selected and not structured_hmc_requested
-    )
     approved_structured_hmc = [
         item
         for item in approved_items
@@ -659,7 +1089,8 @@ async def evidence_gate_node(state: Dict[str, Any]) -> Dict[str, Any]:
         and _clean(item.get("match_type")) in _STRUCTURED_HMC_MATCH_TYPES
     ]
     has_approved_exact_hmc = any(
-        _clean(item.get("match_type")) == "exact_code" for item in approved_structured_hmc
+        _clean(item.get("match_type")) in {"exact_code", "exact_conversation_reference"}
+        for item in approved_structured_hmc
     )
     has_approved_component_hmc = any(
         _clean(item.get("match_type")) == "exact_components"
@@ -673,9 +1104,14 @@ async def evidence_gate_node(state: Dict[str, Any]) -> Dict[str, Any]:
     component_record_ids = {
         _clean(item.get("record_id")) or _clean(item.get("evidence_id"))
         for item in approved_structured_hmc
-        if _clean(item.get("match_type")) == "exact_components"
+        if _clean(item.get("match_type")) in {"exact_components", "ambiguous_components"}
     }
-    ambiguous_component_hmc = component_hmc_requested and len(component_record_ids) > 1
+    ambiguous_component_hmc = component_hmc_requested and (
+        len(component_record_ids) > 1
+        or any(item.get("match_type") == "ambiguous_components" for item in approved_structured_hmc)
+    )
+    if ambiguous_component_hmc:
+        blocked_claims.extend(["exact_hmc_fact", "authoritative_diagnosis"])
 
     # 结构化代码查询时，“PG 正常返回空”和“PG 查询失败”是两种不同的
     # 证据状态。两者都不能被 FMECA/OpenSearch 替代，但只有后者能说
@@ -752,81 +1188,362 @@ async def evidence_gate_node(state: Dict[str, Any]) -> Dict[str, Any]:
             )
     if component_hmc_requested and has_approved_component_hmc and not ambiguous_component_hmc:
         warnings.append("HMC 按 LCN+HSC 字段命中；缺省的 HAMC 值来自权威记录，未由系统猜测")
-    if incomplete_hmc_request:
-        blocked_claims.append("incomplete_hmc_code")
-        warnings.append("当前输入不包含完整 LCN/HAMC/HSC，未执行权威精确代码判定")
+    hmc_mfl_binding = state.get("hmc_mfl_binding") or {}
+    if (
+        isinstance(hmc_mfl_binding, dict)
+        and hmc_mfl_binding.get("required") is True
+        and hmc_mfl_binding.get("bound") is not True
+    ):
+        blocked_claims.append("hmc_mfl_relation")
+        warnings.append(
+            "当前 HMC 与召回的 MFL 记录之间没有权威显式关联；"
+            "相似故障描述不能证明该维修清单属于这个报码"
+        )
 
-    questions: List[str] = []
-    if existing_clarification:
-        questions.append(existing_clarification)
+    structured_record_binding = state.get("structured_record_binding") or {}
+    if (
+        isinstance(structured_record_binding, dict)
+        and structured_record_binding.get("ambiguous") is True
+    ):
+        blocked_claims.append("exact_record_identity")
+        warnings.append(
+            "FMECA 结构化字段身份出现并列最高匹配；语义分数不能替代记录身份消歧"
+        )
+        identity = make_clarification_identity(
+            doc_type="fmeca",
+            record_ids=structured_record_binding.get("record_ids") or [],
+            fields={"binding_basis": structured_record_binding.get("basis") or ""},
+        )
+        unresolved = make_missing_input_requirement(
+            kind="identity_slot",
+            slot="fmeca_record_identity",
+            source_kind="binding",
+            source_name="structured_record_binding",
+            identity=identity,
+        )
+        missing_input_requirements = unique_contract_items(
+            missing_input_requirements, [unresolved]
+        )
+        unresolved_identity_slots = unique_contract_items(
+            unresolved_identity_slots, [unresolved]
+        )
+        clarification_reasons = unique_contract_items(
+            clarification_reasons,
+            [
+                make_clarification_reason(
+                    kind="ambiguous_identity",
+                    source_kind="binding",
+                    source_name="structured_record_binding",
+                    identity=identity,
+                    blocked_claims=["exact_record_identity"],
+                )
+            ],
+        )
+
+    if rbd_authority_invalid:
+        blocked_claims.extend(
+            ["rbd_model_identity", "formal_topology", "formal_calculation"]
+        )
+        warnings.append(
+            "RBD 查询未通过精确稳定 ID、已选引用或正式图业务 ID 交集完成"
+            "模型绑定；自然名称与检索相似度不能授权正式结构结论或计算"
+        )
+        identity = make_clarification_identity(
+            doc_type="rbd",
+            record_ids=(
+                rbd_query_binding.get("candidate_record_ids")
+                or rbd_query_binding.get("record_ids")
+                or []
+            ),
+            fields={"binding_basis": rbd_query_binding.get("basis") or ""},
+        )
+        unresolved = make_missing_input_requirement(
+            kind="identity_slot",
+            slot="rbd_model_identity",
+            source_kind="binding",
+            source_name="rbd_query_binding",
+            identity=identity,
+        )
+        missing_input_requirements = unique_contract_items(
+            missing_input_requirements, [unresolved]
+        )
+        unresolved_identity_slots = unique_contract_items(
+            unresolved_identity_slots, [unresolved]
+        )
+        clarification_reasons = unique_contract_items(
+            clarification_reasons,
+            [
+                make_clarification_reason(
+                    kind=(
+                    "ambiguous_identity"
+                    if rbd_query_binding.get("ambiguous") is True
+                    or "unique" in str(rbd_authority_validation.get("reason") or "")
+                    or "conflict" in str(rbd_authority_validation.get("reason") or "")
+                    else "unresolved_identity"
+                    ),
+                    source_kind="binding",
+                    source_name="rbd_query_binding",
+                    identity=identity,
+                    blocked_claims=[
+                        "rbd_model_identity",
+                        "formal_topology",
+                        "formal_calculation",
+                    ],
+                )
+            ],
+        )
+
     if scope_status == "conflict":
-        questions.append("请确认本次问题适用的系统构型和有效文档版本。")
-    if calculation_requested and unusable_graph and not has_approved_graph:
-        questions.append(
-            "相关工程图未达到 auto_validated/manual_confirmed 且当前有效的正式等级，"
-            "本次不会使用 provisional 或 quarantined 图进行确定性计算。"
+        identity = make_clarification_identity(
+            fields=_requested_scope(state),
         )
-    elif calculation_requested and not has_approved_calculation:
-        questions.append("尚未得到基于正式验证图修订和完整参数的确定性计算结果。")
+        missing_input_requirements = unique_contract_items(
+            missing_input_requirements,
+            [
+                make_missing_input_requirement(
+                    kind="applicability_scope",
+                    slot="applicability_scope",
+                    source_kind="evidence_gate",
+                    source_name="scope_validation",
+                    identity=identity,
+                    evidence_ids=scope_conflict_ids,
+                )
+            ],
+        )
+        clarification_reasons = unique_contract_items(
+            clarification_reasons,
+            [
+                make_clarification_reason(
+                    kind="scope_conflict",
+                    source_kind="evidence_gate",
+                    source_name="scope_validation",
+                    identity=identity,
+                    blocked_claims=["applicability_scope"],
+                    evidence_ids=scope_conflict_ids,
+                )
+            ],
+        )
+
+    if calculation_attempted and unusable_graph and not has_approved_graph:
+        clarification_reasons = unique_contract_items(
+            clarification_reasons,
+            [
+                make_clarification_reason(
+                    kind="unvalidated_graph",
+                    source_kind="evidence_gate",
+                    source_name="graph_validation",
+                    blocked_claims=["formal_topology", "formal_calculation"],
+                    evidence_ids=[
+                        item.get("evidence_id")
+                        for item in excluded_items
+                        if _is_graph_evidence(item)
+                    ],
+                )
+            ],
+        )
+    elif calculation_attempted and not has_approved_calculation:
+        clarification_reasons = unique_contract_items(
+            clarification_reasons,
+            [
+                make_clarification_reason(
+                    kind="incomplete_calculation",
+                    source_kind="evidence_gate",
+                    source_name="calculation_approval",
+                    blocked_claims=["formal_calculation"],
+                )
+            ],
+        )
+
     if numeric_result_requested and incomplete_numeric_calculations:
-        questions.append(
-            "确定性算法仅返回了可安全使用的拓扑结果；关键参数缺失或模型触发计算限制，"
-            "消除限制后才能给出正式数值。"
+        missing_input_requirements = unique_contract_items(
+            missing_input_requirements,
+            _calculation_missing_requirements(incomplete_numeric_calculations),
         )
+        clarification_reasons = unique_contract_items(
+            clarification_reasons,
+            [
+                make_clarification_reason(
+                    kind="incomplete_calculation",
+                    source_kind="evidence_gate",
+                    source_name="numeric_completeness",
+                    blocked_claims=["formal_numeric_result"],
+                    evidence_ids=[
+                        item.get("evidence_id")
+                        for item in incomplete_numeric_calculations
+                    ],
+                )
+            ],
+        )
+
     candidates = state.get("candidate_faults") or []
-    support = float(state.get("diagnostic_support", state.get("diagnostic_confidence", 0.0)) or 0.0)
-    weak_single_candidate = (
+    support = float(
+        state.get("diagnostic_support", state.get("diagnostic_confidence", 0.0))
+        or 0.0
+    )
+    weak_single_candidate = bool(
         diagnosis_intent
         and len(candidates) == 1
         and not bool(candidates[0].get("exact_hmc_match"))
         and not bool(candidates[0].get("structured_hmc_match"))
         and support < 0.8
     )
-    if weak_single_candidate and not existing_clarification:
-        questions.append(
-            "当前只有一个非精确关键词候选，仍需补充原始告警/HMC、故障阶段或可复现条件后再收敛。"
+    no_direct_diagnostic_evidence = bool(not approved_ids and diagnosis_intent)
+    no_architecture_evidence = bool(not approved_ids and architecture_intent)
+    if weak_single_candidate or no_direct_diagnostic_evidence or no_architecture_evidence:
+        supporting_ids = [
+            evidence_id
+            for candidate in candidates[:3]
+            for evidence_id in (candidate.get("supporting_evidence_ids") or [])
+        ]
+        clarification_reasons = unique_contract_items(
+            clarification_reasons,
+            [
+                make_clarification_reason(
+                    kind="insufficient_evidence",
+                    source_kind="evidence_synthesis",
+                    source_name="candidate_support",
+                    identity=make_clarification_identity(
+                        fields={
+                            "candidate_count": len(candidates),
+                            "diagnostic_support": round(support, 3),
+                        }
+                    ),
+                    blocked_claims=["unique_diagnosis"],
+                    evidence_ids=supporting_ids,
+                )
+            ],
         )
-    if ambiguous_component_hmc and not existing_clarification:
-        questions.append(
-            "LCN 与 HSC 命中多条 HMC 权威记录，请补充 HAMC 或原始告警文字以区分候选。"
-        )
-    if not approved_ids and not (structured_hmc_requested or incomplete_hmc_request):
-        if diagnosis_intent:
-            questions.append(
-                "当前没有可支撑权威结论的直接证据，"
-                "请补充故障码、构型或有效文档范围。"
-            )
-        elif architecture_intent:
-            questions.append("当前没有匹配的架构/功能权威记录，请确认系统、模块名称及有效文档范围。")
-        else:
-            # A complete knowledge question does not become incomplete merely
-            # because retrieval returned no approvable record. The answer model
-            # should state the evidence gap directly instead of asking a generic
-            # diagnostic questionnaire that cannot improve the requested fact.
-            warnings.append("当前没有可批准的直接证据，只能简洁说明资料缺口")
-    if incomplete_hmc_request:
-        questions.append(
-            "当前输入未包含完整的 LCN/HAMC/HSC，请补充缺失分量（例如 HAMC）"
-            "后再进行权威精确查询。"
-        )
-    if structured_hmc_backend_unavailable:
-        questions.append(
-            "HMC PostgreSQL 权威结构化查询失败，请在服务恢复后重试。"
-        )
-    elif structured_hmc_no_match:
-        if component_hmc_requested:
-            questions.append(
-                "HMC PostgreSQL 权威查询已完成，但 LCN+HSC 未找到匹配记录；"
-                "请核对两个字段，并补充 HAMC、适用构型或有效文档版本。"
-            )
-        else:
-            questions.append(
-                "HMC PostgreSQL 权威精确查询已完成但未找到匹配记录，"
-                "请核对完整 LCN/HAMC/HSC、适用构型和有效文档版本。"
-            )
+        if not missing_input_requirements:
+            clarification_fallback = make_clarification_fallback(required=True)
 
-    requires_clarification = bool(questions)
-    if pg_unavailable or structured_hmc_backend_unavailable:
+    from backend.agent.user_context_binding import selected_user_hmc_components
+    parsed_hmc = extract_hmc_components(state.get("query")) or selected_user_hmc_components(state)
+    hmc_identity = make_clarification_identity(
+        doc_type="hmc",
+        record_ids=component_record_ids,
+        fields={
+            key: parsed_hmc.get(key) or ""
+            for key in ("lcn", "hamc", "hsc")
+        },
+    )
+    if ambiguous_component_hmc:
+        unresolved = make_missing_input_requirement(
+            kind="identity_slot",
+            slot="hamc",
+            source_kind="tool_result",
+            source_name="hmc_query",
+            identity=hmc_identity,
+            evidence_ids=[
+                item.get("evidence_id")
+                for item in approved_structured_hmc
+                if _clean(item.get("match_type")) in {"exact_components", "ambiguous_components"}
+            ],
+        )
+        missing_input_requirements = unique_contract_items(
+            missing_input_requirements, [unresolved]
+        )
+        unresolved_identity_slots = unique_contract_items(
+            unresolved_identity_slots, [unresolved]
+        )
+        clarification_reasons = unique_contract_items(
+            clarification_reasons,
+            [
+                make_clarification_reason(
+                    kind="ambiguous_identity",
+                    source_kind="tool_result",
+                    source_name="hmc_query",
+                    identity=hmc_identity,
+                    blocked_claims=["exact_hmc_fact"],
+                )
+            ],
+        )
+
+    if structured_hmc_no_match:
+        slot = "hamc" if component_hmc_requested else "hmc_record_identity"
+        unresolved = make_missing_input_requirement(
+            kind="identity_slot",
+            slot=slot,
+            source_kind="tool_result",
+            source_name="hmc_query",
+            identity=hmc_identity,
+        )
+        missing_input_requirements = unique_contract_items(
+            missing_input_requirements, [unresolved]
+        )
+        unresolved_identity_slots = unique_contract_items(
+            unresolved_identity_slots, [unresolved]
+        )
+        clarification_reasons = unique_contract_items(
+            clarification_reasons,
+            [
+                make_clarification_reason(
+                    kind="authoritative_record_not_found",
+                    source_kind="tool_result",
+                    source_name="hmc_query",
+                    identity=hmc_identity,
+                    blocked_claims=["exact_hmc_fact", "authoritative_diagnosis"],
+                )
+            ],
+        )
+
+    if missing_pg_tools or pg_unavailable:
+        clarification_reasons = unique_contract_items(
+            clarification_reasons,
+            [
+                make_clarification_reason(
+                    kind="authoritative_source_unavailable",
+                    source_kind="tool_result",
+                    source_name=tool,
+                    blocked_claims=[
+                        f"{tool}_authoritative_facts",
+                        "authoritative_source_unavailable",
+                    ],
+                )
+                for tool in (missing_pg_tools or ["postgres"])
+            ],
+        )
+
+    if (
+        isinstance(hmc_mfl_binding, dict)
+        and hmc_mfl_binding.get("required") is True
+        and hmc_mfl_binding.get("bound") is not True
+    ):
+        clarification_reasons = unique_contract_items(
+            clarification_reasons,
+            [
+                make_clarification_reason(
+                    kind="unresolved_relation",
+                    source_kind="binding",
+                    source_name="hmc_mfl_binding",
+                    identity=make_clarification_identity(
+                        doc_type="hmc",
+                        record_ids=hmc_mfl_binding.get("hmc_codes") or [],
+                        fields={
+                            "excluded_mfl_codes": ",".join(
+                                str(value)
+                                for value in (
+                                    hmc_mfl_binding.get("excluded_mfl_codes") or []
+                                )
+                            )
+                        },
+                    ),
+                    blocked_claims=["hmc_mfl_relation"],
+                )
+            ],
+        )
+
+    # A gate may constrain claims from scores/counts, but it may not convert
+    # those heuristics into a fixed domain questionnaire.  ``questions`` stays
+    # empty; the answer model receives the structured objects below.
+    requires_clarification = bool(
+        missing_input_requirements
+        or unresolved_identity_slots
+        or clarification_fallback.get("required") is True
+    )
+    if missing_input_requirements and clarification_fallback.get("required") is True:
+        clarification_fallback = make_clarification_fallback(required=False)
+        requires_clarification = True
+    if pg_unavailable or missing_pg_tools or structured_hmc_backend_unavailable:
         status = "blocked"
     elif requires_clarification:
         status = "clarify"
@@ -845,12 +1562,28 @@ async def evidence_gate_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "blocked_claims": _unique(blocked_claims),
         "unavailable_authoritative_tools": missing_pg_tools,
         "warnings": _unique(warnings),
-        "questions": _unique(questions),
+        "missing_input_requirements": missing_input_requirements,
+        "unresolved_identity_slots": unresolved_identity_slots,
+        "clarification_reasons": clarification_reasons,
+        "clarification_fallback": clarification_fallback,
+        "rbd_authority_validation": {
+            "valid": bool(rbd_authority_validation.get("valid")),
+            "reason": _clean(rbd_authority_validation.get("reason")),
+            "revision_ids": list(
+                rbd_authority_validation.get("revision_ids") or []
+            ),
+        },
+        "questions": [],
     }
     gate_status = "blocked" if status == "blocked" else ("partial" if status == "clarify" else "ok")
     return {
         "context_evidence_ids": context_ids,
         "approved_evidence_ids": approved_ids,
+        "missing_input_requirements": missing_input_requirements,
+        "unresolved_identity_slots": unresolved_identity_slots,
+        "clarification_reasons": clarification_reasons,
+        "clarification_fallback": clarification_fallback,
+        "clarification_question": "",
         "safety_decision": decision,
         "tool_results": [
             make_tool_result(

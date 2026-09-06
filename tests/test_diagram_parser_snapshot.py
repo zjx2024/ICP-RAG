@@ -203,6 +203,19 @@ class DiagramParserSnapshotTests(unittest.TestCase):
         repository.upsert_diagram.side_effect = lambda **_kwargs: (
             events.append("diagram") or {"diagram_id": "diagram-image"}
         )
+        repository.upsert_candidate.side_effect = lambda **_kwargs: (
+            events.append("failed_candidate")
+            or {"candidate_id": "candidate-failed-vision"}
+        )
+        repository.create_or_reuse_revision.side_effect = lambda **_kwargs: (
+            events.append("revision")
+            or {
+                "revision_id": "revision-failed-vision",
+                "canonical_graph": {"vertices": [], "edges": []},
+                "review_status": "pending",
+                "projection_status": "not_projected",
+            }
+        )
         repository.archive_missing_diagrams.side_effect = lambda **_kwargs: (
             events.append("archive")
             or {"archived_diagram_ids": [], "stale_revision_ids": []}
@@ -237,11 +250,28 @@ class DiagramParserSnapshotTests(unittest.TestCase):
         self.assertEqual(expected_image_id, postgres.insert_image.call_args.args[0])
         self.assertIsNone(postgres.insert_image.call_args.args[2])
         self.assertEqual(
-            ["image", "diagram", "vision", "archive"],
+            [
+                "image",
+                "diagram",
+                "vision",
+                "failed_candidate",
+                "revision",
+                "archive",
+            ],
             events,
         )
-        repository.upsert_candidate.assert_not_called()
-        repository.create_or_reuse_revision.assert_not_called()
+        failed_candidate = repository.upsert_candidate.call_args.kwargs
+        self.assertEqual("failed", failed_candidate["extraction_status"])
+        self.assertEqual([], failed_candidate["raw_graph"]["vertices"])
+        self.assertEqual([], failed_candidate["raw_graph"]["edges"])
+        self.assertIn(
+            "vision unavailable",
+            failed_candidate["source_locator"]["extraction_error"],
+        )
+        self.assertEqual(
+            ["candidate-failed-vision"],
+            repository.create_or_reuse_revision.call_args.kwargs["candidate_ids"],
+        )
         self.assertEqual(
             ["diagram-image"],
             repository.archive_missing_diagrams.call_args.kwargs["present_diagram_ids"],

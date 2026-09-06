@@ -4,7 +4,6 @@
 ICP 故障诊断和系统设置。图片能力仅作为 FTA/RBD/架构证据保留，不再提供独立画廊。
 """
 import os
-import requests
 import psycopg2
 
 from fastapi import FastAPI, Request, HTTPException
@@ -109,14 +108,19 @@ def _dependency_status():
         checks["opensearch"] = {"ok": False, "error": str(exc)}
 
     try:
-        response = requests.get(
-            f"http://{config.HUGEGRAPH_HOST}:{config.HUGEGRAPH_PORT}/graphs",
-            timeout=3,
-        )
-        response.raise_for_status()
-        checks["hugegraph"] = {"ok": True}
+        from backend.storage.hugegraph_client import hugegraph_client
+
+        checks["hugegraph"] = hugegraph_client.capability_status(timeout=3)
     except Exception as exc:
-        checks["hugegraph"] = {"ok": False, "error": str(exc)}
+        checks["hugegraph"] = {
+            "ok": False,
+            "rest_projection_read": {
+                "ok": False,
+                "required": True,
+                "error": " ".join(str(exc).split())[:240],
+            },
+            "gremlin_query": {"ok": False, "required": False},
+        }
 
     artifact_dir = config.ARTIFACT_STORAGE_DIR
     checks["artifact_store"] = {

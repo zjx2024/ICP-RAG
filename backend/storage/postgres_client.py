@@ -1910,6 +1910,21 @@ class PostgresClient:
             """, (json.dumps(last_result, ensure_ascii=False), doc_id))
             self.conn.commit()
 
+    def patch_icp_document_result(self, doc_id, result_patch):
+        """Merge asynchronous follow-up state without counting a new parse."""
+
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE icp_documents
+                SET last_result = COALESCE(last_result, '{}'::jsonb) || %s::jsonb,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE doc_id = %s
+                """,
+                (json.dumps(result_patch or {}, ensure_ascii=False), doc_id),
+            )
+            self.conn.commit()
+
     def update_icp_document_metadata(self, doc_id, metadata):
         """Persist controlled cover metadata before creating search projections."""
         with self.conn.cursor() as cur:

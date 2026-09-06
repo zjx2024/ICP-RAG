@@ -8,9 +8,32 @@ replaced.
 """
 from __future__ import annotations
 
-import re
-import unicodedata
 from typing import Any, Iterable, List, Mapping, Sequence
+
+
+RESPONSE_FOCUS_FIELDS: dict[str, tuple[str, ...]] = {
+    "importance": ("responsibility",),
+    "immediate_impact": ("local_impact", "final_impact"),
+    "count": ("closed_collection_members",),
+    "completeness_check": ("closed_collection_members",),
+    "first_action": ("detection_method", "maintenance_action", "history_steps"),
+    "maintenance_action": ("maintenance_action",),
+    "status_interface": ("maintenance_api",),
+    "exact_identity": (
+        "maintenance_locator", "record_identity", "hmc_identity",
+        "record_name", "record_type",
+    ),
+    "history_conditions": ("history_time", "history_steps"),
+    "exclusion_basis": ("history_steps",),
+    "recovery_verification": ("history_result",),
+    # “怎么验证” may refer either to the present incident's detection method
+    # or to a historical recovery result.  The planner's current-turn field
+    # contract disambiguates which of these is in scope.
+    "verification_criteria": ("detection_method", "history_result"),
+    "history_root_cause": ("history_root",),
+    "history_solution": ("history_solution",),
+    "cause": ("fault_cause", "structural_cause_chain"),
+}
 
 
 # These are user-facing information dimensions, not database column names.
@@ -215,99 +238,78 @@ RBD_ANSWER_FIELDS = frozenset(
     }
 )
 
+# Response breadth is an open-language decision made by the target model.  The
+# code boundary only accepts these protocol values and a literal current-turn
+# basis; it never tries to recover the decision from keywords in the question.
+RESPONSE_MODES = frozenset(
+    {"structure_only", "focused", "diagnostic", "explanation", "unknown"}
+)
+
+
+def _current_turn_basis(value: Any, raw_user_query: Any, *, limit: int = 500) -> str:
+    basis = str(value or "").strip()[:limit]
+    query = str(raw_user_query or "")
+    return basis if basis and basis in query else ""
+
+
+def normalize_diagnostic_closure(
+    value: Any,
+    *,
+    raw_user_query: Any,
+) -> dict[str, Any]:
+    """Validate a model-authored, field-level diagnostic closure request.
+
+    A bare ``required=true`` has no retrieval meaning.  The model must bind the
+    decision to this user turn and name the exact answer dimensions to close.
+    Invalid dimensions are discarded; if none remain the whole authorization
+    fails closed.
+    """
+
+    if not isinstance(value, Mapping) or value.get("required") is not True:
+        return {}
+    basis = _current_turn_basis(value.get("basis"), raw_user_query)
+    dimensions = normalize_answer_fields(value.get("required_dimensions"))
+    if not basis or not dimensions:
+        return {}
+    return {
+        "required": True,
+        "required_dimensions": dimensions,
+        "basis": basis,
+        "reason": " ".join(str(value.get("reason") or "").split())[:360],
+    }
+
+
+def normalize_response_mode(
+    value: Any,
+    *,
+    raw_user_query: Any,
+) -> dict[str, str]:
+    """Validate response breadth without classifying the user's wording."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    mode = str(value.get("mode") or "").strip().casefold()
+    basis = _current_turn_basis(value.get("basis"), raw_user_query)
+    if mode not in RESPONSE_MODES or not basis:
+        return {}
+    return {"mode": mode, "basis": basis}
+
 
 def ensure_intent_answer_fields(
     fields: Any,
     *,
     intents: Iterable[Any],
 ) -> List[str]:
-    """Keep a structured information target and its answer contract coherent.
+    """Validate fields without deriving answer obligations from an intent.
 
-    The semantic target classifier remains responsible for deciding whether a
-    question is about reliability.  Once it has made that decision, however, a
-    malformed or older field contract must not make the RBD source disappear
-    during focused-tool narrowing.  A generic success criterion is the smallest
-    RBD field that is valid for every reliability question; topology-dependent
-    single-path questions add their more specific boundary fields in ``plan``.
+    ``intents`` remains keyword-only for source compatibility with saved agents
+    and older callers.  It is deliberately ignored: a coarse intent labels the
+    topic but cannot decide whether this turn asks for a success criterion,
+    topology, a scalar value, or no RBD field at all.
     """
 
-    result = normalize_answer_fields(fields)
-    normalized_intents = {
-        str(value or "").strip()
-        for value in intents
-        if str(value or "").strip()
-    }
-    if (
-        "reliability_query" in normalized_intents
-        and not RBD_ANSWER_FIELDS.intersection(result)
-    ):
-        result = normalize_answer_fields([*result, "rbd_success_criterion"])
-    return result
-
-
-def _identity(value: Any) -> str:
-    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
-    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", text)
-
-
-# Compatibility aliases are applied only to planner-authored facets, never to
-# raw user text.  This lets an older planner response such as ``严酷度`` enter
-# the same typed contract as a newer response that emits ``severity``.
-_EXACT_FACET_ALIASES = {
-    "严酷度": ("severity",),
-    "严重等级": ("severity",),
-    "异常级别": ("severity",),
-    "故障概率": ("failure_probability",),
-    "概率等级": ("failure_probability_level",),
-    "故障概率等级": ("failure_probability_level",),
-    "故障模式": ("failure_mode",),
-    "原因": ("fault_cause",),
-    "根因": ("fault_cause",),
-    "原因链": ("structural_cause_chain",),
-    "故障链": ("structural_cause_chain",),
-    "故障定位": ("fault_location",),
-    "定位环节": ("fault_location",),
-    "局部影响": ("local_impact",),
-    "最终影响": ("final_impact",),
-    "影响": ("local_impact", "final_impact"),
-    "后果": ("local_impact", "final_impact"),
-    "危害": ("local_impact", "final_impact", "severity"),
-    "传播链": ("impact_propagation",),
-    "影响传播": ("impact_propagation",),
-    "检测方法": ("detection_method",),
-    "判别方法": ("detection_method",),
-    "任务阶段": ("mission_phase",),
-    "工作方式": ("mission_phase",),
-    "设计改进": ("design_improvement",),
-    "使用补偿": ("compensation_action",),
-    "维修": ("maintenance_action",),
-    "处置": ("maintenance_action",),
-    "api": ("maintenance_api",),
-    "平台实验": ("platform_test_status", "platform_test_result"),
-    "平台试验": ("platform_test_status", "platform_test_result"),
-    "名称": ("record_name",),
-    "类型": ("record_type",),
-    "所属位置": ("record_location",),
-    "职责": ("responsibility",),
-    "功能": ("architecture_function",),
-    "组成": ("closed_collection_members",),
-    "接口": ("architecture_interface",),
-    "上下游": ("relation_path",),
-    "关系": ("relation_path",),
-    "路径": ("relation_path",),
-    "可靠性": ("rbd_success_criterion", "rbd_path_structure"),
-    "历史": (
-        "history_time",
-        "history_root",
-        "history_steps",
-        "history_solution",
-        "history_result",
-    ),
-    "预防措施": ("history_preventive_action",),
-}
-_NORMALIZED_EXACT_FACET_ALIASES = {
-    _identity(key): value for key, value in _EXACT_FACET_ALIASES.items()
-}
+    del intents
+    return normalize_answer_fields(fields)
 
 
 def _iter_values(value: Any) -> Iterable[str]:
@@ -326,7 +328,7 @@ def normalize_answer_fields(
     requested_facets: Any = (),
     limit: int = 24,
 ) -> List[str]:
-    """Validate canonical fields and bridge older planner facet labels."""
+    """Validate canonical model fields; free-form facets never grant duties."""
 
     result: List[str] = []
 
@@ -339,34 +341,11 @@ def normalize_answer_fields(
         if field in ANSWER_FIELD_SPECS:
             add(field)
 
-    # A canonical field list is the planner's explicit answer contract.
-    # ``requested_facets`` is only a compatibility bridge for older planner
-    # responses that did not emit that list; mixing the two lets a broad
-    # retrieval hint such as “影响” silently widen an explicit ``severity``
-    # follow-up into local and final impact requirements.
-    if result:
-        return result
-
-    for raw in _iter_values(requested_facets):
-        normalized = _identity(raw)
-        if not normalized:
-            continue
-        exact = _NORMALIZED_EXACT_FACET_ALIASES.get(normalized)
-        if exact:
-            for field in exact:
-                add(field)
-            continue
-        # Compound planner facets such as ``严酷度与影响`` are accepted by
-        # matching their semantic labels.  Specific labels are processed
-        # before generic ones to retain both requested dimensions.
-        for marker, fields in sorted(
-            _NORMALIZED_EXACT_FACET_ALIASES.items(),
-            key=lambda item: len(item[0]),
-            reverse=True,
-        ):
-            if len(marker) >= 2 and marker in normalized:
-                for field in fields:
-                    add(field)
+    # ``requested_facets`` remains in the signature and query frame as an
+    # audit/recall hint for saved agents.  Its values are open model language;
+    # accepting aliases or substrings here would silently create answer and
+    # tool obligations that neither structured model contract requested.
+    del requested_facets
     return result
 
 
@@ -402,68 +381,66 @@ def is_focused_answer_contract(
     intents: Sequence[str],
     diagnostic_closure: bool = False,
 ) -> bool:
-    normalized_intents = {str(value or "").strip() for value in intents}
-    # A first-pass symptom diagnosis is intentionally a complete diagnostic
-    # closure even if the semantic planner also names one preferred output
-    # field.  Narrow field contracts are for follow-up/detail questions, not a
-    # way to turn an initial fault description into a one-column lookup.
-    if "symptom_diagnosis" in normalized_intents:
-        return False
-    # The target model may distinguish an observed, current engineering
-    # abnormality from a detached knowledge explanation.  The former still
-    # needs a bounded diagnostic closure (cause/effect/handling/history when
-    # evidence exists), even if the user worded the immediate question as one
-    # scalar such as "what is the cause".  This remains a model-authored
-    # semantic contract rather than a raw-text keyword rule.
+    # Kept in the signature for compatibility with saved callers only.  Intent
+    # is a routing/capability label and cannot broaden or narrow an answer.
+    del intents
     if diagnostic_closure:
-        return False
-    diagnostic_dimensions = normalized_intents & {
-        "cause_analysis",
-        "impact_analysis",
-        "maintenance_query",
-        "history_query",
-    }
-    # A question spanning several diagnostic dimensions needs candidate
-    # selection and cross-source synthesis.  Treating it as a scalar/detail
-    # lookup would force every retrieved row into a field-by-field dump.
-    if len(diagnostic_dimensions) >= 2:
         return False
     return bool(normalize_answer_fields(fields)) and str(coverage_scope or "") == "focused_detail"
 
 
+def incremental_followup_contract(state: Mapping[str, Any]) -> bool:
+    """Whether this turn is a bounded, incremental continuation.
+
+    A follow-up may legitimately span more than one diagnostic dimension --
+    for example, ``先怎么检查`` plus ``旧案例如何验证恢复``.  Treating that
+    as a fresh broad diagnosis makes the completion pipeline replay causes,
+    impacts and every history field.  The plan node records two pieces of
+    model-independent state for a resolved continuation: fields actually
+    delivered by the previous answer and the current question's response
+    semantics.  Together with a focused coverage scope they form a safe
+    incremental contract.
+
+    This changes presentation/completion breadth only.  It neither reuses an
+    old conclusion nor relaxes evidence authorization; every fact still has
+    to be read and approved again in the current turn.  Explicit requests to
+    restate a complete diagnosis, closed collections and calculations retain
+    their existing contracts.
+    """
+
+    frame = state.get("query_frame") if isinstance(state.get("query_frame"), Mapping) else {}
+    prior = frame.get("prior_delivered_fields")
+    semantics = str(frame.get("question_semantics") or "").strip()
+    fields = normalize_answer_fields(frame.get("required_answer_fields"))
+    if not isinstance(prior, list) or not prior or not semantics or not fields:
+        return False
+    if str(frame.get("coverage_scope") or "") != "focused_detail":
+        return False
+    if "closed_collection_members" in fields or state.get("calculation_requests"):
+        return False
+    # Whether the user asked for an incremental answer or a full restatement is
+    # open discourse semantics.  It is classified once by the target model and
+    # validated as an enum; this layer must not maintain a phrase dictionary.
+    return str(frame.get("response_scope") or "") == "incremental"
+
+
 def focused_answer_contract(state: Mapping[str, Any]) -> bool:
     frame = state.get("query_frame") if isinstance(state.get("query_frame"), Mapping) else {}
-    intents = [str(state.get("intent") or "").strip()]
-    for target in state.get("query_targets") or []:
-        value = target.get("intent") if isinstance(target, Mapping) else target
-        intents.append(str(value or "").strip())
-    requested_source_tools = {
-        str(value or "").strip()
-        for value in (
-            state.get("requested_source_tools")
-            or frame.get("requested_source_tools")
-            or []
-        )
-        if str(value or "").strip()
-    }
-    # “为什么会坏，同时查 RBD”仍是原因分析，不应因为额外的 RBD
-    # 覆盖要求退化成逐字段的图结构清单。RBD 在这类问题中补充的是
-    # 成功路径/冗余边界，最终回答仍须先围绕用户的问题组织原因和结论。
-    # 这不会改变真正的 reliability_query 或数值计算合同。
-    if "rbd_query" in requested_source_tools and {
-        "cause_analysis",
-        "impact_analysis",
-        "maintenance_query",
-        "history_query",
-        "symptom_diagnosis",
-    }.intersection(intents):
-        return False
+    if incremental_followup_contract(state):
+        return True
+    closure = frame.get("diagnostic_closure")
+    diagnostic_closure = bool(
+        isinstance(closure, Mapping)
+        and closure.get("required") is True
+        and str(closure.get("basis") or "").strip()
+        and normalize_answer_fields(closure.get("required_dimensions"))
+    )
+    # Intent and requested source names describe routing/capability, not the
+    # breadth of the public answer.  Only the validated response/field
+    # contract may make a turn focused or diagnostic.
     return is_focused_answer_contract(
         fields=required_answer_fields(state),
         coverage_scope=str(frame.get("coverage_scope") or ""),
-        intents=intents,
-        diagnostic_closure=bool(
-            isinstance(frame.get("diagnostic_closure"), Mapping)
-            and frame["diagnostic_closure"].get("required") is True
-        ),
+        intents=(),
+        diagnostic_closure=diagnostic_closure,
     )

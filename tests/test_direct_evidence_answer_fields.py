@@ -127,6 +127,10 @@ class DirectEvidenceAnswerFieldTests(unittest.TestCase):
         self.assertEqual(summary, payload["display_summary"])
         context = answer_module._format_context(
             {
+                "query": "CASE-001 的发生条件、排故步骤和恢复验证结果是什么？",
+                "query_frame": {
+                    "required_answer_fields": ["history_conditions", "history_steps", "history_result"],
+                },
                 "evidence_registry": [evidence],
                 "context_evidence_ids": [evidence["evidence_id"]],
                 "safety_decision": {

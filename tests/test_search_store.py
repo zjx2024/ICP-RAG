@@ -373,6 +373,15 @@ class OpenSearchClientContractTests(unittest.TestCase):
         self.assertEqual(options["filter"]["bool"]["filter"][-1], {"term": {"api_reportable": True}})
         self.assertEqual(body["_source"], {"excludes": [VECTOR_FIELD]})
 
+    def test_long_keyword_query_uses_bounded_clause_safe_projection(self):
+        sdk = FakeOpenSearchSDK()
+        client = self.make_client(sdk)
+        client.keyword_search("受热高负荷支路掉线" * 80, top_k=12)
+        body = sdk.search_calls[-1]["body"]
+        match = body["query"]["bool"]["must"][0]["multi_match"]
+        self.assertLessEqual(len(match["query"]), 220)
+        self.assertEqual(match["fields"], ["content^4", "title^3", "summary^2", "entities"])
+
     def test_configured_dimension_other_than_1024_is_rejected(self):
         with self.assertRaisesRegex(SearchStoreSchemaError, "requires EMBEDDING_DIM=1024"):
             OpenSearchClient(

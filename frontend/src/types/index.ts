@@ -470,7 +470,7 @@ export type AgentEvidenceStatus =
 export interface AgentEvidence {
   evidence_id?: string;
   status?: AgentEvidenceStatus;
-  answer_citation_id?: number;
+  answer_citation_id?: number | null;
   doc_id?: string;
   doc_name?: string;
   title?: string;
@@ -487,6 +487,44 @@ export interface AgentEvidence {
   image_url?: string;
   document_metadata?: Record<string, unknown>;
   [k: string]: unknown;
+}
+
+export interface AgentExecutionEvent {
+  type?: string;
+  stage?: string;
+  status?: string;
+  route?: string;
+  summary?: string;
+  metrics?: Record<string, unknown>;
+  tool?: string;
+  count?: number;
+  evidence_count?: number;
+  duration?: number;
+  params?: Record<string, unknown>;
+  results_preview?: Array<Record<string, unknown>>;
+  retrieval_info?: Record<string, unknown>;
+  postgres_authoritative_count?: number;
+  error?: string;
+  intent?: string;
+  answer_mode?: string;
+  rewritten_query?: string;
+  entity_keywords?: unknown[];
+  type_keywords?: unknown[];
+  tools_plan?: Array<Record<string, unknown>>;
+  need_more?: boolean;
+  next_action?: string;
+  result_summary?: string;
+  tried_tools?: unknown[];
+  evidence_ids?: unknown[];
+  approved_evidence_ids?: unknown[];
+  blocked_evidence_ids?: unknown[];
+  excluded_evidence_ids?: unknown[];
+  reviewed_evidence_ids?: unknown[];
+  evidence_ids_truncated?: boolean;
+  used_evidence_ids?: unknown[];
+  approved?: unknown[];
+  blocked?: unknown[];
+  used?: unknown[];
 }
 
 export interface AgentMessage {

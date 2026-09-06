@@ -24,7 +24,15 @@ jobs:
           python-version: '3.11'
 
       - name: Install backend dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Check undefined names and duplicate literal keys
+        run: ruff check --select F821,F822,F823,F601 backend scripts tests
+
+      - name: Validate regression and judge-calibration files offline
+        run: |
+          python -m scripts.audit_icp_eval_suite
+          python -m scripts.calibrate_icp_judge --validate-only
 
       - name: Compile Python sources
         run: python -m compileall -q backend
@@ -65,3 +73,6 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Test diagnosis streaming contracts
+        run: npm test

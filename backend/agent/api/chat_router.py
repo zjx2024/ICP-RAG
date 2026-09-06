@@ -70,6 +70,25 @@ def _sse_event(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+def _scope_stage_event(update: dict) -> dict:
+    """Expose classifier availability, never its private rationale/exception."""
+    route = str(update.get("scope_route") or "clarification")
+    failed = update.get("scope_route_source") == "safe_fallback"
+    summary = {
+        "knowledge_base": "属于当前工程知识范围，继续分析具体信息需求。",
+        "agent_capability": "这是智能体能力或使用方式问题，无需查询工程资料。",
+        "out_of_scope": "这个问题不在当前工程知识范围内，不调用知识工具。",
+        "clarification": "需要先确认一项必要信息，再决定是否查询工程资料。",
+    }.get(route, "需要先确认问题范围。")
+    result = {"type": "stage", "stage": "scope_routing", "route": route,
+              "status": "degraded" if failed else "completed",
+              "summary": "入口模型未完成分类，本轮未查询工程资料，可稍后重试。" if failed else summary}
+    if failed:
+        kind = update.get("scope_failure_kind")
+        result["failure_kind"] = kind if kind in ("timeout", "invalid_output", "model_error") else "model_error"
+    return result
+
+
 class _PublicStreamQueue:
     """Filter model-private token events before they enter the client queue."""
 
@@ -136,28 +155,16 @@ async def _stream_graph_events(graph, state, thread_id: str, agent_id: str,
                     continue
 
                 if node_name == "scope_router":
-                    route = str(update.get("scope_route") or "clarification")
-                    public_summary = {
-                        "knowledge_base": "属于当前工程知识范围，继续分析具体信息需求。",
-                        "agent_capability": "这是智能体能力或使用方式问题，无需查询工程资料。",
-                        "out_of_scope": "这个问题不在当前工程知识范围内，不调用知识工具。",
-                        "clarification": "需要先确认一项必要信息，再决定是否查询工程资料。",
-                    }.get(route, "需要先确认问题范围。")
-                    # 只公开稳定路径和产品级摘要；模型理由、置信度和提示词
-                    # 留在服务端状态中，不作为“思考过程”发送。
-                    await stream_queue.put({
-                        "type": "stage",
-                        "stage": "scope_routing",
-                        "status": "completed",
-                        "route": route,
-                        "summary": public_summary,
-                    })
+                    await stream_queue.put(_scope_stage_event(update))
 
                 elif node_name == "plan":
                     await stream_queue.put({
                         "type": "plan",
                         "intent": update.get("intent", ""),
                         "query_targets": update.get("query_targets", []),
+                        "calculation_authorizations": update.get(
+                            "calculation_authorizations", []
+                        ),
                         "calculation_requests": update.get("calculation_requests", []),
                         "relation_expansion": update.get("relation_expansion", {}),
                         "answer_mode": update.get("answer_mode", ""),
@@ -319,6 +326,12 @@ async def _stream_graph_events(graph, state, thread_id: str, agent_id: str,
                         "used_evidence_ids": used_evidence_ids,
                         "completion_status": update.get("answer_completion_status", "full"),
                         "unconfirmed_fields": update.get("answer_unconfirmed_fields", []),
+                        "delivered_answer_fields": update.get(
+                            "delivered_answer_fields", []
+                        ),
+                        "answer_delivery_manifest": update.get(
+                            "answer_delivery_manifest", []
+                        ),
                     })
 
     except asyncio.CancelledError:
@@ -400,6 +413,7 @@ async def chat(body: ChatRequest, request: Request):
         thinking_events: list = None,
         evidence_catalog: list = None,
         delivered_answer_fields: list = None,
+        answer_delivery_manifest: list = None,
     ):
         return agent_db.add_message(
             body.session_id, "assistant", final_answer,
@@ -407,6 +421,7 @@ async def chat(body: ChatRequest, request: Request):
             thinking_events=thinking_events,
             evidence_catalog=evidence_catalog,
             delivered_answer_fields=delivered_answer_fields,
+            answer_delivery_manifest=answer_delivery_manifest,
         )
 
     # 只持久化面向用户的可审计步骤。thinking_delta 等模型原始输出不落库、
@@ -422,6 +437,7 @@ async def chat(body: ChatRequest, request: Request):
         evidence_catalog = []
         used_evidence_ids = []
         delivered_answer_fields = []
+        answer_delivery_manifest = []
         pending_answer_event = None
         pending_answer_delta = ""
         thinking_events = []
@@ -474,6 +490,7 @@ async def chat(body: ChatRequest, request: Request):
                     evidence_catalog = item.get("evidence_catalog", []) or []
                     used_evidence_ids = item.get("used_evidence_ids", []) or []
                     delivered_answer_fields = item.get("delivered_answer_fields", []) or []
+                    answer_delivery_manifest = item.get("answer_delivery_manifest", []) or []
                     pending_answer_event = item
                     continue
                 elif evt_type == "answer_delta":
@@ -508,6 +525,9 @@ async def chat(body: ChatRequest, request: Request):
                         evidence_catalog=evidence_catalog if evidence_catalog else None,
                         delivered_answer_fields=(
                             delivered_answer_fields if delivered_answer_fields else None
+                        ),
+                        answer_delivery_manifest=(
+                            answer_delivery_manifest if answer_delivery_manifest else None
                         ),
                     )
                     if not isinstance(saved_msg, dict) or not saved_msg.get("id"):

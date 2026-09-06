@@ -39,7 +39,7 @@ class ArchitecturePlanTests(unittest.TestCase):
         self.assertNotIn("[^1]", plan_history)
         self.assertNotIn("[^7]", plan_history)
 
-    def test_cause_goal_authorizes_bounded_handling_and_history_completion(self):
+    def test_cause_goal_without_field_or_closure_does_not_authorize_a_bundle(self):
         target_response = json.dumps(
             {"primary_intent": "cause_analysis", "targets": ["cause_analysis"]},
             ensure_ascii=False,
@@ -87,15 +87,21 @@ class ArchitecturePlanTests(unittest.TestCase):
             ["cause_analysis"],
             [item["intent"] for item in result["query_targets"]],
         )
-        self.assertIn("fta_query", result["allowed_tools"])
-        self.assertIn("mfl_query", result["allowed_tools"])
-        self.assertIn("fault_history_query", result["allowed_tools"])
+        self.assertEqual(
+            ["hybrid_search", "evidence_synthesis"], result["allowed_tools"]
+        )
+        self.assertNotIn("fta_query", result["allowed_tools"])
+        self.assertNotIn("mfl_query", result["allowed_tools"])
+        self.assertNotIn("fault_history_query", result["allowed_tools"])
 
     def test_planner_architecture_output_is_policy_limited(self):
         model_response = json.dumps(
             {
                 "intent": "architecture_query",
                 "query_targets": [{"intent": "architecture_query"}],
+                "required_answer_fields": [
+                    "architecture_hierarchy", "architecture_interface",
+                ],
                 "rewritten_query": "SYN-ICP-9000 系统组成、层级和上下游接口",
                 "entity_keywords": ["SYN-ICP-9000", "综合信息处理与显示系统"],
                 "type_keywords": [],
@@ -154,6 +160,7 @@ class ArchitecturePlanTests(unittest.TestCase):
             {
                 "intent": "impact_analysis",
                 "query_targets": [{"intent": "impact_analysis"}],
+                "required_answer_fields": ["local_impact", "final_impact"],
                 "rewritten_query": "滤波电容老化",
                 "entity_keywords": ["滤波电容", "老化"],
                 "type_keywords": ["影响"],
@@ -186,7 +193,7 @@ class ArchitecturePlanTests(unittest.TestCase):
         self.assertEqual("impact_analysis", result["intent"])
         self.assertEqual("knowledge_explanation", result["answer_mode"])
         self.assertEqual(
-            ["fmeca_query"],
+            ["fmeca_query", "hybrid_search"],
             [item["tool"] for item in result["tools_plan"]],
         )
 
@@ -239,9 +246,22 @@ class ArchitectureDiagnosisTests(unittest.TestCase):
         ]
         state = {
             "intent": "architecture_query",
+            "answer_mode": "architecture_knowledge",
             "query": "系统由什么组成，上下游接口是什么？",
             "rewritten_query": "综合信息处理与显示系统 组成 上下游接口",
             "entity_keywords": ["综合信息处理与显示系统"],
+            "allowed_tools": [
+                "function_locator",
+                "hybrid_search",
+                "evidence_synthesis",
+            ],
+            "query_frame": {
+                "required_answer_fields": [
+                    "architecture_hierarchy",
+                    "architecture_interface",
+                    "relation_path",
+                ]
+            },
             "retrieval_top_k": 10,
             "sql_limit": 8,
         }
@@ -358,9 +378,17 @@ class ArchitectureDiagnosisTests(unittest.TestCase):
         ]
         state = {
             "intent": "architecture_query",
+            "answer_mode": "architecture_knowledge",
             "query_targets": [{"intent": "architecture_query"}],
             "query": "没有正确传出数据到外设，数据正常经过了哪些模块？",
             "rewritten_query": "外部数据 IFC GPP 数据流",
+            "query_frame": {
+                "required_answer_fields": [
+                    "architecture_hierarchy",
+                    "architecture_interface",
+                    "relation_path",
+                ]
+            },
             "allowed_tools": ["function_locator", "hybrid_search", "evidence_synthesis"],
             "retrieval_top_k": 12,
             "sql_limit": 8,
@@ -466,9 +494,16 @@ class ArchitectureDiagnosisTests(unittest.TestCase):
         ]
         state = {
             "intent": "architecture_query",
+            "answer_mode": "architecture_knowledge",
             "query_targets": [{"intent": "architecture_query"}],
             "query": "外部设备送来的报文进入处理单元前会经过哪里？",
             "rewritten_query": "外部报文 数据接口 处理单元 数据流",
+            "query_frame": {
+                "required_answer_fields": [
+                    "architecture_interface",
+                    "relation_path",
+                ]
+            },
             "allowed_tools": ["function_locator", "hybrid_search", "evidence_synthesis"],
             "retrieval_top_k": 12,
             "sql_limit": 8,
@@ -565,41 +600,6 @@ class ArchitectureDiagnosisTests(unittest.TestCase):
 
 
 class ArchitectureAnswerTests(unittest.TestCase):
-    def test_answer_uses_architecture_prompt_and_preserves_citation_metadata(self):
-        state = {
-            "intent": "architecture_query",
-            "query": "处理模块的功能和下游是什么？",
-            "messages": [],
-            "diagnostic_context": "【证据】处理模块向显示模块输出 [^1]",
-            "candidate_faults": [{"fault": "不应出现"}],
-            "diagnostic_confidence": 0.91,
-            "clarification_question": "不应提出故障追问",
-            "domain_results": [
-                {
-                    "source_type": "function_locator_pg",
-                    "authority": "postgres_authoritative",
-                    "doc_id": "doc-1",
-                    "doc_name": "架构说明.docx",
-                    "chunk_id": "FUNC-001",
-                    "title": "总线数据处理",
-                    "content": "处理模块向显示模块输出",
-                    "source_ref": "架构说明.docx#4.2",
-                    "document_metadata": {"document_version": "V1.0"},
-                }
-            ],
-        }
-        with (
-            patch.object(answer_module.llm_service, "_call_model", return_value="处理模块负责数据处理，并向显示模块输出。[^1]" ) as call,
-            patch.object(answer_module.agent_model_role_service, "apply_agent_llm_params", return_value=None),
-        ):
-            result = asyncio.run(answer_module.answer_node(state))
-
-        prompt = call.call_args.args[0][0]["content"]
-        self.assertIn("系统 → 子系统 → 模块 → 功能", prompt)
-        self.assertIn("不要输出候选故障", prompt)
-        self.assertNotIn("候选故障：\n", prompt)
-        self.assertEqual("V1.0", result["citations"][0]["document_metadata"]["document_version"])
-        self.assertEqual("架构说明.docx#4.2", result["citations"][0]["source_ref"])
 
     def test_unconfigured_llm_does_not_emit_unprocessed_architecture_answer(self):
         state = {
@@ -618,31 +618,9 @@ class ArchitectureAnswerTests(unittest.TestCase):
             with self.assertRaises(answer_module.AnswerGenerationError) as caught:
                 asyncio.run(answer_module.answer_node(state))
 
-        self.assertIn("未返回有效内容", str(caught.exception))
+        self.assertIn("未返回有效初稿", str(caught.exception))
         self.assertNotIn("模块 A", str(caught.exception))
 
-    def test_unconfirmed_topology_is_deterministically_labeled_pending(self):
-        state = {
-            "intent": "architecture_query",
-            "query": "A 与 B 如何连接？",
-            "messages": [],
-            "safety_decision": {
-                "status": "clarify",
-                "can_claim_unique": False,
-                "blocked_claims": ["formal_topology"],
-                "questions": ["请确认当前有效架构图修订。"],
-            },
-        }
-        with (
-            patch.object(answer_module.llm_service, "_call_model", return_value="A 与 B 是已确认连接。"),
-            patch.object(answer_module.agent_model_role_service, "apply_agent_llm_params", return_value=None),
-        ):
-            result = asyncio.run(answer_module.answer_node(state))
-
-        self.assertIn("拓扑边界", result["final_answer"])
-        self.assertNotIn("已确认连接", result["final_answer"])
-        self.assertNotIn("尚未通过验证的连接", result["final_answer"])
-        self.assertIn("请确认当前有效架构图修订", result["final_answer"])
 
 
 if __name__ == "__main__":

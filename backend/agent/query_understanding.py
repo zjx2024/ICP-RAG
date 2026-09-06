@@ -36,59 +36,15 @@ _TECHNICAL_BRANCH_RE = re.compile(r"(?:^|[-_/])([A-Z0-9])$", re.IGNORECASE)
 # accepted only when it contains wording assigned to the planner's selected
 # enum.  This prevents a model from citing “运行中” while selecting “高负载”,
 # without turning this validator into another intent or retrieval classifier.
-_OPERATING_STAGE_ENUM_BY_PHRASE: Dict[str, str] = {
-    "上电": "上电",
-    "加电": "上电",
-    "通电": "上电",
-    "开机": "上电",
-    "初始化": "初始化",
-    "启动阶段": "初始化",
-    "启动时": "初始化",
-    "自检阶段": "初始化",
-    "自检时": "初始化",
-    "运行中": "运行中",
-    "运行时": "运行中",
-    "运行过程": "运行中",
-    "正常运行": "运行中",
-    "正常工作时": "运行中",
-    "工作中": "运行中",
-    "高负载": "高负载",
-    "满负荷": "高负载",
-    "大负载": "高负载",
-    "峰值负载": "高负载",
-    "持续运行后": "持续运行后",
-    "运行一段时间后": "持续运行后",
-    "工作一段时间后": "持续运行后",
-    "长时间运行后": "持续运行后",
-    "长时间工作后": "持续运行后",
-    "用久后": "持续运行后",
-    "久用后": "持续运行后",
+# These are storage/query enums, not a vocabulary for understanding the user.
+# The planning model maps arbitrary wording to one of these values and supplies
+# a verbatim span from the current turn.  Python validates only the closed enum
+# and provenance; it must not maintain a second natural-language classifier.
+_OPERATING_STAGE_VALUES = {
+    "上电", "初始化", "运行中", "高负载", "持续运行后", "未知",
 }
-
-_TEMPORAL_PATTERN_ENUM_BY_PHRASE: Dict[str, str] = {
-    "反复": "重复发生",
-    "重复": "重复发生",
-    "循环": "重复发生",
-    "多次": "重复发生",
-    "一再": "重复发生",
-    "间歇": "间歇发生",
-    "偶发": "间歇发生",
-    "时有时无": "间歇发生",
-    "不定期": "间歇发生",
-    "偶尔": "间歇发生",
-    # Cadence needs an occurrence predicate. Bare “持续/连续” may only
-    # describe operating duration (for example “持续运行后”) and must not
-    # silently become a hard “持续发生” filter.
-    "持续发生": "持续发生",
-    "持续出现": "持续发生",
-    "一直发生": "持续发生",
-    "一直存在": "持续发生",
-    "始终发生": "持续发生",
-    "连续发生": "持续发生",
-    "连续出现": "持续发生",
-    "首次": "首次发生",
-    "第一次": "首次发生",
-    "初次": "首次发生",
+_TEMPORAL_PATTERN_VALUES = {
+    "重复发生", "间歇发生", "持续发生", "首次发生", "未知",
 }
 
 
@@ -117,7 +73,7 @@ def _iter_text(value: Any) -> Iterable[str]:
 def extract_business_codes(value: Any, *, limit: int = 12) -> List[str]:
     """Extract explicit engineering-code tokens without assigning a type.
 
-    A code such as ``FM-SYN-002`` is safe to parse lexically, but its prefix
+    A stable business code is safe to parse lexically, but its prefix
     is not used here to decide whether it belongs to FMECA, MFL, history or an
     architecture table.  Callers can therefore probe authoritative identity
     columns and let stored data determine the record family.
@@ -249,7 +205,7 @@ def bind_structured_function_entity(
     *,
     limit: int = 16,
 ) -> Dict[str, Any]:
-    """Bind a natural-language object to one stored Function Locator ID.
+    """Rank one Function Locator candidate without granting cross-doc access.
 
     The binding uses only exact codes and lexical evidence from structured
     identity/name/abbreviation/alias fields.  Descriptions, failure text,
@@ -257,9 +213,11 @@ def bind_structured_function_entity(
     overlap such as ``电源`` cannot bind by itself; an explicit branch marker
     plus a longer identity overlap (for example ``A路电源``) can.
 
-    The result is a query handoff, not a cross-document entity merge.  Later
-    document families still establish identity only through their own stored
-    business IDs and PostgreSQL-authorized relations.
+    The result deliberately separates a lexical candidate from an authority
+    bearing binding.  This helper has no provenance for ``values`` (they may
+    include a model rewrite), so even an ID-looking value remains a candidate.
+    The diagnosis node is the only caller that can promote an exact ID after
+    checking that it occurs in the raw current turn or in a selected citation.
     """
 
     inputs = _unique_text([values], limit=24)
@@ -274,11 +232,17 @@ def bind_structured_function_entity(
     if not normalized_inputs or not rows:
         return {
             "bound": False,
+            "candidate_bound": False,
+            "cross_document_authorized": False,
             "ambiguous": False,
             "business_ids": [],
             "terms": [],
             "row_indexes": [],
             "basis": "",
+            "candidate_business_ids": [],
+            "candidate_terms": [],
+            "candidate_row_indexes": [],
+            "candidate_basis": "",
         }
 
     scored: Dict[str, Dict[str, Any]] = {}
@@ -360,11 +324,17 @@ def bind_structured_function_entity(
     if not ranked:
         return {
             "bound": False,
+            "candidate_bound": False,
+            "cross_document_authorized": False,
             "ambiguous": False,
             "business_ids": [],
             "terms": [],
             "row_indexes": [],
             "basis": "",
+            "candidate_business_ids": [],
+            "candidate_terms": [],
+            "candidate_row_indexes": [],
+            "candidate_basis": "",
         }
     business_id, winner = ranked[0]
     if len(ranked) > 1 and winner["score"] - ranked[1][1]["score"] < 100:
@@ -410,11 +380,17 @@ def bind_structured_function_entity(
         if not structural_chain:
             return {
                 "bound": False,
+                "candidate_bound": False,
+                "cross_document_authorized": False,
                 "ambiguous": True,
                 "business_ids": [],
                 "terms": [],
                 "row_indexes": [],
                 "basis": "ambiguous_structured_identity",
+                "candidate_business_ids": [],
+                "candidate_terms": [],
+                "candidate_row_indexes": [],
+                "candidate_basis": "ambiguous_structured_identity",
             }
 
         def chain_priority(item: Tuple[str, Dict[str, Any]]) -> Tuple[int, str]:
@@ -433,39 +409,36 @@ def bind_structured_function_entity(
     matching_indexes = {
         index for index, identities in enumerate(row_ids) if business_id in identities
     }
-    # Every ID on the same authoritative Function Locator row is an explicit
-    # structural chain.  Preserve those IDs in the durable handoff as well as
-    # in retrieval terms.  This lets an exact FUNC query reach its implementing
-    # module, and a module query reach its linked function, without using names
-    # or vector similarity as cross-document identity.
-    linked_business_ids: List[str] = [business_id]
-    linked_identity_terms: List[str] = []
+    # Explicit same-row module/function relationships may enrich *recall*.
+    # They do not make the related IDs aliases, nor authorize a unique fault or
+    # a formal cross-document topology claim.  Keep this only in candidate_*.
+    candidate_business_ids: List[str] = [business_id]
     for index in sorted(matching_indexes):
-        row = rows[index]
-        for field in ("component_id", "module_id", "function_id", "interface_id"):
-            value = str(row.get(field) or "").strip()
-            if value and normalize_search_term(value) not in {
-                normalize_search_term(existing) for existing in linked_business_ids
-            }:
-                linked_business_ids.append(value)
-        for linked_id, label, _ in _function_identity_labels(row):
-            if normalize_search_term(linked_id) in {
-                normalize_search_term(value) for value in linked_business_ids
-            }:
-                linked_identity_terms.append(label)
+        for related_id, _, _ in _function_identity_labels(rows[index]):
+            if related_id not in candidate_business_ids:
+                candidate_business_ids.append(related_id)
     ordered_terms: List[Any] = [
-        linked_business_ids,
-        labels_by_id.get(business_id, []),
-        linked_identity_terms,
+        candidate_business_ids,
+        [labels_by_id.get(identity, []) for identity in candidate_business_ids],
         sorted(winner["fragments"], key=lambda value: (-len(value), value)),
     ]
+    candidate_terms = _unique_text(ordered_terms, limit=max(int(limit), 0))
     return {
-        "bound": True,
+        # ``bound`` is reserved for a provenance-validated, cross-document
+        # identity.  Direct users of this lexical helper can only inspect the
+        # explicitly named candidate fields below.
+        "bound": False,
+        "candidate_bound": True,
+        "cross_document_authorized": False,
         "ambiguous": False,
-        "business_ids": linked_business_ids,
-        "terms": _unique_text(ordered_terms, limit=max(int(limit), 0)),
-        "row_indexes": sorted(matching_indexes),
+        "business_ids": [],
+        "terms": [],
+        "row_indexes": [],
         "basis": winner["basis"],
+        "candidate_business_ids": candidate_business_ids,
+        "candidate_terms": candidate_terms,
+        "candidate_row_indexes": sorted(matching_indexes),
+        "candidate_basis": winner["basis"],
     }
 
 
@@ -505,48 +478,40 @@ def build_query_frame(
     def evidence_backed_slot(
         value: Any,
         basis: Any,
-        enum_by_phrase: Mapping[str, str],
+        allowed_values: set[str],
     ) -> Tuple[str, str]:
         """Keep planner constraints only when tied to the user's own words.
 
         Stage and occurrence cadence are relevance filters, so an invented or
         over-interpreted slot can hide an otherwise exact PostgreSQL record.
         The model still performs the semantic classification; this validator
-        requires both a meaningful verbatim basis from the current turn and a
-        deterministic phrase mapping that agrees with the selected enum.
+        requires a meaningful verbatim basis from the current turn. Semantic
+        agreement between that span and the enum remains the model's job.
         """
 
         normalized_value = str(value or "").strip()
-        allowed = set(enum_by_phrase.values())
-        if normalized_value not in allowed or normalized_value == "未知":
+        if normalized_value not in allowed_values or normalized_value == "未知":
             return "未知", ""
         rendered_basis = str(basis or "").strip()
-        normalized_basis = normalize_search_term(rendered_basis)
-        normalized_query = normalize_search_term(query)
+        normalized_basis = unicodedata.normalize("NFKC", rendered_basis).casefold()
+        normalized_query = unicodedata.normalize("NFKC", str(query or "")).casefold()
         if (
-            len(normalized_basis) < 2
+            len(rendered_basis) < 2
             or not normalized_query
             or normalized_basis not in normalized_query
         ):
-            return "未知", ""
-        mapped_values = {
-            mapped_value
-            for phrase, mapped_value in enum_by_phrase.items()
-            if normalize_search_term(phrase) in normalized_basis
-        }
-        if normalized_value not in mapped_values:
             return "未知", ""
         return normalized_value, rendered_basis
 
     operating_stage, operating_stage_basis = evidence_backed_slot(
         source.get("operating_stage"),
         source.get("operating_stage_basis"),
-        _OPERATING_STAGE_ENUM_BY_PHRASE,
+        _OPERATING_STAGE_VALUES,
     )
     temporal_pattern, temporal_pattern_basis = evidence_backed_slot(
         source.get("temporal_pattern"),
         source.get("temporal_pattern_basis"),
-        _TEMPORAL_PATTERN_ENUM_BY_PHRASE,
+        _TEMPORAL_PATTERN_VALUES,
     )
     target_intents: List[str] = []
     for target in query_targets or []:
@@ -644,6 +609,79 @@ def build_query_frame(
     }
 
 
+_COVERAGE_SCOPES = {
+    "complete_collection", "focused_detail", "relation_path",
+}
+_COVERAGE_MEMBER_KINDS = {
+    "failure_mode", "cause", "component", "module", "subsystem", "record",
+}
+_COVERAGE_REFERENCE_MODES = {"current_query", "selected_anchor"}
+
+
+def validated_coverage_request(
+    state: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Revalidate the planner's collection request at its execution boundary.
+
+    The planner performs the first validation, but persisted or hand-built
+    states can bypass it.  This second check accepts only closed enums and
+    literal current-turn provenance.  A selected-anchor request must name an
+    anchor that is actually present in this turn; the request never falls back
+    to every historical anchor.
+    """
+
+    frame = state.get("query_frame")
+    frame = frame if isinstance(frame, Mapping) else {}
+    raw = frame.get("coverage_request")
+    if not isinstance(raw, Mapping):
+        return {}
+    scope = str(raw.get("scope") or "").strip()
+    subject = str(raw.get("subject") or "").strip()
+    member_kind = str(raw.get("member_kind") or "").strip()
+    reference_mode = str(raw.get("reference_mode") or "").strip()
+    basis = str(raw.get("basis") or "").strip()
+    query = unicodedata.normalize("NFKC", str(state.get("query") or ""))
+
+    def literal_span(value: str) -> bool:
+        normalized = unicodedata.normalize("NFKC", value)
+        return bool(normalized and normalized in query)
+
+    if (
+        scope not in _COVERAGE_SCOPES
+        or member_kind not in _COVERAGE_MEMBER_KINDS
+        or reference_mode not in _COVERAGE_REFERENCE_MODES
+        or not subject
+        or not literal_span(basis)
+    ):
+        return {}
+
+    result: Dict[str, Any] = {
+        "scope": scope,
+        "subject": subject,
+        "member_kind": member_kind,
+        "reference_mode": reference_mode,
+        "basis": basis,
+    }
+    if reference_mode == "current_query":
+        return result if literal_span(subject) else {}
+
+    offered_ids = {
+        str(anchor.get("anchor_id") or "").strip()
+        for anchor in (state.get("selected_conversation_anchors") or [])
+        if isinstance(anchor, Mapping)
+        and str(anchor.get("anchor_id") or "").strip()
+    }
+    requested_ids: List[str] = []
+    for value in raw.get("selected_anchor_ids") or []:
+        anchor_id = str(value or "").strip()
+        if anchor_id and anchor_id not in requested_ids:
+            requested_ids.append(anchor_id)
+    if not requested_ids or any(value not in offered_ids for value in requested_ids):
+        return {}
+    result["selected_anchor_ids"] = requested_ids[:12]
+    return result
+
+
 def closed_inventory_requested(state: Dict[str, Any]) -> bool:
     """Whether the planner explicitly requested a complete collection.
 
@@ -654,8 +692,8 @@ def closed_inventory_requested(state: Dict[str, Any]) -> bool:
     phrases.
     """
 
-    frame = state.get("query_frame") if isinstance(state.get("query_frame"), dict) else {}
-    return str(frame.get("coverage_scope") or "") == "complete_collection"
+    request = validated_coverage_request(state)
+    return str(request.get("scope") or "") == "complete_collection"
 
 
 def build_tool_terms(
@@ -697,6 +735,9 @@ def build_hybrid_query(state: Dict[str, Any]) -> str:
 
     tool_queries = normalize_tool_queries(state.get("tool_queries"))
     values = tool_queries.get("hybrid_search", [])
+    if isinstance(state.get("dialogue_context"), Mapping):
+        from backend.agent.task_context import task_query
+        values = [task_query(state), *values]
     if not values:
         values = [
             str(state.get("rewritten_query") or state.get("query") or "").strip()

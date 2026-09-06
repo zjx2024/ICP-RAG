@@ -12,6 +12,8 @@ import {
   chatStream, createSession, deleteSession, fetchAgents, fetchSession,
   fetchSessions, generateSessionTitle, stopChat, updateSession,
 } from '@/api/agent';
+import { readDiagnosisStream } from '@/api/diagnosisStream';
+import type { AgentExecutionEvent as ExecutionEvent } from '@/types';
 import { GlassButton } from '@/components/GlassUI';
 import EvidenceSourcePreview from '@/components/EvidenceSourcePreview';
 import { extractCitationNumbers, formatMarkdown, formatTimeShort } from '@/utils';
@@ -45,43 +47,6 @@ function storedEvidenceWidth() {
   }
 }
 
-interface ExecutionEvent {
-  type?: string;
-  stage?: string;
-  status?: string;
-  route?: string;
-  summary?: string;
-  metrics?: Record<string, unknown>;
-  tool?: string;
-  count?: number;
-  evidence_count?: number;
-  duration?: number;
-  params?: Record<string, unknown>;
-  results_preview?: Array<Record<string, unknown>>;
-  retrieval_info?: Record<string, unknown>;
-  postgres_authoritative_count?: number;
-  error?: string;
-  intent?: string;
-  answer_mode?: string;
-  rewritten_query?: string;
-  entity_keywords?: unknown[];
-  type_keywords?: unknown[];
-  tools_plan?: Array<Record<string, unknown>>;
-  need_more?: boolean;
-  next_action?: string;
-  result_summary?: string;
-  tried_tools?: unknown[];
-  evidence_ids?: unknown[];
-  approved_evidence_ids?: unknown[];
-  blocked_evidence_ids?: unknown[];
-  excluded_evidence_ids?: unknown[];
-  reviewed_evidence_ids?: unknown[];
-  evidence_ids_truncated?: boolean;
-  used_evidence_ids?: unknown[];
-  approved?: unknown[];
-  blocked?: unknown[];
-  used?: unknown[];
-}
 
 const TOOL_LABEL: Record<string, string> = {
   function_locator: '功能定位',
@@ -1224,21 +1189,6 @@ const SUGGESTIONS = [
   'ICP 功能丧失可能由哪些原因引起？',
 ];
 
-function parseSseChunk(buffer: string): { events: any[]; rest: string } {
-  const parts = buffer.split('\n\n');
-  const rest = parts.pop() || '';
-  const events: any[] = [];
-  for (const part of parts) {
-    const line = part.split('\n').find((value) => value.startsWith('data:'));
-    if (!line) continue;
-    try {
-      events.push(JSON.parse(line.slice(5).trim()));
-    } catch {
-      /* ignore malformed event */
-    }
-  }
-  return { events, rest };
-}
 
 export default function Diagnosis() {
   const [agent, setAgent] = useState<AgentConfig | null>(null);
@@ -1521,33 +1471,24 @@ export default function Diagnosis() {
       }, controller.signal);
       if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const parsed = parseSseChunk(buffer);
-        buffer = parsed.rest;
-        for (const event of parsed.events) {
+      for await (const event of readDiagnosisStream(response.body)) {
           if (event.type === 'plan') {
             setLiveExecutionEvents((previous) => [
-              event as ExecutionEvent,
+              event,
               ...previous.filter((item) => item.type !== 'plan'),
             ]);
           } else if (event.type === 'thinking_delta') {
             // 规划模型的原始推理仅用于内部执行，不直接展示给最终用户。
           } else if (event.type === 'tool_call') {
-            setLiveExecutionEvents((previous) => [...previous, event as ExecutionEvent]);
+            setLiveExecutionEvents((previous) => [...previous, event]);
           } else if (event.type === 'reflect') {
-            setLiveExecutionEvents((previous) => [...previous, event as ExecutionEvent]);
+            setLiveExecutionEvents((previous) => [...previous, event]);
           } else if (event.type === 'stage') {
             setLiveExecutionEvents((previous) => {
               const withoutPendingPlan = event.stage === 'scope_routing'
                 ? previous.filter((item) => !(item.type === 'plan' && item.intent === 'pending'))
                 : previous;
-              return [...withoutPendingPlan, event as ExecutionEvent];
+              return [...withoutPendingPlan, event];
             });
           } else if (event.type === 'answer_delta') {
             answer += event.content || '';
@@ -1590,7 +1531,6 @@ export default function Diagnosis() {
             }
             // 服务端已完成持久化，稍后重新拉取会话。
           }
-        }
       }
 
       if (answer) {

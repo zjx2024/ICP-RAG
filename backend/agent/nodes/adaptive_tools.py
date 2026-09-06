@@ -14,11 +14,23 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
 from backend.agent.answer_contract import (
     focused_answer_contract,
-    required_answer_fields,
+    normalize_answer_fields,
+    normalize_diagnostic_closure,
     tools_for_answer_fields,
 )
+from backend.agent.contracts import binding_basis_rank
+from backend.agent.history_focus import merge_history_parent_bindings
 from backend.agent.model_role_service import agent_model_role_service
-from backend.agent.tool_policy import QUERY_TOOL_NAMES
+from backend.agent.query_understanding import extract_business_codes
+from backend.agent.rbd_contract import merge_rbd_query_bindings
+from backend.agent.diagram_query_scope import merge_diagram_scopes, diagram_in_scope
+from backend.agent.tool_policy import (
+    DOC_TYPE_BY_TOOL,
+    QUERY_TOOL_NAMES,
+    extract_hmc_components,
+    normalize_calculation_authorizations,
+    normalize_relation_expansion_contract,
+)
 from backend.agent.tools.icp_diagnosis import _graph_request, icp_diagnosis_node
 from backend.core.llm_service import llm_service
 
@@ -90,18 +102,6 @@ _HISTORY_SLOTS = (
     "history_solution",
     "history_result",
 )
-
-_INTENT_REQUIRED_SLOTS = {
-    "entity_profile": ("entity_profile",),
-    "symptom_diagnosis": ("cause", "impact", "detect"),
-    "cause_analysis": ("cause",),
-    "impact_analysis": ("impact",),
-    "maintenance_query": ("repair",),
-    "history_query": _HISTORY_SLOTS,
-    "architecture_query": ("architecture_path",),
-    "function_location": ("architecture_path",),
-    "reliability_query": ("rbd",),
-}
 
 _ANSWER_FIELD_ALIASES = {
     "record_name": {
@@ -277,14 +277,6 @@ _STRUCTURED_SUPPORT_FIELDS = {
     "target_component_id",
 }
 
-_FAULT_COMPLETION_INTENTS = {
-    "symptom_diagnosis",
-    "cause_analysis",
-    "impact_analysis",
-    "maintenance_query",
-}
-
-
 def _field_has_value(value: Any) -> bool:
     """Return whether a structured field is present, without reading its prose."""
 
@@ -378,23 +370,31 @@ def _coverage_slots(state: Mapping[str, Any]) -> set[str]:
         # maintenance_locator) deliberately cannot.
         if claim_type in {"fault_cause", "cause_fact", "fta_structure"}:
             coverage.add("cause")
+        if claim_type in {"fault_cause", "cause_fact"}:
+            coverage.add("fault_cause")
         if claim_type == "fta_structure":
             coverage.add("structural_cause_chain")
         if claim_type in {"failure_impact", "impact_fact"}:
             coverage.add("impact")
         if claim_type in {"detection_method", "diagnosis_method"}:
             coverage.add("detect")
+            coverage.add("detection_method")
         if claim_type == "maintenance_action":
+            coverage.add("maintenance_action")
             if doc_type == "hmc":
                 coverage.add("hmc_repair")
             elif doc_type == "mfl":
                 coverage.add("mfl_repair")
         if claim_type in {"interface_fact", "relation_path", "architecture_path"}:
             coverage.add("architecture_path")
+        if claim_type == "interface_fact":
+            coverage.add("architecture_interface")
         if claim_type == "relation_path":
+            coverage.add("relation_path")
             coverage.add("impact_propagation")
-        if claim_type in {"rbd_structure", "rbd_reliability", "rbd_calculation"}:
-            coverage.add("rbd")
+        # An RBD claim family identifies the source, not which structural
+        # dimension the row actually proves.  Only typed answer_fields below
+        # may satisfy path, criterion, redundancy or boundary obligations.
 
         fields = _structured_answer_fields(item)
 
@@ -559,39 +559,31 @@ def _coverage_slots(state: Mapping[str, Any]) -> set[str]:
 
 
 def _required_answer_slots(state: Mapping[str, Any]) -> List[str]:
-    """Return explicit user-goal slots in query-target order."""
+    """Return only model-authored, validated answer dimensions."""
 
-    contract_fields = required_answer_fields(state)
-    if contract_fields:
-        return contract_fields
-
-    result: List[str] = []
+    frame = (
+        state.get("query_frame")
+        if isinstance(state.get("query_frame"), Mapping)
+        else {}
+    )
+    result = normalize_answer_fields(frame.get("required_answer_fields"))
     targets = [
         item for item in (state.get("query_targets") or [])
         if isinstance(item, Mapping)
     ]
-    if not targets:
-        targets = [{"intent": state.get("intent")}]
     for target in targets:
-        # Future target classifiers may explicitly emit field contracts.  Use
-        # them when present, while keeping the intent defaults for compatibility.
-        declared = target.get("answer_fields") or target.get("required_fields")
-        declared_slots: List[str] = []
-        if isinstance(declared, str):
-            declared = [declared]
-        if isinstance(declared, (list, tuple, set, frozenset)):
-            for value in declared:
-                key = _normalized_field_name(value)
-                if key == "history":
-                    declared_slots.extend(_HISTORY_SLOTS)
-                elif key in _ANSWER_FIELD_ALIASES or key == "repair":
-                    declared_slots.append(key)
-        slots = declared_slots or list(
-            _INTENT_REQUIRED_SLOTS.get(str(target.get("intent") or ""), ())
-        )
-        for slot in slots:
+        for slot in normalize_answer_fields(
+            target.get("required_fields") or target.get("answer_fields")
+        ):
             if slot not in result:
                 result.append(slot)
+    closure = normalize_diagnostic_closure(
+        frame.get("diagnostic_closure"),
+        raw_user_query=state.get("query"),
+    )
+    for slot in closure.get("required_dimensions") or []:
+        if slot not in result:
+            result.append(slot)
     return result
 
 
@@ -602,37 +594,16 @@ def _slot_is_covered(slot: str, coverage: set[str]) -> bool:
 
 
 def _tools_for_slot(slot: str) -> tuple[str, ...]:
-    contract_tools = tuple(
+    return tuple(
         tool
         for tool in tools_for_answer_fields([slot])
         if tool in QUERY_TOOL_NAMES
     )
-    if contract_tools:
-        return contract_tools
-    return {
-        "cause": ("fmeca_query", "fta_query"),
-        "impact": ("fmeca_query",),
-        "detect": ("fmeca_query",),
-        "repair": ("mfl_query", "hmc_query"),
-        "hmc_repair": ("hmc_query",),
-        "mfl_repair": ("mfl_query",),
-        "mfl_api": ("mfl_query",),
-        "history_time": ("fault_history_query",),
-        "history_root": ("fault_history_query",),
-        "history_steps": ("fault_history_query",),
-        "history_solution": ("fault_history_query",),
-        "history_result": ("fault_history_query",),
-        "history_personnel": ("fault_history_query",),
-        "history_preventive_action": ("fault_history_query",),
-        "architecture_path": ("function_locator",),
-        "entity_profile": ("function_locator",),
-        "rbd": ("rbd_query",),
-    }.get(slot, ())
 
 ADAPTIVE_TOOL_PROMPT = """你是 ICP 诊断智能体的工具路由器，只决定是否需要补查，不回答用户问题。
 
 用户问题：{query}
-本轮明确目标：{targets}
+本轮唯一任务视图（只读，包含消解对象及自然语言分问）：{targets}
 已执行工具：{executed_tools}
 已有结果：
 {result_summary}
@@ -644,9 +615,9 @@ ADAPTIVE_TOOL_PROMPT = """你是 ICP 诊断智能体的工具路由器，只决�
 {graph_need}
 
 约束：
-1. 先回答用户当前明确目标；若系统给出了字段级必答合同，只补合同仍缺少的资料。只有首次模糊诊断或用户明确要求完整分析时，才补原因、影响、处置和相似历史。
-2. 已有权威直接证据覆盖所需信息时选 answer；OpenSearch 检索投影的数量本身不代表答案已经完整。
-3. 判断 graph_traversal 看问题的实际信息需求，不看用户有没有说“关系、路径、关联、图谱”。如果原因定位、故障诊断、架构定位或多个信息目标需要把不同文档实体串起来，就应查图；精确代码的单字段查询、已有直接证据足够的普通解释不查图。
+1. 按本轮自然语言分问判断缺口。字段只帮助定位资料，字段有值不等于已回答条件、解释或核对问题；不得从 intent 扩展原因、影响、处置或历史套餐。
+2. 先检查已有记录是否对应本轮对象、现象和限定条件，再看所需字段。权威记录真实、字段齐全不代表相关；只有泛词命中或记录与现象冲突时，可选已授权的同源 hybrid_search 补查。已有相关直接证据覆盖所需信息时选 answer；检索数量本身不代表答案完整。
+3. 只有规划阶段已给出 relation_expansion 或首轮已明确选择 graph_traversal 时才可查图；仍须先有可追溯业务实体。不得从粗粒度 intent 重新推断查图需要。
 4. 只能从“当前仍可选的工具”中选择；不得输出实体 ID、SQL、Gremlin、计算器或新的信息目标。
 5. 补查最多选 {max_followup_tools} 个直接查询工具，同一工具不重复执行。
 
@@ -654,7 +625,8 @@ ADAPTIVE_TOOL_PROMPT = """你是 ICP 诊断智能体的工具路由器，只决�
 {{
   "decision": "answer|retrieve|graph|retrieve_then_graph",
   "next_tools": ["fmeca_query"],
-  "reason": "简短说明为什么需要或不需要补查"
+  "reason": "简短说明哪个分问仍缺少相关证据，或为什么无需补查",
+  "tool_queries": {{"hybrid_search": ["保留当前对象和区分条件、针对缺口的查询"]}}
 }}
 """
 
@@ -671,24 +643,14 @@ def _completion_followups(
 ) -> List[str]:
     """Return only the tools needed to fill uncovered answer fields.
 
-    The previous implementation appended every evidence family associated with
-    an intent.  That reproduced most of the old fixed full-scan workflow and
-    increased noise even when an authoritative result was already available.
-    Here the answer contract is expressed as evidence *slots*: diagnosis,
-    cause chain, handling, history, architecture and reliability.  A tool is
-    added only while its slot is still empty.
+    Coarse intents are deliberately absent from this decision. A tool is added
+    only while a canonical field explicitly named by the model (directly or in
+    a grounded diagnostic-closure contract) is still empty.
     """
 
     available_set = set(available)
     executed_set = set(executed)
-    trusted = [
-        item
-        for item in (state.get("evidence_registry") or [])
-        if isinstance(item, Mapping)
-        and _can_complete_answer_slot(item)
-    ]
     coverage = _coverage_slots(state)
-    has_any_trusted = bool(trusted)
 
     result: List[str] = []
 
@@ -727,43 +689,6 @@ def _completion_followups(
             if tool != primary:
                 add(tool)
 
-    intents = set(_target_intents(state))
-    focused_contract = focused_answer_contract(state)
-    frame = state.get("query_frame") if isinstance(state.get("query_frame"), Mapping) else {}
-    collection_contract = str(frame.get("coverage_scope") or "") == "complete_collection"
-    if (
-        intents & _FAULT_COMPLETION_INTENTS
-        and not focused_contract
-        and not collection_contract
-    ):
-        # Fault-oriented answers always get one bounded structured FMECA lookup
-        # unless it already ran.  A semantic hydration can prove that one record
-        # exists, but it may cover only one side of a comparison (for example,
-        # line-open versus A/D saturation) and therefore cannot replace the
-        # table query used to assemble the cause/effect alternatives.
-        # This is a single structured follow-up, not a broad full scan; add()
-        # also prevents repeating fmeca_query when it already ran this round.
-        add("fmeca_query")
-    if (
-        intents & _FAULT_COMPLETION_INTENTS
-        and not focused_contract
-        and not collection_contract
-    ):
-        # A fault answer should include documented handling when available.
-        # MFL API coordinates alone are not a repair, so they intentionally do
-        # not satisfy this condition.
-        if not (coverage & {"hmc_repair", "mfl_repair"}):
-            add("mfl_query")
-            add("hmc_query")
-        # A history row is only complete when it can answer when, why, what was
-        # done, the final solution and the verified result.
-        if not all(slot in coverage for slot in _HISTORY_SLOTS):
-            add("fault_history_query")
-
-    # Hybrid retrieval is a discovery fallback.  It must not run merely to add
-    # volume after structured sources have already covered the answer.
-    if not has_any_trusted and not result:
-        add("hybrid_search")
     return result
 
 
@@ -776,7 +701,9 @@ def _prepare_model(model: Mapping[str, Any] | None) -> Dict[str, Any] | None:
         prepared["reasoning"] = False
         prepared["temperature"] = 0.0
         prepared["format"] = "json"
-    return prepared
+    from backend.agent.model_runtime_policy import bounded_model_transport
+    prepared["stream"] = False
+    return bounded_model_transport(prepared, ADAPTIVE_TOOL_TIMEOUT_SECONDS)
 
 
 def _parse_json_object(value: Any) -> Dict[str, Any] | None:
@@ -820,33 +747,269 @@ def _evidence_count(state: Mapping[str, Any]) -> int:
     return len(ids)
 
 
-def _complete_exact_hmc_answer_available(state: Mapping[str, Any]) -> bool:
-    """完整 HMC 精确命中已经满足“这条记录是什么”。
+def _hmc_codes_from_evidence(evidence: Mapping[str, Any]) -> set[str]:
+    """Return non-conflicting structured HMC identities from one PG fact."""
 
-    这个确定性快速路径只适用于单一 exact_code 目标。一旦用户同时
-    询问原因、维修或关联路径，仍交给自适应路由决定是否补查。
+    metadata = (
+        evidence.get("metadata")
+        if isinstance(evidence.get("metadata"), Mapping)
+        else {}
+    )
+    answer_fields = (
+        metadata.get("answer_fields")
+        if isinstance(metadata.get("answer_fields"), Mapping)
+        else {}
+    )
+    candidates: List[Any] = [
+        evidence.get("record_id"),
+        metadata.get("hmc_code"),
+        answer_fields.get("hmc_code"),
+    ]
+    for container in (metadata, answer_fields):
+        lcn = str(container.get("lcn") or "").strip()
+        hamc = str(container.get("hamc") or "").strip()
+        hsc = str(container.get("hsc") or "").strip()
+        if lcn and hamc and hsc:
+            candidates.append(f"{lcn}-{hamc}-{hsc}")
+
+    codes: set[str] = set()
+    for candidate in candidates:
+        components = extract_hmc_components(candidate)
+        if all(components.get(key) for key in ("lcn", "hamc", "hsc")):
+            codes.add(str(components.get("hmc_code") or ""))
+    return {code for code in codes if code}
+
+
+def _validated_source_requirements(
+    state: Mapping[str, Any],
+) -> List[tuple[str, str, tuple[str, ...]]]:
+    """Return structurally valid source obligations carried by the plan.
+
+    Natural-language source detection is deliberately absent. The plan has
+    already validated provenance; this boundary only rechecks the closed
+    document/tool pairing and canonical requested fields before allowing a
+    shortcut to declare those obligations complete.
     """
 
-    targets = {
-        str(item.get("intent") or "")
-        for item in (state.get("query_targets") or [])
-        if isinstance(item, Mapping) and str(item.get("intent") or "")
+    frame = (
+        state.get("query_frame")
+        if isinstance(state.get("query_frame"), Mapping)
+        else {}
+    )
+    tool_by_doc_type = {
+        doc_type: tool for tool, doc_type in DOC_TYPE_BY_TOOL.items()
     }
-    if str(state.get("intent") or "") != "exact_code" or targets - {"exact_code"}:
-        return False
-    hmc_ok = any(
-        isinstance(item, Mapping)
-        and str(item.get("tool") or "") == "hmc_query"
-        and str(item.get("status") or "") in {"ok", "partial"}
-        for item in (state.get("tool_results") or [])
-    )
-    exact_evidence = any(
-        isinstance(item, Mapping)
-        and str(item.get("doc_type") or "") == "hmc"
-        and str(item.get("match_type") or "") == "exact_code"
+    requirements: Dict[tuple[str, str], List[str]] = {}
+
+    def add(*, tool: Any = "", doc_type: Any = "", fields: Any = ()) -> None:
+        normalized_tool = str(tool or "").strip()
+        normalized_doc_type = str(doc_type or "").strip()
+        if not normalized_tool and normalized_doc_type:
+            normalized_tool = tool_by_doc_type.get(normalized_doc_type, "")
+        expected_doc_type = DOC_TYPE_BY_TOOL.get(normalized_tool, "")
+        if (
+            not expected_doc_type
+            or normalized_doc_type not in {"", expected_doc_type}
+        ):
+            return
+        key = (normalized_tool, expected_doc_type)
+        current = requirements.setdefault(key, [])
+        for field in normalize_answer_fields(fields):
+            if field not in current:
+                current.append(field)
+
+    for container in (frame, state):
+        for raw in container.get("source_obligations") or []:
+            if isinstance(raw, Mapping):
+                add(
+                    tool=raw.get("tool"),
+                    doc_type=raw.get("doc_type"),
+                    fields=raw.get("fields") or raw.get("requested_fields") or [],
+                )
+        for raw in container.get("requested_sources") or []:
+            if isinstance(raw, Mapping):
+                add(
+                    doc_type=raw.get("doc_type"),
+                    fields=raw.get("requested_fields") or raw.get("fields") or [],
+                )
+    for tool in [
+        *(state.get("requested_source_tools") or []),
+        *(frame.get("requested_source_tools") or []),
+    ]:
+        add(tool=tool)
+
+    return [
+        (tool, doc_type, tuple(fields))
+        for (tool, doc_type), fields in requirements.items()
+    ]
+
+
+def _source_requirements_are_covered(state: Mapping[str, Any]) -> bool:
+    requirements = _validated_source_requirements(state)
+    if not requirements:
+        return True
+
+    evidence_by_id = {
+        str(item.get("evidence_id") or ""): item
         for item in (state.get("evidence_registry") or [])
+        if isinstance(item, Mapping) and str(item.get("evidence_id") or "")
+    }
+    results_by_tool: Dict[str, List[Mapping[str, Any]]] = {}
+    for result in state.get("tool_results") or []:
+        if not isinstance(result, Mapping):
+            continue
+        tool = str(result.get("tool") or "").strip()
+        if tool in QUERY_TOOL_NAMES:
+            results_by_tool.setdefault(tool, []).append(result)
+
+    for tool, doc_type, fields in requirements:
+        results = results_by_tool.get(tool, [])
+        completed_results = [
+            result
+            for result in results
+            if str(result.get("status") or "") in {"ok", "empty", "partial"}
+        ]
+        if not completed_results:
+            return False
+        linked_evidence = [
+            evidence_by_id[evidence_id]
+            for result in completed_results
+            for evidence_id in _unique_strings(result.get("evidence_ids") or [])
+            if evidence_id in evidence_by_id
+            and str(evidence_by_id[evidence_id].get("doc_type") or "") == doc_type
+            and _can_complete_answer_slot(evidence_by_id[evidence_id])
+        ]
+        if fields:
+            source_coverage = _coverage_slots(
+                {"evidence_registry": linked_evidence}
+            )
+            if any(
+                not _slot_is_covered(field, source_coverage)
+                for field in fields
+            ):
+                return False
+        elif not linked_evidence and not any(
+            str(result.get("status") or "") == "empty"
+            for result in completed_results
+        ):
+            return False
+    return True
+
+
+def _complete_exact_hmc_answer_available(state: Mapping[str, Any]) -> bool:
+    """Whether one exact PG HMC row closes every validated obligation.
+
+    Intent and target labels are intentionally ignored. The shortcut is an
+    evidence/contract decision: a full code in the original turn must resolve
+    to exactly one matching PostgreSQL identity, every canonical answer/source
+    obligation must already be covered, and no relation or calculation work
+    may remain.
+    """
+
+    query = str(state.get("query") or "")
+    query_components = extract_hmc_components(query)
+    if not all(query_components.get(key) for key in ("lcn", "hamc", "hsc")):
+        return False
+    expected_code = str(query_components.get("hmc_code") or "")
+    explicit_hmc_codes = {expected_code}
+    for business_code in extract_business_codes(query):
+        components = extract_hmc_components(business_code)
+        if all(components.get(key) for key in ("lcn", "hamc", "hsc")):
+            explicit_hmc_codes.add(str(components.get("hmc_code") or ""))
+    if len({code for code in explicit_hmc_codes if code}) != 1:
+        # A comparison or batch query containing two complete codes cannot be
+        # closed by the first exact row merely because the coarse target label
+        # happens to look singular.
+        return False
+
+    successful_hmc_evidence_ids = {
+        evidence_id
+        for result in (state.get("tool_results") or [])
+        if isinstance(result, Mapping)
+        and str(result.get("tool") or "") == "hmc_query"
+        and str(result.get("status") or "") == "ok"
+        for evidence_id in _unique_strings(result.get("evidence_ids") or [])
+    }
+    if not successful_hmc_evidence_ids:
+        return False
+
+    exact_identities: set[tuple[str, str, str]] = set()
+    matching_identity_evidence_ids: set[str] = set()
+    for evidence in state.get("evidence_registry") or []:
+        if not isinstance(evidence, Mapping):
+            continue
+        if not (
+            str(evidence.get("source_kind") or "") == "postgres"
+            and str(evidence.get("authority") or "") == "authoritative_record"
+            and str(evidence.get("doc_type") or "") == "hmc"
+            and str(evidence.get("match_type") or "") == "exact_code"
+        ):
+            continue
+        codes = _hmc_codes_from_evidence(evidence)
+        # Conflicting or absent structured identities cannot prove an exact
+        # match, even if the evidence label itself says ``exact_code``.
+        if len(codes) != 1:
+            return False
+        code = next(iter(codes))
+        identity = (
+            str(evidence.get("doc_id") or "").strip(),
+            str(evidence.get("record_id") or code).strip(),
+            str(evidence.get("source_ref") or "").strip(),
+        )
+        exact_identities.add(identity)
+        if code != expected_code:
+            return False
+        evidence_id = str(evidence.get("evidence_id") or "").strip()
+        if evidence_id in successful_hmc_evidence_ids:
+            matching_identity_evidence_ids.add(evidence_id)
+
+    if len(exact_identities) != 1 or not matching_identity_evidence_ids:
+        return False
+
+    coverage = _coverage_slots(state)
+    if any(
+        not _slot_is_covered(slot, coverage)
+        for slot in _required_answer_slots(state)
+    ):
+        return False
+    if not _source_requirements_are_covered(state):
+        return False
+
+    frame = (
+        state.get("query_frame")
+        if isinstance(state.get("query_frame"), Mapping)
+        else {}
     )
-    return hmc_ok and exact_evidence
+    selected_anchor_ids = [
+        str(anchor.get("anchor_id") or "").strip()
+        for anchor in (state.get("selected_conversation_anchors") or [])
+        if isinstance(anchor, Mapping) and str(anchor.get("anchor_id") or "").strip()
+    ]
+    raw_relation = (
+        state.get("relation_expansion")
+        if isinstance(state.get("relation_expansion"), Mapping)
+        else frame.get("relation_expansion")
+    )
+    relation = normalize_relation_expansion_contract(
+        raw_relation,
+        raw_user_query=query,
+        offered_anchor_ids=selected_anchor_ids,
+    )
+    if relation.get("needed") is True:
+        return False
+
+    if normalize_calculation_authorizations(
+        state.get("calculation_authorizations")
+        or frame.get("calculation_authorizations"),
+        raw_user_query=query,
+    ):
+        return False
+    if any(
+        str(value or "").strip()
+        for value in (state.get("calculation_requests") or [])
+    ):
+        return False
+    return True
 
 
 def _result_summary(state: Mapping[str, Any], executed: Sequence[str]) -> str:
@@ -867,26 +1030,34 @@ def _result_summary(state: Mapping[str, Any], executed: Sequence[str]) -> str:
             f"- {tool}: status={str(item.get('status') or 'unknown')}, count={count}"
         )
 
-    previews: List[str] = []
-    seen = set()
+    # Round-robin records, not the first eight claims from one table. Otherwise
+    # a rich HMC row can hide every history case from the gap decision.
+    groups: Dict[str, Dict[str, Dict[str, Any]]] = {}
     for item in state.get("evidence_registry", []) or []:
         if not isinstance(item, Mapping):
             continue
-        evidence_id = str(item.get("evidence_id") or "")
-        if evidence_id and evidence_id in seen:
-            continue
-        if evidence_id:
-            seen.add(evidence_id)
-        title = str(item.get("title") or item.get("doc_name") or "").strip()
-        summary = str(item.get("display_summary") or "").strip()
-        if not summary:
-            content = str(item.get("content") or "").strip()
-            summary = "" if content.startswith(("{", "[")) else content
-        text = " ".join(part for part in (title, summary[:220]) if part).strip()
-        if text:
-            previews.append(text[:280])
-        if len(previews) >= 8:
+        from backend.agent.record_identity import RecordIdentity
+        doc_type = str(item.get("doc_type") or "unknown")
+        metadata = item.get("metadata") or {}
+        identity = RecordIdentity.from_row(doc_type, {
+            **item, "candidate_scope": item.get("scope") or {},
+            "revision_id": metadata.get("revision_id"), "variant_id": metadata.get("variant_id"),
+        }, fallback=str(item.get("evidence_id") or len(groups))).candidate_id
+        record = groups.setdefault(doc_type, {}).setdefault(identity, {
+            "doc_type": doc_type, "record_id": item.get("record_id"),
+            "title": item.get("title"), "match_type": item.get("match_type"),
+            "fields": {}, "summary": str(item.get("display_summary") or "")[:600],
+        })
+        record["fields"].update(_structured_answer_fields(item))
+    from itertools import zip_longest
+    previews = []
+    for row in zip_longest(*(list(records.values())[:4] for records in groups.values())):
+        for record in row:
+            if record is not None:
+                previews.append(json.dumps(record, ensure_ascii=False, default=str)[:1800])
+        if len(previews) >= 14:
             break
+    previews = previews[:14]
     result_lines.append(f"- 可追溯候选证据: {_evidence_count(state)} 条")
     doc_type_counts: Dict[str, int] = {}
     for item in state.get("evidence_registry", []) or []:
@@ -955,35 +1126,6 @@ def _fallback_tools(
     return []
 
 
-_IMPLICIT_GRAPH_INTENTS = {
-    "architecture_query",
-    "cause_analysis",
-    "symptom_diagnosis",
-}
-
-_CANDIDATE_SEED_TOOLS_BY_INTENT = {
-    "entity_profile": ("function_locator",),
-    "architecture_query": ("function_locator",),
-    "function_location": ("function_locator",),
-    "symptom_diagnosis": (
-        "function_locator", "fmeca_query", "fta_query", "mfl_query",
-        "fault_history_query",
-    ),
-    "cause_analysis": ("fmeca_query", "fta_query", "function_locator"),
-    "impact_analysis": ("fmeca_query", "function_locator", "fta_query"),
-    "maintenance_query": (
-        "mfl_query", "fault_history_query", "function_locator", "fmeca_query",
-    ),
-    "reliability_query": ("rbd_query", "function_locator"),
-    "history_query": (
-        "fault_history_query", "fmeca_query", "mfl_query", "function_locator",
-    ),
-    "hybrid": (
-        "function_locator", "fmeca_query", "fta_query", "rbd_query",
-        "mfl_query", "fault_history_query",
-    ),
-}
-
 _MAX_GRAPH_SEEDS = 8
 _MAX_CANDIDATE_SEEDS_PER_TOOL = 3
 
@@ -1011,12 +1153,6 @@ def _graph_expansion_reason(state: Mapping[str, Any]) -> str:
     authorized = set(state.get("authorized_tools") or state.get("allowed_tools") or [])
     if "graph_traversal" not in authorized:
         return ""
-    targets = {
-        str(item.get("intent") or "")
-        for item in (state.get("query_targets") or [])
-        if isinstance(item, Mapping) and str(item.get("intent") or "")
-    }
-    intent = str(state.get("intent") or "")
     relation_expansion = state.get("relation_expansion")
     raw_relation_needed = (
         relation_expansion.get("needed")
@@ -1032,36 +1168,43 @@ def _graph_expansion_reason(state: Mapping[str, Any]) -> str:
         return reason or "规划阶段识别出完整回答需要跨文档关系补全"
     if "graph_traversal" in set(state.get("allowed_tools") or []):
         return "规划阶段已识别出需要跨文档或多跳信息"
-    if len(targets) >= 2:
-        return "当前问题同时包含多个信息目标，需要检查它们在不同文档中的连接"
-    if intent in _IMPLICIT_GRAPH_INTENTS:
-        return {
-            "architecture_query": "架构定位需要补全实体层级、功能和上下游连接",
-            "cause_analysis": "原因分析需要检查故障、原因、功能和模块之间的证据链",
-            "symptom_diagnosis": "模糊故障定位需要检查候选现象在多类资料中的交叉连接",
-        }[intent]
     return ""
 
 
-def _target_intents(state: Mapping[str, Any]) -> List[str]:
-    targets = _unique_strings(
-        item.get("intent")
-        for item in (state.get("query_targets") or [])
-        if isinstance(item, Mapping)
+def _seed_owner_tools(state: Mapping[str, Any]) -> List[str]:
+    """Return graph-seed owners from explicit field/source contracts only."""
+
+    frame = (
+        state.get("query_frame")
+        if isinstance(state.get("query_frame"), Mapping)
+        else {}
     )
-    intent = str(state.get("intent") or "").strip()
-    if intent and intent not in targets:
-        targets.insert(0, intent)
-    return targets
+    owners = {
+        tool
+        for tool in tools_for_answer_fields(_required_answer_slots(state))
+        if tool in QUERY_TOOL_NAMES
+    }
+    for raw in frame.get("source_obligations") or []:
+        if not isinstance(raw, Mapping):
+            continue
+        tool = str(raw.get("tool") or "").strip()
+        if tool in QUERY_TOOL_NAMES:
+            owners.add(tool)
+    owners.update(
+        tool
+        for tool in (frame.get("requested_source_tools") or [])
+        if tool in QUERY_TOOL_NAMES
+    )
+    authorized = set(state.get("authorized_tools") or state.get("allowed_tools") or [])
+    return [
+        tool for tool in _TOOL_ORDER
+        if tool in owners and tool in authorized
+    ]
 
 
 def _candidate_seed_tools(state: Mapping[str, Any]) -> List[str]:
-    result: List[str] = []
-    for intent in _target_intents(state):
-        for tool in _CANDIDATE_SEED_TOOLS_BY_INTENT.get(intent, ()):
-            if tool not in result:
-                result.append(tool)
-    return result
+    executed = set(_executed_tools(state))
+    return [tool for tool in _seed_owner_tools(state) if tool in executed]
 
 
 def _eligible_graph_seed_bindings(state: Mapping[str, Any]) -> List[Dict[str, Any]]:
@@ -1070,12 +1213,25 @@ def _eligible_graph_seed_bindings(state: Mapping[str, Any]) -> List[Dict[str, An
     A complete HMC code is an exact identity and is always eligible.  Keyword
     HMC matches are deliberately excluded: a shared word such as “外设” must
     not turn an unrelated HMC row into the center of a multi-hop answer.
-    Other semantic candidates are allowed only when their source tool is
-    appropriate for the planner's structured target, and are capped per source
-    so one broad table query cannot monopolize the traversal.
+    Other semantic candidates are allowed only when their source tool was both
+    executed/authorized and owns an explicit field or source obligation. They
+    are capped per source so one broad table query cannot monopolize traversal.
     """
 
     allowed_candidate_tools = set(_candidate_seed_tools(state))
+    record_binding = (
+        state.get("structured_record_binding")
+        if isinstance(state.get("structured_record_binding"), Mapping)
+        else {}
+    )
+    fmeca_record_ambiguous = record_binding.get("ambiguous") is True
+    fmeca_relevance_only = record_binding.get("relevance_only") is True
+    entity_binding = (
+        state.get("structured_entity_binding")
+        if isinstance(state.get("structured_entity_binding"), Mapping)
+        else {}
+    )
+    structured_entity_ambiguous = entity_binding.get("ambiguous") is True
     exact: List[Dict[str, Any]] = []
     candidates: List[Dict[str, Any]] = []
     per_tool: Dict[str, int] = {}
@@ -1089,6 +1245,17 @@ def _eligible_graph_seed_bindings(state: Mapping[str, Any]) -> List[Dict[str, An
             continue
         binding_status = str(item.get("binding_status") or "candidate")
         source_tool = str(item.get("source_tool") or "").strip()
+        if (
+            (fmeca_record_ambiguous or fmeca_relevance_only)
+            and source_tool == "fmeca_query"
+        ):
+            # A later adaptive subset must not turn one side of a preserved
+            # FMECA identity tie or relevance-only match into a graph anchor.
+            continue
+        if structured_entity_ambiguous and source_tool == "function_locator":
+            # Equal-authority object conflicts are audit facts, not permission
+            # to traverse both unrelated entities.
+            continue
         if binding_status == "exact":
             seen.add(logical_id)
             exact.append(item)
@@ -1108,7 +1275,7 @@ def _preferred_seed_tools(
     available_query_tools: Sequence[str],
 ) -> List[str]:
     available = set(available_query_tools)
-    return [tool for tool in _candidate_seed_tools(state) if tool in available]
+    return [tool for tool in _seed_owner_tools(state) if tool in available]
 
 
 async def adaptive_tool_route_node(state: Mapping[str, Any], config=None) -> Dict[str, Any]:
@@ -1172,20 +1339,15 @@ async def adaptive_tool_route_node(state: Mapping[str, Any], config=None) -> Dic
             "reflection": summary,
         }
 
-    targets = [
-        str(item.get("intent") or "")
-        for item in (state.get("query_targets") or [])
-        if isinstance(item, Mapping) and str(item.get("intent") or "")
-    ]
-    contract_fields = required_answer_fields(state)
+    from backend.agent.task_context import current_task
+    contract_fields = _required_answer_slots(state)
     available_text = "\n".join(
         f"- {tool}: {_TOOL_PURPOSES[tool]}" for tool in available
     )
     result_summary = _result_summary(state, executed)
     prompt = ADAPTIVE_TOOL_PROMPT.format(
         query=str(state.get("query") or ""),
-        targets=", ".join([*targets, *(f"必答字段:{field}" for field in contract_fields)])
-        or str(state.get("intent") or "hybrid"),
+        targets=json.dumps(current_task(state), ensure_ascii=False),
         executed_tools=", ".join(executed) or "无",
         result_summary=result_summary,
         available_tools=available_text,
@@ -1244,9 +1406,8 @@ async def adaptive_tool_route_node(state: Mapping[str, Any], config=None) -> Dic
             logger.warning(model_error)
 
     # The route model chooses the most useful next step, but it must not stop a
-    # fault answer after finding only one dimension (for example, a cause with
-    # no documented handling or historical outcome). Add only the bounded,
-    # intent-specific evidence families that remain available.
+    # contract answer after finding only one explicitly requested dimension.
+    # Add only the bounded, field-owned evidence families that remain available.
     completion_followups = _completion_followups(
         state,
         executed=executed,
@@ -1272,6 +1433,16 @@ async def adaptive_tool_route_node(state: Mapping[str, Any], config=None) -> Dic
     direct_tools = [
         tool for tool in selected if tool in QUERY_TOOL_NAMES
     ][:MAX_FOLLOWUP_QUERY_TOOLS]
+    from backend.agent.query_understanding import normalize_tool_queries
+    from backend.agent.task_context import task_query
+    # Follow-up queries fill the same task's gap; they cannot grant tools,
+    # replace exact selectors or mutate dialogue_context/query_frame.
+    queries = normalize_tool_queries(state.get("tool_queries"))
+    proposed_queries = normalize_tool_queries((parsed or {}).get("tool_queries"))
+    for tool in direct_tools:
+        queries[tool] = list(dict.fromkeys([
+            task_query(state), *proposed_queries.get(tool, []),
+        ]))[:4]
     # 明确的语义目标可以自动触发图扩展，不要求用户使用图谱术语，也不
     # 依赖二次路由模型再次猜中同一个需要。没有业务实体时仍然不能立刻
     # 查图；若本轮还有直接补查，则只记录“取得实体后再查图”的受限请求。
@@ -1317,6 +1488,7 @@ async def adaptive_tool_route_node(state: Mapping[str, Any], config=None) -> Dic
 
     return {
         "pending_tools": direct_tools,
+        "tool_queries": queries,
         "adaptive_graph_requested": adaptive_graph_requested,
         "graph_traversal_request": request,
         "adaptive_round": 1,
@@ -1421,6 +1593,425 @@ def _merge_seed_bindings(
     return list(by_id.values())[:24]
 
 
+def _merge_structured_entity_binding(
+    first: Mapping[str, Any] | None,
+    second: Mapping[str, Any] | None,
+) -> Dict[str, Any]:
+    """Keep one compatible, strongest object hand-off across adaptive batches.
+
+    ``icp_diagnosis_node`` is also used for the bounded adaptive batch.  A
+    batch that does not run Function Locator legitimately returns an unbound
+    value, but that absence must not erase an exact binding established by the
+    first batch.  When both batches bind the same object family, merge their
+    IDs/terms.  For disjoint IDs, the more authoritative binding wins; equal
+    or unknown authority fails closed instead of inventing an entity union.
+    Every conflict remains attached to the result for audit/debugging.
+    """
+
+    previous = dict(first or {})
+    current = dict(second or {})
+    previous_bound = previous.get("bound") is True
+    current_bound = current.get("bound") is True
+
+    def normalized_ids(binding: Mapping[str, Any]) -> set[str]:
+        return {
+            str(value or "").strip().upper()
+            for value in (binding.get("business_ids") or [])
+            if str(value or "").strip()
+        }
+
+    def inherited_conflicts(*bindings: Mapping[str, Any]) -> List[Dict[str, Any]]:
+        result: List[Dict[str, Any]] = []
+        for binding in bindings:
+            for raw in binding.get("binding_conflicts") or []:
+                if not isinstance(raw, Mapping):
+                    continue
+                item = dict(raw)
+                if item not in result:
+                    result.append(item)
+        return result[:8]
+
+    if not current_bound:
+        return dict(previous if previous_bound else current)
+    if not previous_bound:
+        return dict(current)
+
+    previous_ids = normalized_ids(previous)
+    current_ids = normalized_ids(current)
+    if not previous_ids or not current_ids or not (previous_ids & current_ids):
+        previous_basis = str(previous.get("basis") or "").strip()
+        current_basis = str(current.get("basis") or "").strip()
+        previous_rank = binding_basis_rank(previous_basis)
+        current_rank = binding_basis_rank(current_basis)
+        conflict = {
+            "reason": (
+                "missing_business_ids"
+                if not previous_ids or not current_ids
+                else "disjoint_business_ids"
+            ),
+            "previous": {
+                "basis": previous_basis,
+                "rank": previous_rank,
+                "business_ids": sorted(previous_ids),
+            },
+            "current": {
+                "basis": current_basis,
+                "rank": current_rank,
+                "business_ids": sorted(current_ids),
+            },
+        }
+        conflicts = [*inherited_conflicts(previous, current), conflict][-8:]
+        if previous_rank > current_rank:
+            conflict["resolution"] = "kept_stronger_previous"
+            result = dict(previous)
+            result["binding_conflicts"] = conflicts
+            return result
+        if current_rank > previous_rank:
+            conflict["resolution"] = "kept_stronger_current"
+            result = dict(current)
+            result["binding_conflicts"] = conflicts
+            return result
+        conflict["resolution"] = "ambiguous_equal_or_unknown_authority"
+        return {
+            "bound": False,
+            "ambiguous": True,
+            "business_ids": [],
+            "terms": [],
+            "row_indexes": [],
+            "basis": "ambiguous_adaptive_binding_conflict",
+            "binding_conflicts": conflicts,
+        }
+
+    merged = dict(previous)
+    for key in ("business_ids", "terms", "row_indexes"):
+        values: List[Any] = []
+        seen: set[str] = set()
+        for value in [*(previous.get(key) or []), *(current.get(key) or [])]:
+            identity = str(value).strip().casefold()
+            if not identity or identity in seen:
+                continue
+            seen.add(identity)
+            values.append(value)
+        merged[key] = values
+    merged["bound"] = True
+    merged["ambiguous"] = False
+    previous_basis = str(previous.get("basis") or "").strip()
+    current_basis = str(current.get("basis") or "").strip()
+    merged["basis"] = (
+        current_basis
+        if binding_basis_rank(current_basis) > binding_basis_rank(previous_basis)
+        else previous_basis or current_basis
+    )
+    conflicts = inherited_conflicts(previous, current)
+    if conflicts:
+        merged["binding_conflicts"] = conflicts
+    return merged
+
+
+def _merge_structured_record_binding(
+    first: Mapping[str, Any] | None,
+    second: Mapping[str, Any] | None,
+) -> Dict[str, Any]:
+    """Preserve one exact record target across bounded adaptive batches.
+
+    An adaptive batch often sees only a subset of the first batch's rows.  A
+    unique result in that subset therefore cannot resolve an earlier tie (or
+    erase a newly discovered tie).  Any ambiguity fails closed and carries all
+    candidate identities forward for audit.  Only compatible bound targets are
+    merged as one record.
+    """
+
+    previous = dict(first or {})
+    current = dict(second or {})
+    previous_bound = previous.get("bound") is True
+    current_bound = current.get("bound") is True
+    previous_ambiguous = previous.get("ambiguous") is True
+    current_ambiguous = current.get("ambiguous") is True
+    previous_relevance_only = previous.get("relevance_only") is True
+    current_relevance_only = current.get("relevance_only") is True
+
+    if previous_ambiguous or current_ambiguous:
+        candidate_entries: List[Dict[str, Any]] = []
+        seen_candidates: set[tuple[str, tuple[str, ...], str]] = set()
+
+        def append_candidates(binding: Mapping[str, Any]) -> None:
+            doc_type = str(binding.get("doc_type") or "").strip()
+            raw_candidates = binding.get("candidates") or []
+            candidates = (
+                raw_candidates
+                if isinstance(raw_candidates, Sequence)
+                and not isinstance(raw_candidates, (str, bytes))
+                else []
+            )
+            for candidate in candidates:
+                if not isinstance(candidate, Mapping):
+                    continue
+                candidate_ids = candidate.get("record_ids")
+                if candidate_ids is None:
+                    candidate_ids = [candidate.get("record_id")]
+                normalized_ids = tuple(
+                    sorted(
+                        {
+                            str(value or "").strip().upper()
+                            for value in (candidate_ids or [])
+                            if str(value or "").strip()
+                        }
+                    )
+                )
+                candidate_type = str(candidate.get("doc_type") or doc_type).strip()
+                basis = str(candidate.get("basis") or binding.get("basis") or "").strip()
+                identity = (candidate_type, normalized_ids, basis)
+                if not normalized_ids or identity in seen_candidates:
+                    continue
+                seen_candidates.add(identity)
+                candidate_entries.append(
+                    {
+                        "doc_type": candidate_type,
+                        "record_ids": list(normalized_ids),
+                        "basis": basis,
+                    }
+                )
+            bound_ids = sorted(
+                {
+                    str(value or "").strip().upper()
+                    for value in (binding.get("record_ids") or [])
+                    if str(value or "").strip()
+                }
+            )
+            identity = (
+                doc_type,
+                tuple(bound_ids),
+                str(binding.get("basis") or "").strip(),
+            )
+            if bound_ids and identity not in seen_candidates:
+                seen_candidates.add(identity)
+                candidate_entries.append(
+                    {
+                        "doc_type": doc_type,
+                        "record_ids": bound_ids,
+                        "basis": identity[2],
+                    }
+                )
+
+        append_candidates(previous)
+        append_candidates(current)
+        candidate_types = {
+            str(item.get("doc_type") or "").strip()
+            for item in candidate_entries
+            if str(item.get("doc_type") or "").strip()
+        }
+        return {
+            "doc_type": candidate_types.pop() if len(candidate_types) == 1 else "",
+            "bound": False,
+            "ambiguous": True,
+            "record_ids": [],
+            "row_indexes": [],
+            "basis": "ambiguous_adaptive_record_binding_conflict",
+            "candidates": candidate_entries,
+        }
+
+    if previous_relevance_only or current_relevance_only:
+        # Relevance is not identity, but it is a sticky safety boundary.  A
+        # later batch that did not run FMECA returns an empty default binding;
+        # that absence must not erase the first batch's graph prohibition.
+        # A genuinely exact current/previous binding may supersede relevance.
+        if current_bound:
+            return current
+        if previous_bound:
+            return previous
+        candidates: List[Dict[str, Any]] = []
+        seen_candidates: set[tuple[str, str]] = set()
+        for binding in (previous, current):
+            for raw in binding.get("candidates") or []:
+                if not isinstance(raw, Mapping):
+                    continue
+                item = dict(raw)
+                identity = (
+                    str(item.get("record_id") or "").strip().upper(),
+                    str(item.get("row_index") or "0"),
+                )
+                if not identity[0] or identity in seen_candidates:
+                    continue
+                seen_candidates.add(identity)
+                candidates.append(item)
+        source = previous if previous_relevance_only else current
+        merged = dict(source)
+        merged.update(
+            {
+                "bound": False,
+                "ambiguous": False,
+                "record_ids": [],
+                "row_indexes": [],
+                "basis": "literal_field_relevance_only",
+                "candidates": candidates[:16],
+                "relevance_only": True,
+            }
+        )
+        return merged
+
+    if not current_bound:
+        return previous if previous_bound else current
+    if not previous_bound:
+        return current
+    previous_ids = {
+        str(value or "").strip().upper()
+        for value in (previous.get("record_ids") or [])
+        if str(value or "").strip()
+    }
+    current_ids = {
+        str(value or "").strip().upper()
+        for value in (current.get("record_ids") or [])
+        if str(value or "").strip()
+    }
+    previous_type = str(previous.get("doc_type") or "").strip()
+    current_type = str(current.get("doc_type") or "").strip()
+    if (
+        previous_ids
+        and current_ids
+        and previous_ids == current_ids
+        and previous_type == current_type
+    ):
+        merged = dict(previous)
+        merged.update(current)
+        merged["record_ids"] = list(previous.get("record_ids") or current.get("record_ids") or [])
+        return merged
+    return {
+        "doc_type": previous_type if previous_type == current_type else "",
+        "bound": False,
+        "ambiguous": True,
+        "record_ids": [],
+        "row_indexes": [],
+        "basis": "ambiguous_adaptive_record_binding_conflict",
+        "candidates": [
+            {
+                "doc_type": previous_type,
+                "record_ids": sorted(previous_ids),
+                "basis": str(previous.get("basis") or ""),
+            },
+            {
+                "doc_type": current_type,
+                "record_ids": sorted(current_ids),
+                "basis": str(current.get("basis") or ""),
+            },
+        ],
+    }
+
+
+def _merge_hmc_mfl_binding(
+    first: Mapping[str, Any] | None,
+    second: Mapping[str, Any] | None,
+) -> Dict[str, Any]:
+    """Keep an explicit HMC-to-MFL ownership decision across batches."""
+
+    previous = dict(first or {})
+    current = dict(second or {})
+    previous_required = previous.get("required") is True
+    current_required = current.get("required") is True
+    if not previous_required and not current_required:
+        return current
+    # Treat a batch which did not exercise this relationship as a neutral
+    # required record, then run the same structural validation as a two-sided
+    # merge.  Returning the other dictionary verbatim would let a malformed
+    # ``bound=True`` flag bypass validation merely because the adaptive batch
+    # happened not to query HMC/MFL.
+    if not previous_required:
+        previous = {"required": True}
+    if not current_required:
+        current = {"required": True}
+
+    def values(binding: Mapping[str, Any], key: str) -> Dict[str, str]:
+        result: Dict[str, str] = {}
+        for value in binding.get(key) or []:
+            rendered = str(value or "").strip()
+            if rendered:
+                result.setdefault(rendered.casefold(), rendered)
+        return result
+
+    def rendered(values_by_id: Mapping[str, str]) -> List[str]:
+        return [values_by_id[key] for key in sorted(values_by_id)]
+
+    previous_hmc = values(previous, "hmc_codes")
+    current_hmc = values(current, "hmc_codes")
+    all_hmc = {**current_hmc, **previous_hmc}
+    all_mfl = {
+        **values(current, "mfl_codes"),
+        **values(previous, "mfl_codes"),
+    }
+    trusted_mfl: Dict[str, str] = {}
+    for binding in (current, previous):
+        binding_hmc = values(binding, "hmc_codes")
+        binding_mfl = values(binding, "mfl_codes")
+        if (
+            binding.get("bound") is True
+            and str(binding.get("basis") or "").strip()
+            == "explicit_authoritative_reference"
+            and binding_hmc
+            and binding_mfl
+        ):
+            trusted_mfl.update(binding_mfl)
+    all_excluded = {
+        **values(current, "excluded_mfl_codes"),
+        **values(previous, "excluded_mfl_codes"),
+        **{
+            identity: value
+            for identity, value in all_mfl.items()
+            if identity not in trusted_mfl
+        },
+    }
+    if previous.get("ambiguous") is True or current.get("ambiguous") is True:
+        return {
+            "required": True,
+            "bound": False,
+            "ambiguous": True,
+            "basis": "ambiguous_adaptive_hmc_mfl_binding",
+            "hmc_codes": rendered(all_hmc),
+            "mfl_codes": [],
+            "excluded_mfl_codes": rendered({**all_excluded, **all_mfl}),
+        }
+    if (
+        previous_hmc
+        and current_hmc
+        and not (set(previous_hmc) & set(current_hmc))
+    ):
+        return {
+            "required": True,
+            "bound": False,
+            "ambiguous": True,
+            "basis": "ambiguous_adaptive_hmc_target_conflict",
+            "hmc_codes": rendered(all_hmc),
+            "mfl_codes": [],
+            "excluded_mfl_codes": rendered({**all_excluded, **all_mfl}),
+        }
+
+    excluded = {
+        identity: value
+        for identity, value in all_excluded.items()
+        if identity not in trusted_mfl
+    }
+    return {
+        "required": True,
+        "bound": bool(all_hmc and trusted_mfl),
+        "ambiguous": False,
+        "basis": (
+            "explicit_authoritative_reference"
+            if all_hmc and trusted_mfl
+            else "no_explicit_authoritative_relation"
+        ),
+        "hmc_codes": rendered(all_hmc),
+        "mfl_codes": rendered(trusted_mfl),
+        "excluded_mfl_codes": rendered(excluded),
+    }
+
+
+def _merge_rbd_query_binding(
+    first: Mapping[str, Any] | None,
+    second: Mapping[str, Any] | None,
+) -> Dict[str, Any]:
+    """Delegate every adaptive batch to the shared RBD authority contract."""
+
+    return merge_rbd_query_bindings(first, second)
+
+
 async def adaptive_retrieval_node(state: Mapping[str, Any]) -> Dict[str, Any]:
     """执行自适应路由选中的唯一一批补查，并与首轮状态合并。"""
 
@@ -1455,8 +2046,66 @@ async def adaptive_retrieval_node(state: Mapping[str, Any]) -> Dict[str, Any]:
     graph_requested = bool(state.get("adaptive_graph_requested"))
     merged_state = dict(state)
     merged_state["graph_seed_bindings"] = merged_seeds
-    eligible_graph_seeds = _eligible_graph_seed_bindings(merged_state)
+    # Candidate graph anchors are eligible only after their owner tool has
+    # actually run.  Include this adaptive batch in that audit trail before
+    # evaluating the newly returned bindings.
+    merged_state["tool_results"] = [
+        *(state.get("tool_results") or []),
+        *(update.get("tool_results") or []),
+    ]
     update["graph_seed_bindings"] = merged_seeds
+    update["structured_entity_binding"] = _merge_structured_entity_binding(
+        state.get("structured_entity_binding")
+        if isinstance(state.get("structured_entity_binding"), Mapping)
+        else {},
+        update.get("structured_entity_binding")
+        if isinstance(update.get("structured_entity_binding"), Mapping)
+        else {},
+    )
+    merged_state["structured_entity_binding"] = update[
+        "structured_entity_binding"
+    ]
+    update["structured_record_binding"] = _merge_structured_record_binding(
+        state.get("structured_record_binding")
+        if isinstance(state.get("structured_record_binding"), Mapping)
+        else {},
+        update.get("structured_record_binding")
+        if isinstance(update.get("structured_record_binding"), Mapping)
+        else {},
+    )
+    merged_state["structured_record_binding"] = update[
+        "structured_record_binding"
+    ]
+    update["history_parent_binding"] = merge_history_parent_bindings(
+        state.get("history_parent_binding")
+        if isinstance(state.get("history_parent_binding"), Mapping)
+        else {},
+        update.get("history_parent_binding")
+        if isinstance(update.get("history_parent_binding"), Mapping)
+        else {},
+    )
+    merged_state["history_parent_binding"] = update[
+        "history_parent_binding"
+    ]
+    update["hmc_mfl_binding"] = _merge_hmc_mfl_binding(
+        state.get("hmc_mfl_binding")
+        if isinstance(state.get("hmc_mfl_binding"), Mapping)
+        else {},
+        update.get("hmc_mfl_binding")
+        if isinstance(update.get("hmc_mfl_binding"), Mapping)
+        else {},
+    )
+    merged_state["hmc_mfl_binding"] = update["hmc_mfl_binding"]
+    update["rbd_query_binding"] = _merge_rbd_query_binding(
+        state.get("rbd_query_binding")
+        if isinstance(state.get("rbd_query_binding"), Mapping)
+        else {},
+        update.get("rbd_query_binding")
+        if isinstance(update.get("rbd_query_binding"), Mapping)
+        else {},
+    )
+    merged_state["rbd_query_binding"] = update["rbd_query_binding"]
+    eligible_graph_seeds = _eligible_graph_seed_bindings(merged_state)
     update["graph_traversal_request"] = (
         _graph_request(eligible_graph_seeds, cumulative_allowed) if graph_requested else {}
     )
@@ -1485,6 +2134,11 @@ async def adaptive_retrieval_node(state: Mapping[str, Any]) -> Dict[str, Any]:
         update.get("confirmed_graphs") or [],
         keys=("doc_id", "revision_id", "diagram_id"),
     )
+    update["fta_query_binding"] = merge_diagram_scopes(state.get("fta_query_binding"), update.get("fta_query_binding"))
+    if update["fta_query_binding"]:
+        update["confirmed_graphs"] = [row for row in update["confirmed_graphs"]
+            if str(row.get("diagram_type") or "") != "fta"
+            or diagram_in_scope(row, update["fta_query_binding"], query=str(state.get("query") or ""))]
     update["allowed_tools"] = cumulative_allowed
     update["pending_tools"] = []
     return update

@@ -63,9 +63,19 @@ class TracingTests(unittest.TestCase):
     def test_degradation_counts_even_without_trace(self):
         before = dict(tracing._AGG)
         tracing.record_degradation("retrieval_projection", detail="projection failed")
+        tracing.record_degradation("editor_manifest_echo", detail="history")
+        tracing.record_degradation("answer_incremental_fallback", detail="timeout")
         tracing.record_degradation("unknown_kind", detail="ignored")
         after = dict(tracing._AGG)
         self.assertEqual(after["deg_retrieval_projection"], before["deg_retrieval_projection"] + 1)
+        self.assertEqual(
+            after["deg_editor_manifest_echo"],
+            before["deg_editor_manifest_echo"] + 1,
+        )
+        self.assertEqual(
+            after["deg_answer_incremental_fallback"],
+            before["deg_answer_incremental_fallback"] + 1,
+        )
         self.assertNotIn("deg_unknown_kind", after)
 
     def test_aggregate_stats_rates(self):
@@ -84,6 +94,17 @@ class TracingTests(unittest.TestCase):
         listed = tracing.list_traces(limit=5)
         self.assertTrue(any(item["trace_id"] == trace_id for item in listed))
         self.assertNotIn("events", listed[0])
+
+    def test_safety_fallback_is_counted_in_trace_and_process_without_registry_drift(self):
+        tracing.begin_turn(session_id="safety", query="q")
+        tracing.record_degradation("answer_open_claim_safety_fallback", detail="unsupported unit")
+        summary = tracing.end_turn()
+        self.assertEqual(1, summary["degradations"]["answer_open_claim_safety_fallback"])
+        self.assertEqual(1, tracing._AGG["deg_answer_open_claim_safety_fallback"])
+        self.assertEqual(
+            {"deg_" + kind for kind in tracing.DEGRADATION_KINDS},
+            {key for key in tracing._AGG if key.startswith("deg_")},
+        )
 
     def test_contextvar_isolation_between_turns(self):
         first = tracing.begin_turn(session_id="a", query="q1")

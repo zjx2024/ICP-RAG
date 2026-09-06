@@ -578,13 +578,22 @@ class OpenSearchClient:
         top_k: int = 10,
     ) -> List[SearchHit]:
         filter_query = filters_to_query(filters)
-        if str(query).strip():
+        keyword_query = str(query).strip()
+        if len(keyword_query) > 220:
+            # CJK analysis expands each character sequence across every text
+            # field. Keep long model-authored queries bounded so a valid
+            # semantic request cannot exceed OpenSearch's Boolean clause cap.
+            keyword_query = keyword_query[:220]
+        if keyword_query:
+            fields = self.TEXT_FIELDS
+            if len(keyword_query) > 140:
+                fields = ["content^4", "title^3", "summary^2", "entities"]
             bool_query: Dict[str, Any] = {
                 "must": [
                     {
                         "multi_match": {
-                            "query": str(query),
-                            "fields": self.TEXT_FIELDS,
+                            "query": keyword_query,
+                            "fields": fields,
                             "type": "best_fields",
                             "analyzer": "icp_cjk_search",
                         }

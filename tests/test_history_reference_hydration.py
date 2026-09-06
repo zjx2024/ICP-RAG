@@ -4,8 +4,22 @@ from unittest.mock import MagicMock, patch
 from backend.agent.tools import icp_diagnosis as diagnosis_module
 
 
+def _identity_history_binding(case_id, row_id):
+    return {
+        "version": 1,
+        "case_ids": [case_id],
+        "row_ids": [str(row_id)],
+        "source": "persisted_exact_parent",
+        "authority": "identity",
+        "comparison": False,
+        "ambiguous": False,
+        "conflict": False,
+        "authorizes_exact_links": True,
+    }
+
+
 class HistoryReferenceHydrationTests(unittest.TestCase):
-    def test_only_semantic_identity_hydrated_history_can_seed_references(self):
+    def test_only_explicitly_selected_history_parents_can_seed_multiple_references(self):
         context = diagnosis_module._semantic_history_reference_context(
             [
                 {
@@ -20,11 +34,11 @@ class HistoryReferenceHydrationTests(unittest.TestCase):
                     "case_id": "HIS-012",
                     "match_type": "semantic_id_hydration",
                     "retrieval_match_score": 0.61,
-                    "fmeca_code": "FM-SYN-006",
+                    "fmeca_code": "FM-GEN-012",
                     "hmc_code": "91810002**0003",
                     "document_links": {
-                        "fmeca_refs": ["FM-SYN-006"],
-                        "mfl_refs": ["MFL-SYN-006"],
+                        "fmeca_refs": ["FM-GEN-012"],
+                        "mfl_refs": ["MFL-GEN-012"],
                     },
                 },
                 {
@@ -32,7 +46,10 @@ class HistoryReferenceHydrationTests(unittest.TestCase):
                     "case_id": "HIS-013",
                     "match_type": "semantic_id_hydration",
                     "retrieval_match_score": 0.83,
-                    "document_links": {"fmeca_refs": ["FM-SYN-006"]},
+                    "document_links": {
+                        "fmeca_refs": ["FM-GEN-013"],
+                        "mfl_refs": ["MFL-GEN-013"],
+                    },
                 },
                 {
                     "id": 14,
@@ -43,22 +60,333 @@ class HistoryReferenceHydrationTests(unittest.TestCase):
                         "fmeca_refs": ["FM-WEAK-MUST-NOT-EXPAND"]
                     },
                 },
-            ]
+            ],
+            state={
+                "query": "比较 HIS-012 与 HIS-013 两个历史案例的处理。",
+                "query_targets": [{"intent": "history_query"}],
+                "query_frame": {
+                    "original_query": "比较 HIS-012 与 HIS-013 两个历史案例的处理。",
+                    "question_semantics": "compare",
+                },
+            },
         )
 
         self.assertNotIn("FM-KEYWORD-MUST-NOT-EXPAND", context.get("fmeca", {}))
         self.assertNotIn("FM-WEAK-MUST-NOT-EXPAND", context.get("fmeca", {}))
-        self.assertEqual(0.83, context["fmeca"]["FM-SYN-006"]["retrieval_match_score"])
         self.assertEqual(
-            ["12", "13"],
-            context["fmeca"]["FM-SYN-006"]["history_record_ids"],
+            {"FM-GEN-012", "FM-GEN-013"}, set(context.get("fmeca", {}))
         )
         self.assertEqual(
-            ["HIS-012", "HIS-013"],
-            context["fmeca"]["FM-SYN-006"]["history_case_ids"],
+            ["12"], context["fmeca"]["FM-GEN-012"]["history_record_ids"]
+        )
+        self.assertEqual(
+            ["HIS-013"], context["fmeca"]["FM-GEN-013"]["history_case_ids"]
         )
         self.assertIn("91810002**0003", context["hmc"])
-        self.assertIn("MFL-SYN-006", context["mfl"])
+        self.assertEqual(
+            {"MFL-GEN-012", "MFL-GEN-013"}, set(context.get("mfl", {}))
+        )
+
+    def test_competing_history_parents_fail_closed_before_reference_expansion(self):
+        context = diagnosis_module._semantic_history_reference_context(
+            [
+                {
+                    "id": 21,
+                    "case_id": "HIS-GEN-021",
+                    "match_type": "semantic_id_hydration",
+                    "retrieval_match_score": 0.91,
+                    "document_links": {"mfl_refs": ["MFL-GEN-021"]},
+                },
+                {
+                    "id": 22,
+                    "case_id": "HIS-GEN-022",
+                    "match_type": "structured_query",
+                    "document_links": {"mfl_refs": ["MFL-GEN-022"]},
+                },
+            ],
+            state={
+                "query": "以前相近案例怎样处置？",
+                "query_targets": [{"intent": "history_query"}],
+                "query_frame": {"original_query": "以前相近案例怎样处置？"},
+            },
+        )
+
+        self.assertEqual({}, context)
+
+    def test_explicit_history_identity_selects_one_parent_among_competitors(self):
+        context = diagnosis_module._semantic_history_reference_context(
+            [
+                {
+                    "id": 31,
+                    "case_id": "HIS-GEN-031",
+                    "match_type": "structured_query",
+                    "document_links": {"fmeca_refs": ["FM-GEN-031"]},
+                },
+                {
+                    "id": 32,
+                    "case_id": "HIS-GEN-032",
+                    "match_type": "semantic_id_hydration",
+                    "retrieval_match_score": 0.98,
+                    "document_links": {"fmeca_refs": ["FM-GEN-032"]},
+                },
+            ],
+            state={
+                "query": "只核对历史案例 HIS-GEN-031 的恢复方法。",
+                "query_targets": [{"intent": "history_query"}],
+                "query_frame": {
+                    "original_query": "只核对历史案例 HIS-GEN-031 的恢复方法。"
+                },
+            },
+        )
+
+        self.assertEqual({"FM-GEN-031"}, set(context.get("fmeca", {})))
+
+    def test_single_structured_history_parent_cannot_seed_exact_child_links(self):
+        context = diagnosis_module._semantic_history_reference_context(
+            [
+                {
+                    "id": 41,
+                    "case_id": "HIS-GEN-041",
+                    "match_type": "structured_query",
+                    "document_links": {
+                        "fmeca_refs": ["FM-GEN-041"],
+                        "mfl_refs": ["MFL-GEN-041"],
+                    },
+                }
+            ],
+            state={
+                "query": "以前相近案例如何检查和恢复？",
+                "query_targets": [{"intent": "history_query"}],
+                "query_frame": {
+                    "original_query": "以前相近案例如何检查和恢复？"
+                },
+            },
+        )
+
+        self.assertEqual({}, context)
+
+    def test_conflicting_current_record_id_blocks_history_family_rebinding(self):
+        context = diagnosis_module._semantic_history_reference_context(
+            [
+                {
+                    "id": 51,
+                    "case_id": "HIS-GEN-051",
+                    "match_type": "structured_query",
+                    "document_links": {
+                        "fmeca_refs": ["FM-GEN-051"],
+                        "mfl_refs": ["MFL-GEN-051"],
+                    },
+                }
+            ],
+            state={
+                "query": "核对 FM-GEN-052 和 MFL-GEN-052，并参考以前的案例。",
+                "query_targets": [{"intent": "history_query"}],
+                "query_frame": {
+                    "original_query": "核对 FM-GEN-052 和 MFL-GEN-052，并参考以前的案例。"
+                },
+            },
+        )
+
+        self.assertNotIn("fmeca", context)
+        self.assertNotIn("mfl", context)
+
+    def test_persisted_parent_binding_beats_higher_scoring_semantic_neighbor(self):
+        context = diagnosis_module._semantic_history_reference_context(
+            [
+                {
+                    "id": 61,
+                    "case_id": "HIS-GEN-061",
+                    "match_type": "structured_query",
+                    "retrieval_match_score": 0.31,
+                    "fault_symptom": "外部源持续发送，但输入接收计数不变，旁路接口正常",
+                    "root_cause": "连接端接异常导致接收方向开路",
+                    "final_solution": "恢复连接与端接后复测输入计数",
+                    "document_links": {
+                        "fmeca_refs": ["FM-GEN-061"],
+                        "mfl_refs": ["MFL-GEN-061"],
+                    },
+                },
+                {
+                    "id": 62,
+                    "case_id": "HIS-GEN-062",
+                    "match_type": "semantic_id_hydration",
+                    "retrieval_match_score": 0.97,
+                    "fault_symptom": "任务处理中图形画面停止更新并触发心跳超时",
+                    "root_cause": "内部调度互锁",
+                    "final_solution": "替换处理单元后恢复画面",
+                    "document_links": {
+                        "fmeca_refs": ["FM-GEN-062"],
+                        "mfl_refs": ["MFL-GEN-062"],
+                    },
+                },
+            ],
+            state={
+                "query": "外部源发送后输入接收计数不变，但旁路接口正常；应替换接口还是检查连接端接？",
+                "query_targets": [{"intent": "history_query"}],
+                "query_frame": {
+                    "original_query": "相近案例在什么条件下出现，最后怎样验证恢复？",
+                    "rewritten_query": "外部源发送后输入接收计数不变，但旁路接口正常；应替换接口还是检查连接端接？",
+                },
+                "history_parent_binding": _identity_history_binding(
+                    "HIS-GEN-061", 61
+                ),
+                "selected_conversation_anchors": [{
+                    "doc_type": "fault_history",
+                    "record_id": "HIS-GEN-061",
+                }],
+            },
+        )
+
+        self.assertEqual({"FM-GEN-061"}, set(context.get("fmeca", {})))
+        self.assertEqual({"MFL-GEN-061"}, set(context.get("mfl", {})))
+
+    def test_selected_history_anchor_wins_vague_followup(self):
+        context = diagnosis_module._semantic_history_reference_context(
+            [
+                {
+                    "id": 71,
+                    "case_id": "HIS-GEN-071",
+                    "match_type": "structured_query",
+                    "document_links": {"mfl_refs": ["MFL-GEN-071"]},
+                },
+                {
+                    "id": 72,
+                    "case_id": "HIS-GEN-072",
+                    "match_type": "semantic_id_hydration",
+                    "retrieval_match_score": 0.99,
+                    "document_links": {"mfl_refs": ["MFL-GEN-072"]},
+                },
+            ],
+            state={
+                "query": "这个案例最终如何验证？",
+                "query_targets": [{"intent": "history_query"}],
+                "query_frame": {"original_query": "这个案例最终如何验证？"},
+                "selected_conversation_anchors": [
+                    {"doc_type": "fault_history", "record_id": "HIS-GEN-071"}
+                ],
+            },
+        )
+
+        self.assertEqual({"MFL-GEN-071"}, set(context.get("mfl", {})))
+
+    def test_multiple_explicit_case_ids_need_compare_semantics(self):
+        context = diagnosis_module._semantic_history_reference_context(
+            [
+                {
+                    "id": 81,
+                    "case_id": "HIS-GEN-081",
+                    "match_type": "structured_query",
+                    "document_links": {"fmeca_refs": ["FM-GEN-081"]},
+                },
+                {
+                    "id": 82,
+                    "case_id": "HIS-GEN-082",
+                    "match_type": "structured_query",
+                    "document_links": {"fmeca_refs": ["FM-GEN-082"]},
+                },
+            ],
+            state={
+                "query": "核对 HIS-GEN-081 和 HIS-GEN-082 的恢复记录。",
+                "query_targets": [{"intent": "history_query"}],
+                "query_frame": {
+                    "original_query": "核对 HIS-GEN-081 和 HIS-GEN-082 的恢复记录。",
+                    "question_semantics": "verify",
+                },
+            },
+        )
+
+        self.assertEqual({}, context)
+
+    def test_single_history_row_does_not_expand_without_current_history_target(self):
+        context = diagnosis_module._semantic_history_reference_context(
+            [
+                {
+                    "id": 91,
+                    "case_id": "HIS-GEN-091",
+                    "match_type": "structured_query",
+                    "document_links": {"mfl_refs": ["MFL-GEN-091"]},
+                }
+            ],
+            state={
+                "query": "说明当前故障模式的原因。",
+                "query_targets": [{"intent": "cause_analysis"}],
+                "query_frame": {"original_query": "说明当前故障模式的原因。"},
+            },
+        )
+
+        self.assertEqual({}, context)
+
+    def test_unknown_current_history_id_fails_closed(self):
+        context = diagnosis_module._semantic_history_reference_context(
+            [
+                {
+                    "id": 101,
+                    "case_id": "HIS-GEN-101",
+                    "match_type": "structured_query",
+                    "document_links": {"mfl_refs": ["MFL-GEN-101"]},
+                }
+            ],
+            state={
+                "query": "只查 HIS-GEN-199 的处理。",
+                "query_targets": [{"intent": "history_query"}],
+                "query_frame": {"original_query": "只查 HIS-GEN-199 的处理。"},
+            },
+        )
+
+        self.assertEqual({}, context)
+
+    def test_fm_and_fmeca_prefixes_share_one_conflict_family(self):
+        context = diagnosis_module._semantic_history_reference_context(
+            [
+                {
+                    "id": 111,
+                    "case_id": "HIS-GEN-111",
+                    "match_type": "structured_query",
+                    "document_links": {"fmeca_refs": ["FMECA-GEN-111"]},
+                }
+            ],
+            state={
+                "query": "核对 FM-GEN-112，并参考以前的案例。",
+                "query_targets": [{"intent": "history_query"}],
+                "query_frame": {
+                    "original_query": "核对 FM-GEN-112，并参考以前的案例。"
+                },
+            },
+        )
+
+        self.assertNotIn("fmeca", context)
+
+    def test_equivalent_hmc_format_does_not_create_false_conflict(self):
+        context = diagnosis_module._semantic_history_reference_context(
+            [
+                {
+                    "id": 121,
+                    "case_id": "HIS-GEN-121",
+                    "match_type": "structured_query",
+                    "hmc_code": "91810002**0003",
+                }
+            ],
+            state={
+                "query": "参考历史记录核对 HMC 91810002-**-0003。",
+                "query_targets": [{"intent": "history_query"}],
+                "query_frame": {
+                    "original_query": "参考历史记录核对 HMC 91810002-**-0003。"
+                },
+                "history_parent_binding": _identity_history_binding(
+                    "HIS-GEN-121", 121
+                ),
+                "selected_conversation_anchors": [{
+                    "doc_type": "fault_history",
+                    "record_id": "HIS-GEN-121",
+                }, {
+                    "doc_type": "hmc",
+                    "record_id": "91810002**0003",
+                    "answer_fields": {"hmc_code": "91810002**0003"},
+                }],
+            },
+        )
+
+        self.assertEqual({"91810002**0003"}, set(context.get("hmc", {})))
 
     def test_fmeca_history_reference_uses_bound_code_and_carries_parent_score(self):
         cursor = MagicMock()
@@ -188,7 +516,7 @@ class HistoryReferenceHydrationTests(unittest.TestCase):
 
 
 class HistoryReferenceNodeIntegrationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_duplicate_literal_history_row_keeps_semantic_handoff_and_expands(self):
+    async def test_explicit_case_id_duplicate_row_keeps_handoff_and_expands(self):
         history_row = {
             "id": 12,
             "doc_id": "doc-history",
@@ -263,8 +591,8 @@ class HistoryReferenceNodeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             "score": 0.83,
         }
         state = {
-            "query": "A 路电源偶尔断掉，原因和之前怎么处理的？",
-            "rewritten_query": "A 路电源偶尔断掉，原因和之前怎么处理的？",
+            "query": "针对历史案例 HIS-012，核对原因和之前怎么处理的？",
+            "rewritten_query": "针对历史案例 HIS-012，核对原因和之前怎么处理的？",
             "intent": "cause_analysis",
             "allowed_tools": [
                 "hmc_query",
@@ -277,7 +605,7 @@ class HistoryReferenceNodeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             "normalized_terms": ["A 路电源", "间歇中断"],
             "query_targets": [
                 {"intent": "cause_analysis"},
-                {"intent": "history_lookup"},
+                {"intent": "history_query"},
                 {"intent": "maintenance_guidance"},
             ],
         }

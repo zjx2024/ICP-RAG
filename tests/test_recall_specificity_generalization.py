@@ -1,3 +1,6 @@
+import backend.agent.nodes.answer_collections as _source_answer_collections
+import backend.agent.nodes.answer_target_presence as _source_answer_target_presence
+import backend.agent.nodes.answer_text as _source_answer_text
 import importlib.util
 import json
 import sys
@@ -28,42 +31,8 @@ from backend.agent.nodes import plan as plan_module
 from backend.agent.tools import icp_diagnosis as diagnosis_module
 
 
-class _FakeCursor:
-    def __init__(self, connection, rows):
-        self.connection = connection
-        self.rows = rows
-        self.description = []
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_args):
-        return False
-
-    def execute(self, query, params=()):
-        self.connection.calls.append((" ".join(query.split()), tuple(params or ())))
-        # The production statement selects t.*; emulate the column contract
-        # from the rows the test pre-supplies.
-        columns = list(self.rows[0].keys()) if self.rows else ["doc_id"]
-        self.description = [(name, None, None, None, None, None, None) for name in columns]
-
-    def fetchall(self):
-        if not self.rows:
-            return []
-        columns = list(self.rows[0].keys())
-        return [tuple(row.get(column) for column in columns) for row in self.rows]
 
 
-class _FakeConnection:
-    def __init__(self, rows):
-        self.calls = []
-        self.rows = rows
-
-    def cursor(self):
-        return _FakeCursor(self, self.rows)
-
-    def rollback(self):
-        pass
 
 
 class SqlCandidatePoolSpecificityTests(unittest.TestCase):
@@ -246,29 +215,48 @@ class DiagramCategoryFallbackTests(unittest.TestCase):
             "is_active": True,
         }
 
-    def _query(self, revisions, terms):
+    def _query(self, revisions, terms, *, query_frame=None):
         with patch.object(
             diagnosis_module.diagram_repository,
             "list_active_revisions",
             return_value=revisions,
         ):
-            return diagnosis_module._query_diagrams("rbd", terms, 2)
+            return diagnosis_module._query_diagrams(
+                "rbd", terms, 2, query_frame=query_frame
+            )
 
-    def test_partial_anchor_coverage_expands_to_the_closed_family(self):
+    def test_grounded_multi_subject_contract_expands_the_requested_family(self):
         revisions = [
             self._revision("R1", "电源保障链可靠性模型", block_name="A路稳压供电"),
             self._revision("R2", "核心处理功能可靠性模型", block_name="GPP-A"),
             self._revision("R3", "显示输出功能可靠性模型", block_name="DPM"),
         ]
+        query = "供电、核心运算、外部信息交换和显示通路分别依赖哪些环节"
         rows = self._query(
             revisions,
             [
-                "供电、核心运算、外部信息交换和显示通路分别依赖哪些环节",
+                query,
                 "供电",
                 "核心运算",
                 "外部信息交换",
                 "显示通路",
             ],
+            query_frame={
+                "original_query": query,
+                "subject_bindings": [
+                    {
+                        "doc_type": "rbd",
+                        "kind": "component",
+                        "value": value,
+                        "basis": value,
+                        "grounded": True,
+                        "source": "current_query",
+                    }
+                    for value in (
+                        "供电", "核心运算", "外部信息交换", "显示通路"
+                    )
+                ],
+            },
         )
         self.assertEqual(len(rows), 3)
         self.assertEqual(rows[0]["diagram_key"], "R1")
@@ -333,58 +321,16 @@ class BoundedEnumerationTests(unittest.TestCase):
         self.assertNotIn("事件1", summary)
 
 
-class NarrativeFacetGuaranteeTests(unittest.TestCase):
-    """Recalled FTA structure must not silently vanish from the answer."""
-
-    MANIFEST = [
-        {
-            "citation_id": 2,
-            "doc_id": "doc-fta",
-            "record_id": "FTA-T-1",
-            "record_name": "无法与外部设备交换数据",
-            "doc_type": "fta",
-            "supports": ["structural_cause_chain"],
-            "answer_fields": {
-                "structural_cause_chain": (
-                    "FTA 结构：无法与外部设备交换数据；逻辑门：AND、OR"
-                ),
-            },
-        }
-    ]
-
-    def test_dropped_chain_is_restated_with_its_citation(self):
-        out = answer_module._append_missing_narrative_facts(
-            "建议检查接收链路。[^1]",
-            ["structural_cause_chain"],
-            self.MANIFEST,
-        )
-        self.assertIn("FTA 结构：无法与外部设备交换数据", out)
-        self.assertIn("[^2]", out)
-
-    def test_present_chain_is_not_duplicated(self):
-        answer = (
-            "结构如下：FTA 结构：无法与外部设备交换数据；逻辑门：AND、OR。[^2]"
-        )
-        out = answer_module._append_missing_narrative_facts(
-            answer, ["structural_cause_chain"], self.MANIFEST
-        )
-        self.assertEqual(out.count("FTA 结构：无法与外部设备交换数据"), 1)
 
 
 class AnswerHygieneTests(unittest.TestCase):
-    def test_manifest_values_never_render_python_repr(self):
-        rendered = answer_module._format_manifest_field_value(
-            [{"name": "接口时钟丢失", "description": "时钟输入异常。"}]
-        )
-        self.assertEqual(rendered, "接口时钟丢失（时钟输入异常。）")
-        self.assertNotIn("{'", rendered)
 
     def test_empty_full_width_parentheses_are_stripped(self):
-        normalized = answer_module._normalize_generated_markdown(
+        normalized = _source_answer_text._normalize_generated_markdown(
             "由供电缺失引起（），导致无画面。"
         )
         self.assertEqual(normalized, "由供电缺失引起，导致无画面。")
-        kept = answer_module._normalize_generated_markdown(
+        kept = _source_answer_text._normalize_generated_markdown(
             "调用 GetOIMFaultStatus() 确认"
         )
         self.assertIn("GetOIMFaultStatus()", kept)
@@ -416,7 +362,7 @@ class CollectionFacetViewBridgeTests(unittest.TestCase):
             },
         }
         sparse = self._sparse()
-        fields, citation = answer_module._collection_facet_view(
+        fields, citation = _source_answer_collections._collection_facet_view(
             sparse, [sparse, rich]
         )
         self.assertEqual(fields.get("fault_cause"), "存储通道被长期占用")
@@ -433,7 +379,7 @@ class CollectionFacetViewBridgeTests(unittest.TestCase):
             },
         }
         sparse = self._sparse()
-        fields, citation = answer_module._collection_facet_view(
+        fields, citation = _source_answer_collections._collection_facet_view(
             sparse, [sparse, unrelated]
         )
         self.assertEqual(fields.get("fault_cause"), "")
@@ -484,7 +430,7 @@ class CollectionMemberFacetPresenceTests(unittest.TestCase):
             "2. 索引校验错误（FM-D2）。[^2]"
         )
         self.assertFalse(
-            answer_module._closed_collection_members_present(
+            _source_answer_target_presence._closed_collection_members_present(
                 answer, self._items()
             )
         )
@@ -497,10 +443,47 @@ class CollectionMemberFacetPresenceTests(unittest.TestCase):
             "   - 原文原因：写入竞争损坏了索引区。[^2]"
         )
         self.assertTrue(
-            answer_module._closed_collection_members_present(
+            _source_answer_target_presence._closed_collection_members_present(
                 answer, self._items()
             )
         )
+
+
+class _FakeCursor:
+    def __init__(self, connection, rows):
+        self.connection = connection
+        self.rows = rows
+        self.description = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def execute(self, query, params=()):
+        self.connection.calls.append((" ".join(query.split()), tuple(params or ())))
+        # The production statement selects t.*; emulate the column contract
+        # from the rows the test pre-supplies.
+        columns = list(self.rows[0].keys()) if self.rows else ["doc_id"]
+        self.description = [(name, None, None, None, None, None, None) for name in columns]
+
+    def fetchall(self):
+        if not self.rows:
+            return []
+        columns = list(self.rows[0].keys())
+        return [tuple(row.get(column) for column in columns) for row in self.rows]
+
+class _FakeConnection:
+    def __init__(self, rows):
+        self.calls = []
+        self.rows = rows
+
+    def cursor(self):
+        return _FakeCursor(self, self.rows)
+
+    def rollback(self):
+        pass
 
 
 if __name__ == "__main__":

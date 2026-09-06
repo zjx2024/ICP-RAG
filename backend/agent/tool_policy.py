@@ -7,16 +7,19 @@ FTA/RBD 计算器。
 from __future__ import annotations
 
 import re
-import unicodedata
 from typing import Any, Dict, List, Mapping, Optional, Sequence, TypedDict
 
 from backend.agent.answer_contract import (
+    RBD_ANSWER_FIELDS,
     ensure_intent_answer_fields,
     is_focused_answer_contract,
+    normalize_diagnostic_closure,
     normalize_answer_fields,
     tools_for_answer_fields,
 )
 from backend.agent.query_understanding import extract_business_codes
+from backend.agent.hmc_identity import extract_hmc_components, normalize_typed_hmc_components
+from backend.agent.user_context_binding import selected_user_hmc_components
 
 
 DOC_TYPE_BY_TOOL = {
@@ -28,28 +31,6 @@ DOC_TYPE_BY_TOOL = {
     "mfl_query": "mfl",
     "fault_history_query": "fault_history",
 }
-
-# A document name written by the user is an explicit evidence-coverage
-# instruction, not a guess about the question's semantic intent.  For example,
-# “导致 MSM 损坏的原因，去查 RBD” is still a cause question, but it also asks us
-# to inspect the RBD source before answering.  Keep this lexical mapping small
-# and only map a named, user-visible document family to its own read tool.  It
-# never authorizes an FTA/RBD calculator.
-_EXPLICIT_SOURCE_TOOL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("function_locator", re.compile(r"系统架构(?:与功能说明)?|功能定位|Function\s*Locator", re.IGNORECASE)),
-    # A code such as ``MFL-SYN-041`` is an object-identity query, not the
-    # user's instruction to inspect the whole MFL document family.  Keep the
-    # named-source detector from treating the prefix of any business ID as an
-    # explicit coverage demand.
-    ("hmc_query", re.compile(r"(?<![A-Za-z0-9])HMC(?![-_A-Za-z0-9])|故障代码(?:手册)?", re.IGNORECASE)),
-    ("fmeca_query", re.compile(r"(?<![A-Za-z0-9])FMECA(?![-_A-Za-z0-9])|失效模式(?:与影响分析)?", re.IGNORECASE)),
-    ("fta_query", re.compile(r"(?<![A-Za-z0-9])FTA(?![-_A-Za-z0-9])|故障树", re.IGNORECASE)),
-    ("rbd_query", re.compile(r"(?<![A-Za-z0-9])RBD(?![-_A-Za-z0-9])|可靠性框图", re.IGNORECASE)),
-    # “维修清单”是用户对 MFL 维修故障清单的日常叫法（如“维修清单给了哪
-    # 些可执行核查”），与完整名称同等视为点名该资料来源。
-    ("mfl_query", re.compile(r"(?<![A-Za-z0-9])MFL(?![-_A-Za-z0-9])|维修(?:故障)?清单", re.IGNORECASE)),
-    ("fault_history_query", re.compile(r"故障历史(?:查询文档|资料|记录)?|历史(?:案例|记录|排故)", re.IGNORECASE)),
-)
 
 # These fields make the user-requested source visible in the final answer when
 # that source actually returns an approved record.  They are deliberately a
@@ -103,12 +84,10 @@ INTENT_ALIASES = {
     "function_query": "function_location",
 }
 
-# ``allowed`` 是模型可以选择的授权上限；``fallback`` 只在规划失败或
-# 模型没有给出任何可执行查询时使用。不能再把 fallback 当作每轮的
-# 固定工具套餐，否则 ``tools_plan`` 只会沦为展示字段。
+# ``allowed`` 只是模型可选的意图安全上限，不是默认工具套餐。
+# 实际执行必须由模型显式计划、字段/来源合同或严格的确定性字段授权。
 INTENT_POLICY: Dict[str, Dict[str, Sequence[str]]] = {
     "entity_profile": {
-        "fallback": ("function_locator",),
         "allowed": (
             "function_locator", "hmc_query", "fmeca_query", "mfl_query",
             "fault_history_query", "hybrid_search", "graph_traversal",
@@ -119,26 +98,21 @@ INTENT_POLICY: Dict[str, Dict[str, Sequence[str]]] = {
         ),
     },
     "architecture_query": {
-        "fallback": ("function_locator", "hybrid_search"),
         "allowed": ("function_locator", "hybrid_search", "graph_traversal"),
     },
     "function_location": {
-        "fallback": ("function_locator", "hybrid_search"),
         "allowed": ("function_locator", "hybrid_search", "graph_traversal"),
     },
     "exact_code": {
-        "fallback": ("hmc_query",),
         "allowed": ("hmc_query", "hybrid_search"),
     },
     "symptom_diagnosis": {
-        "fallback": ("hybrid_search",),
         "allowed": (
             "function_locator", "hmc_query", "fmeca_query", "fault_history_query",
             "hybrid_search", "fta_query", "mfl_query", "graph_traversal",
         ),
     },
     "cause_analysis": {
-        "fallback": ("fmeca_query", "fta_query", "hybrid_search"),
         # The answer stays cause-first, while the adaptive completion phase may
         # enrich a described fault with documented handling and comparable
         # history. This is evidence coverage, not a change to query_targets.
@@ -149,7 +123,6 @@ INTENT_POLICY: Dict[str, Dict[str, Sequence[str]]] = {
         ),
     },
     "impact_analysis": {
-        "fallback": ("fmeca_query", "hybrid_search"),
         "allowed": (
             "function_locator", "fmeca_query", "fta_query", "rbd_query",
             "hmc_query", "hybrid_search", "mfl_query",
@@ -165,28 +138,24 @@ INTENT_POLICY: Dict[str, Dict[str, Sequence[str]]] = {
         ),
     },
     "maintenance_query": {
-        "fallback": ("hmc_query", "mfl_query", "hybrid_search"),
         "allowed": (
             "function_locator", "hmc_query", "fmeca_query", "mfl_query",
             "fault_history_query", "hybrid_search", "graph_traversal",
         ),
     },
     "reliability_query": {
-        "fallback": ("rbd_query", "hybrid_search"),
         "allowed": (
             "function_locator", "rbd_query", "rbd_calculator", "hybrid_search",
             "graph_traversal",
         ),
     },
     "history_query": {
-        "fallback": ("fault_history_query", "hybrid_search"),
         "allowed": (
             "fault_history_query", "hmc_query", "fmeca_query", "mfl_query",
             "hybrid_search", "graph_traversal",
         ),
     },
     "hybrid": {
-        "fallback": ("hybrid_search",),
         "allowed": tuple(sorted(CANONICAL_TOOL_NAMES - {"fta_analyzer", "rbd_calculator"})),
     },
 }
@@ -206,35 +175,22 @@ _CALCULATION_REQUEST_FTA_CUT_SETS = "fta_cut_sets"
 _CALCULATION_REQUEST_FTA_PROBABILITY = "fta_probability"
 _CALCULATION_REQUEST_RBD_RELIABILITY = "rbd_reliability"
 
-_HMC_COMPACT_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9])(?P<lcn>\d{6,10})\s*[-_/]?\s*"
-    r"(?P<hamc>\*\*|[A-Za-z0-9]{1,4})\s*[-_/]?\s*"
-    r"(?P<hsc>\d{1,6})(?![A-Za-z0-9])"
-)
-_HMC_FIELD_LABEL = re.compile(
-    r"(?<![A-Za-z0-9_])(?:LCN|HAMC|HSC)(?![A-Za-z0-9_])",
-    flags=re.IGNORECASE,
-)
-_HMC_FIELD_PATTERNS = {
-    "lcn": re.compile(
-        r"(?<![A-Za-z0-9_])LCN\s*(?:[:=]\s*)?(\d{6,10})(?!\d)",
-        flags=re.IGNORECASE,
-    ),
-    "hamc": re.compile(
-        r"(?<![A-Za-z0-9_])HAMC\s*(?:[:=]\s*)?"
-        r"(?!LCN\b|HAMC\b|HSC\b)(\*\*|[A-Za-z0-9]{1,4})(?![A-Za-z0-9*])",
-        flags=re.IGNORECASE,
-    ),
-    "hsc": re.compile(
-        r"(?<![A-Za-z0-9_])HSC\s*(?:[:=]\s*)?(\d{1,6})(?!\d)",
-        flags=re.IGNORECASE,
-    ),
+# Calculation meaning is classified by the two planner model stages.  Code
+# deliberately validates only this small protocol and never tries to enumerate
+# all natural-language ways a user may request a calculation.
+CALCULATION_OPERATION_TARGETS = {
+    _CALCULATION_REQUEST_FTA_CUT_SETS: "fta",
+    _CALCULATION_REQUEST_FTA_PROBABILITY: "fta",
+    _CALCULATION_REQUEST_RBD_RELIABILITY: "rbd",
 }
+CALCULATION_AUTHORIZATION_MODES = {"calculate", "explain", "read_document"}
+
 
 
 class ToolPolicyDecision(TypedDict):
     intent: str
     query_targets: List[Dict[str, Any]]
+    calculation_authorizations: List[Dict[str, str]]
     calculation_requests: List[str]
     authorized_tools: List[str]
     allowed_tools: List[str]
@@ -248,6 +204,9 @@ class ToolPolicyDecision(TypedDict):
     # so an empty requested source cannot disappear silently.
     requested_source_tools: List[str]
     source_coverage_fields: List[str]
+    requested_sources: List[Dict[str, Any]]
+    source_obligations: List[Dict[str, Any]]
+    relation_expansion: Dict[str, Any]
 
 
 def _canonical_tool(value: Any) -> str:
@@ -255,123 +214,239 @@ def _canonical_tool(value: Any) -> str:
     return TOOL_ALIASES.get(name, name)
 
 
-def detect_explicit_source_tools(text: Any) -> List[str]:
-    """Return document tools explicitly named in the user's wording.
+_TOOL_BY_DOC_TYPE = {doc_type: tool for tool, doc_type in DOC_TYPE_BY_TOOL.items()}
+_SOURCE_QUESTION_ROLES = frozenset(
+    {"evidence", "capability", "limitation", "comparison"}
+)
 
-    This is not an intent router and does not infer a source from a symptom.
-    It only honours an exact name such as ``RBD``/``可靠性框图`` that the user
-    wrote themselves.  Scope routing handles pure capability questions before
-    this policy runs, so a real knowledge request such as “去查 RBD” reaches
-    the corresponding read tool.
+# Relation expansion is an execution authorization, not a prose hint. Keep its
+# semantic kinds closed while allowing the model to understand arbitrary user
+# wording before emitting one of these stable values.
+RELATION_KINDS = frozenset(
+    {"relation_path", "structural_cause_chain", "impact_propagation"}
+)
+RELATION_REFERENCE_MODES = frozenset({"current_query", "selected_anchor"})
+RELATION_TOOLS: Dict[str, frozenset[str]] = {
+    "relation_path": frozenset({"function_locator", "graph_traversal"}),
+    "structural_cause_chain": frozenset(
+        {"function_locator", "fta_query", "graph_traversal"}
+    ),
+    "impact_propagation": frozenset(
+        {"function_locator", "fmeca_query", "fta_query", "graph_traversal"}
+    ),
+}
+
+
+def normalize_relation_expansion_contract(
+    value: Any,
+    *,
+    raw_user_query: Any,
+    offered_anchor_ids: Any = (),
+) -> Dict[str, Any]:
+    """Validate the only contract that may authorize graph traversal.
+
+    ``needed`` alone is deliberately insufficient. A positive contract must
+    name one closed relation kind and carry a literal, contiguous span from the
+    current user turn. A deictic follow-up additionally names one or more
+    server-offered citation anchors; planner text and prior answer prose cannot
+    mint those identities.
+
+    A well-formed negative decision is retained so an earlier semantic stage
+    can explicitly deny a later retrieval planner's attempt to widen scope.
     """
 
-    normalized = unicodedata.normalize("NFKC", str(text or ""))
-    result: List[str] = []
-    for tool, pattern in _EXPLICIT_SOURCE_TOOL_PATTERNS:
-        if pattern.search(normalized) and tool not in result:
-            result.append(tool)
-    return result
+    if not isinstance(value, Mapping):
+        return {}
+    needed = value.get("needed")
+    if needed is False:
+        return {
+            "needed": False,
+            "relation_kind": "",
+            "reference_mode": "",
+            "basis": "",
+            "selected_anchor_ids": [],
+            "reason": "",
+        }
+    if needed is not True:
+        return {}
 
-
-def _looks_like_definition_request(text: str) -> bool:
-    return bool(re.search(r"是什么意思|什么含义|介绍一下|解释概念|定义是什么", text))
-
-
-def detect_calculation_requests(text: Any) -> List[str]:
-    """Authorize deterministic calculations from the raw user text only.
-
-    Query rewrites and planner keywords are intentionally excluded: an LLM may
-    broaden recall, but it cannot grant itself permission to calculate.
-    """
-    value = unicodedata.normalize("NFKC", str(text or ""))
-    requests: List[str] = []
-    definition_only = _looks_like_definition_request(value)
-
-    cut_set_request = bool(
-        re.search(r"(?:计算|求|列出|找出).{0,8}最小割集|最小割集.{0,6}(?:有哪些|是什么组合)", value)
-        or re.search(
-            r"(?:最少|最小).{0,8}(?:哪些|哪几种)?.{0,6}(?:原因|故障|事件).{0,12}(?:组合|同时发生)",
-            value,
-        )
-        or re.search(
-            r"(?:哪些|哪几种).{0,12}(?:原因|故障|事件).{0,12}(?:组合起来|同时发生).{0,8}(?:导致|引起|造成)",
-            value,
-        )
-    )
-    if cut_set_request and not definition_only:
-        requests.append(_CALCULATION_REQUEST_FTA_CUT_SETS)
-
-    asks_documented_parameter = bool(re.search(r"(?:文档|资料|手册).{0,12}(?:记载|记录|给出).{0,12}(?:参数|概率)", value))
-    probability_request = bool(
-        re.search(
-            r"(?:计算|求|算出).{0,12}(?:顶事件|顶层故障|系统故障).{0,12}(?:概率|可能性)",
-            value,
-        )
-        or re.search(
-            r"(?:顶事件|顶层故障|系统故障).{0,12}(?:发生概率|可能性).{0,6}(?:多少|多大)",
-            value,
-        )
-    )
-    if probability_request and not definition_only and not asks_documented_parameter:
-        requests.append(_CALCULATION_REQUEST_FTA_PROBABILITY)
-
-    reliability_subject = bool(
-        re.search(
-            r"可靠度|系统可靠性|成功概率|任务成功率|任务.{0,40}(?:成功|完成)|正常工作|完成任务|持续运行|继续运行",
-            value,
-        )
-    )
-    numeric_request = bool(
-        re.search(r"重新计算|复算|计算|求|算出|多少|多大|概率|可能性|几率|数值|最低|最高", value)
-    )
-    explicit_recompute = bool(re.search(r"重新计算|复算|重算|按.{0,20}(?:参数|失效率|故障率).{0,8}计算", value))
+    relation_kind = str(value.get("relation_kind") or "").strip()
+    reference_mode = str(value.get("reference_mode") or "").strip()
+    basis = str(value.get("basis") or "").strip()[:500]
+    query = str(raw_user_query or "")
     if (
-        reliability_subject
-        and numeric_request
-        and not definition_only
-        and (not asks_documented_parameter or explicit_recompute)
+        relation_kind not in RELATION_KINDS
+        or reference_mode not in RELATION_REFERENCE_MODES
+        or not basis
+        or basis not in query
     ):
-        requests.append(_CALCULATION_REQUEST_RBD_RELIABILITY)
-    return list(dict.fromkeys(requests))
-
-
-def extract_hmc_components(text: Any) -> Dict[str, str]:
-    """Parse labelled HMC fields or a complete compact LCN/HAMC/HSC code.
-
-    Labelled ``LCN + HSC`` is intentionally retained without inventing a
-    missing HAMC.  Once any field label is present, compact parsing is not
-    attempted: otherwise ``LCN 91810001 HSC 0001`` is misread as if the word
-    ``HSC`` were the HAMC value.
-    """
-    value = unicodedata.normalize("NFKC", str(text or ""))
-    value = value.replace("—", "-").replace("–", "-")
-    labelled: Dict[str, str] = {}
-    for key, pattern in _HMC_FIELD_PATTERNS.items():
-        match = pattern.search(value)
-        if match:
-            labelled[key] = match.group(1).upper()
-
-    if "hsc" in labelled and labelled["hsc"].isdigit() and len(labelled["hsc"]) < 4:
-        labelled["hsc"] = labelled["hsc"].zfill(4)
-    if "lcn" in labelled and "hsc" in labelled:
-        if "hamc" not in labelled:
-            return labelled
-        labelled["hmc_code"] = f"{labelled['lcn']}{labelled['hamc']}{labelled['hsc']}"
-        return labelled
-
-    # A label makes the input field-oriented.  Fail closed instead of letting
-    # the permissive compact expression consume another label as a code part.
-    if _HMC_FIELD_LABEL.search(value):
         return {}
 
-    match = _HMC_COMPACT_PATTERN.search(value)
-    if not match:
+    result: Dict[str, Any] = {
+        "needed": True,
+        "relation_kind": relation_kind,
+        "reference_mode": reference_mode,
+        "basis": basis,
+        "selected_anchor_ids": [],
+        "reason": " ".join(str(value.get("reason") or "").split())[:500],
+    }
+    if reference_mode == "current_query":
+        return result
+
+    offered = {
+        str(anchor_id or "").strip()
+        for anchor_id in (offered_anchor_ids or [])
+        if str(anchor_id or "").strip()
+    }
+    selected: List[str] = []
+    raw_selected = value.get("selected_anchor_ids")
+    if not isinstance(raw_selected, (list, tuple, set, frozenset)):
         return {}
-    result = {key: item.upper() for key, item in match.groupdict().items()}
-    if result["hsc"].isdigit() and len(result["hsc"]) < 4:
-        result["hsc"] = result["hsc"].zfill(4)
-    result["hmc_code"] = f"{result['lcn']}{result['hamc']}{result['hsc']}"
+    for anchor_id in raw_selected:
+        normalized = str(anchor_id or "").strip()
+        if normalized in offered and normalized not in selected:
+            selected.append(normalized)
+        if len(selected) >= 12:
+            break
+    if not selected:
+        return {}
+    result["selected_anchor_ids"] = selected
     return result
+
+
+def _normalize_requested_sources(
+    value: Any,
+    *,
+    raw_user_query: Any,
+) -> List[Dict[str, Any]]:
+    """Validate model-authored source requests; never infer them from wording."""
+
+    if not isinstance(value, list):
+        return []
+    query = str(raw_user_query or "")
+    result: List[Dict[str, Any]] = []
+    seen: set[tuple[str, str, str, tuple[str, ...]]] = set()
+    for raw in value[:16]:
+        if not isinstance(raw, Mapping):
+            continue
+        doc_type = str(raw.get("doc_type") or "").strip()
+        tool = _TOOL_BY_DOC_TYPE.get(doc_type, "")
+        role = str(raw.get("question_role") or "").strip()
+        basis = str(raw.get("basis") or "").strip()[:500]
+        if not tool or role not in _SOURCE_QUESTION_ROLES or not basis or basis not in query:
+            continue
+        fields = normalize_answer_fields(raw.get("requested_fields"))
+        identity = (doc_type, basis, role, tuple(fields))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        result.append(
+            {
+                "doc_type": doc_type,
+                "basis": basis,
+                "requested_fields": fields,
+                "question_role": role,
+            }
+        )
+    return result
+
+
+def normalize_calculation_authorizations(
+    value: Any,
+    *,
+    raw_user_query: Optional[str] = None,
+) -> List[Dict[str, str]]:
+    """Validate the closed calculation protocol without classifying language.
+
+    When ``raw_user_query`` is supplied, every basis must be one literal,
+    contiguous span of the current user turn.  NFKC or fuzzy matching is not
+    used here: a rewrite, prior answer, or bag of matching words must not become
+    provenance for a calculation request.
+    """
+
+    if not isinstance(value, list):
+        return []
+    current_query = None if raw_user_query is None else str(raw_user_query)
+    normalized: List[Dict[str, str]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for raw_item in value:
+        if not isinstance(raw_item, Mapping):
+            continue
+        operation = str(raw_item.get("operation") or "").strip()
+        mode = str(raw_item.get("mode") or "").strip()
+        target = str(raw_item.get("target") or "").strip()
+        basis = str(raw_item.get("basis") or "").strip()
+        if operation not in CALCULATION_OPERATION_TARGETS:
+            continue
+        if mode not in CALCULATION_AUTHORIZATION_MODES:
+            continue
+        if target != CALCULATION_OPERATION_TARGETS[operation]:
+            continue
+        if not basis or (current_query is not None and basis not in current_query):
+            continue
+        identity = (operation, mode, target, basis)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        normalized.append(
+            {
+                "operation": operation,
+                "mode": mode,
+                "target": target,
+                "basis": basis,
+            }
+        )
+    # Ambiguous modes never let calculate win, even from the sole semantic
+    # owner. Keep this invariant in the shared validator for every caller.
+    modes: Dict[str, set[str]] = {}
+    for item in normalized:
+        modes.setdefault(item["operation"], set()).add(item["mode"])
+    return [item for item in normalized if len(modes[item["operation"]]) == 1]
+
+
+def calculation_requests_from_authorizations(
+    value: Any,
+    *,
+    raw_user_query: str,
+) -> List[str]:
+    """Project validated ``calculate`` objects to legacy answer field names."""
+
+    return list(
+        dict.fromkeys(
+            item["operation"]
+            for item in normalize_calculation_authorizations(
+                value,
+                raw_user_query=raw_user_query,
+            )
+            if item["mode"] == "calculate"
+        )
+    )
+
+
+
+
+def grounded_typed_hmc_components(
+    value: Any,
+    *,
+    raw_user_query: Any,
+    source: Any,
+) -> Dict[str, str]:
+    """Accept a typed HMC object only as an audited view of user input.
+
+    A syntactically valid mapping is not evidence that the user supplied the
+    code.  The planner writes this slot for downstream audit, but exact-query
+    authority still comes from the deterministic parse of the current raw
+    turn.  Conversation citations use their separate server-offered anchor
+    path and are not represented by this helper.
+    """
+
+    if str(source or "").strip() != "current_query":
+        return {}
+    typed = normalize_typed_hmc_components(value)
+    extracted = extract_hmc_components(raw_user_query)
+    if not typed or typed != extracted:
+        return {}
+    return typed
 
 
 def _normalize_proposals(proposed_plan: Any) -> List[Dict[str, str]]:
@@ -498,7 +573,7 @@ def _tool_targets(tool: str, target_intents: Sequence[str]) -> List[str]:
     return [
         target
         for target in target_intents
-        if tool in INTENT_POLICY[target]["fallback"] or tool in INTENT_POLICY[target]["allowed"]
+        if tool in INTENT_POLICY[target]["allowed"]
     ]
 
 
@@ -515,19 +590,29 @@ def resolve_tool_policy(
     collection_member_kind: str = "unknown",
     required_answer_fields: Any = None,
     diagnostic_closure: Any = None,
+    relation_expansion: Any = None,
+    selected_anchor_ids: Any = None,
+    # Compatibility-only input for saved callers. A bare boolean has no
+    # provenance and therefore cannot authorize graph traversal.
     relation_expansion_required: bool = False,
+    selected_anchor_doc_types: Any = None,
+    calculation_authorizations: Any = None,
+    requested_sources: Any = None,
+    user_context_state: Optional[Mapping[str, Any]] = None,
 ) -> ToolPolicyDecision:
     """将规划模型的结构化语义结果转换为可执行白名单。
 
     本函数不从自然语言猜测意图。它只校验 planner 给出的目标、识别可
-    机械解析的 HMC 字段，并用原始用户文字做保守的数值计算授权。
+    机械解析的 HMC 字段，并验证两个模型阶段已经达成共识的计算合同。
     ``allowed_tools`` 是唯一执行依据；``tools_plan`` 只用于界面展示。
     """
+    del relation_expansion_required
     original_normalized_intent = INTENT_ALIASES.get(
         str(intent or "").strip(), str(intent or "").strip()
     )
     notes: List[str] = []
-    if original_normalized_intent not in INTENT_POLICY:
+    invalid_intent = original_normalized_intent not in INTENT_POLICY
+    if invalid_intent:
         notes.append(f"未知意图 {original_normalized_intent or '<empty>'}，已降级为 hybrid")
         original_normalized_intent = "hybrid"
 
@@ -540,18 +625,43 @@ def resolve_tool_policy(
         raw_user_query=authorization_text,
     )
     target_intents = [item["intent"] for item in normalized_targets]
-    requested_source_tools = detect_explicit_source_tools(authorization_text)
+    normalized_requested_sources = _normalize_requested_sources(
+        requested_sources,
+        raw_user_query=authorization_text,
+    )
+    validated_relation_expansion = normalize_relation_expansion_contract(
+        relation_expansion,
+        raw_user_query=authorization_text,
+        offered_anchor_ids=selected_anchor_ids,
+    )
+    relation_expansion_required = bool(
+        validated_relation_expansion.get("needed") is True
+    )
+    requested_source_tools = list(
+        dict.fromkeys(
+            _TOOL_BY_DOC_TYPE[item["doc_type"]]
+            for item in normalized_requested_sources
+        )
+    )
     source_coverage_fields = normalize_answer_fields(
         [
             field
-            for tool in requested_source_tools
-            for field in _SOURCE_COVERAGE_FIELDS.get(tool, ())
+            for item in normalized_requested_sources
+            for field in item.get("requested_fields") or []
         ]
+    )
+    validated_diagnostic_closure = normalize_diagnostic_closure(
+        diagnostic_closure,
+        raw_user_query=authorization_text,
+    )
+    closure_dimensions = list(
+        validated_diagnostic_closure.get("required_dimensions") or []
     )
     contract_fields = ensure_intent_answer_fields(
         [
             required_answer_fields or [],
             source_coverage_fields,
+            closure_dimensions,
             *(
                 item.get("required_fields") or []
                 for item in normalized_targets
@@ -572,10 +682,33 @@ def resolve_tool_policy(
         policy = INTENT_POLICY[target]
         allowed_by_intent.update(policy["allowed"])
         hybrid_allowed_by_intent.update(policy.get("hybrid_allowed", policy["allowed"]))
-        for tool in policy["fallback"]:
-            if tool not in fallback_tools:
-                fallback_tools.append(tool)
     allowed_by_intent.add("evidence_synthesis")
+    if not relation_expansion_required:
+        # Intent ceilings, answer-field ownership and a planner-selected tool
+        # are not graph authority. They may retain direct PostgreSQL sources,
+        # but only the grounded relation contract can open HugeGraph.
+        allowed_by_intent.discard("graph_traversal")
+        hybrid_allowed_by_intent.discard("graph_traversal")
+
+    # Canonical answer dimensions, rather than their coarse intent label,
+    # authorize the source families that may complete this turn.  This also
+    # lets a narrowly mislabelled target retain an explicitly requested field
+    # without reopening every source associated with the neighbouring intent.
+    # Requested dimensions are not claims about source capability. A user
+    # asking source A for field X authorizes A's read, not an unsolicited read
+    # of source B merely because B usually stores X. Preserve X as an answer
+    # obligation even when A's actual rows have no support for it.
+    scoped_fields = set(source_coverage_fields)
+    query_contract_tools = list(dict.fromkeys([*tools_for_answer_fields([
+        field for field in contract_fields if field not in scoped_fields
+    ]), *requested_source_tools]))
+    contract_owner_tools = {
+        tool
+        for tool in query_contract_tools
+        if tool in CANONICAL_TOOL_NAMES
+    }
+    allowed_by_intent.update(contract_owner_tools)
+    hybrid_allowed_by_intent.update(contract_owner_tools)
 
     if requested_source_tools:
         # The user has named this source themselves.  Preserve that coverage
@@ -601,6 +734,7 @@ def resolve_tool_policy(
     collection_contract = (
         str(coverage_scope or "").strip() == "complete_collection"
         and str(collection_member_kind or "").strip() in {"failure_mode", "cause"}
+        and "closed_collection_members" in contract_fields
     )
     if collection_contract:
         allowed_by_intent.update({"function_locator", "fmeca_query"})
@@ -609,27 +743,20 @@ def resolve_tool_policy(
         hybrid_allowed_by_intent.intersection_update(
             {"function_locator", "fmeca_query"}
         )
-        fallback_tools = list(dict.fromkeys([
-            "function_locator", "fmeca_query", *fallback_tools,
-        ]))
         notes.append("完整集合成员仅由架构身份与FMECA权威记录闭合；其他资料不参与计数")
 
-    diagnostic_closure_required = bool(
-        isinstance(diagnostic_closure, Mapping)
-        and diagnostic_closure.get("required") is True
-    )
+    diagnostic_closure_required = bool(validated_diagnostic_closure)
     focused_field_contract = is_focused_answer_contract(
         fields=contract_fields,
         coverage_scope=str(coverage_scope or "").strip(),
-        intents=target_intents,
+        intents=(),
         diagnostic_closure=diagnostic_closure_required,
     )
     topology_entity_resolution = bool(
-        "reliability_query" in target_intents
-        and "rbd_single_failure_boundary" in contract_fields
+        "rbd_single_failure_boundary" in contract_fields
     )
     if focused_field_contract:
-        contract_tools = tools_for_answer_fields(contract_fields)
+        contract_tools = query_contract_tools
         direct_contract_tools = {
             tool for tool in contract_tools if tool in CANONICAL_TOOL_NAMES
         }
@@ -672,11 +799,22 @@ def resolve_tool_policy(
             direct_fallback = [
                 tool for tool in contract_fallback if tool != "hybrid_search"
             ]
-            fallback_tools = direct_fallback or contract_fallback
+            fallback_tools = (direct_fallback or contract_fallback)[:1]
         notes.append(
             "focused_detail 已按必答字段收窄工具范围："
             + "、".join(contract_fields)
         )
+
+    if not fallback_tools and contract_fields:
+        field_candidates = [
+            tool
+            for tool in tools_for_answer_fields(contract_fields)
+            if tool in QUERY_TOOL_NAMES and tool in allowed_by_intent
+        ]
+        direct_candidates = [
+            tool for tool in field_candidates if tool != "hybrid_search"
+        ]
+        fallback_tools = (direct_candidates or field_candidates)[:1]
 
     # The target model has already established that the answer needs a
     # cross-document relation or multi-hop expansion.  This is deliberately a
@@ -686,11 +824,10 @@ def resolve_tool_policy(
     # HugeGraph remains a projection and is still executed only after those
     # sources provide stable business IDs.
     if relation_expansion_required:
-        relation_tools = {"function_locator", "graph_traversal"}
-        if set(target_intents) & {
-            "cause_analysis", "symptom_diagnosis", "impact_analysis",
-        }:
-            relation_tools.add("fta_query")
+        relation_tools = set(RELATION_TOOLS.get(
+            str(validated_relation_expansion.get("relation_kind") or ""),
+            (),
+        ))
         allowed_by_intent.update(relation_tools)
         # A focused scalar field must not erase the authoritative bridge the
         # model says is necessary to answer it completely.
@@ -699,21 +836,52 @@ def resolve_tool_policy(
         )
         notes.append("语义关系合同已保留实体定位、结构来源和多跳关系查询")
 
-    calculation_requests = detect_calculation_requests(authorization_text)
+    validated_calculation_authorizations = normalize_calculation_authorizations(
+        calculation_authorizations,
+        raw_user_query=authorization_text,
+    )
+    calculation_requests = calculation_requests_from_authorizations(
+        validated_calculation_authorizations,
+        raw_user_query=authorization_text,
+    )
     explicit_fta_calculation = any(value.startswith("fta_") for value in calculation_requests)
     explicit_rbd_calculation = _CALCULATION_REQUEST_RBD_RELIABILITY in calculation_requests
     forced_tools: List[str] = []
-    reliability_target = "reliability_query" in target_intents
+    tool_by_doc_type = {doc_type: tool for tool, doc_type in DOC_TYPE_BY_TOOL.items()}
+    contract_tools = set(query_contract_tools)
+    continuation_anchor_tools = {
+        tool_by_doc_type.get(str(doc_type or "").strip(), "")
+        for doc_type in (selected_anchor_doc_types or [])
+    }
+    continuation_anchor_tools.discard("")
+    # The selected anchor is a server-issued evidence identity. Its owning
+    # source may be re-read even when the model chose a neighbouring coarse
+    # intent; this does not authorize any other source under that intent.
+    allowed_by_intent.update(continuation_anchor_tools)
+    hybrid_allowed_by_intent.update(continuation_anchor_tools)
+    # A resolved follow-up must re-read the selected record's owner whenever
+    # that document can supply a field requested in this turn.  The selected
+    # anchor was offered by the server from a prior citation; this rule neither
+    # trusts old answer prose nor widens to unrelated document families.
+    for tool in _TOOL_ORDER:
+        if (
+            tool in continuation_anchor_tools
+            and tool in contract_tools
+            and tool in allowed_by_intent
+            and tool not in forced_tools
+        ):
+            forced_tools.append(tool)
+    if forced_tools:
+        notes.append(
+            "续轮已回读所选对象的权威来源："
+            + "、".join(DOC_TYPE_BY_TOOL.get(tool, tool) for tool in forced_tools)
+        )
     if topology_entity_resolution and "function_locator" in allowed_by_intent:
         forced_tools.append("function_locator")
         notes.append("单路失效边界查询先通过 Function Locator 绑定权威对象身份")
-    if reliability_target and "rbd_query" in allowed_by_intent:
-        # ``reliability_query`` is already a semantic, model-authored target.
-        # Requiring its authoritative structure lookup is contract completion,
-        # not a raw-text keyword rule.  It also prevents an impact-first plan
-        # from silently answering a named-path failure with FMECA alone.
+    if RBD_ANSWER_FIELDS.intersection(contract_fields) and "rbd_query" in allowed_by_intent:
         forced_tools.append("rbd_query")
-        notes.append("可靠性目标已保留 RBD 成功判据与单路失效边界查询")
+        notes.append("模型显式 RBD 回答字段已保留权威结构查询")
     maintenance_contract_fields = _MFL_CONTRACT_FIELDS & set(contract_fields)
     if maintenance_contract_fields and "mfl_query" in allowed_by_intent:
         # Same contract-completion pattern as the RBD rule above: the target
@@ -732,15 +900,21 @@ def resolve_tool_policy(
         if tool in allowed_by_intent and tool not in forced_tools:
             forced_tools.append(tool)
     structured_hmc = extract_hmc_components(authorization_text)
+    if not structured_hmc and user_context_state and user_context_state.get("query") == authorization_text:
+        # Revalidate selected USER spans against the actual bounded history.
+        # This is lookup identity only; calculation authority above still
+        # uses the unchanged current question, never a historical rewrite.
+        structured_hmc = selected_user_hmc_components(user_context_state)
     if structured_hmc:
         forced_tools.append("hmc_query")
+        allowed_by_intent.update({"hmc_query", "hybrid_search"})
+        hybrid_allowed_by_intent.add("hmc_query")
     # A syntactically explicit business ID can be resolved exactly without
     # guessing its document family from a prefix or trusting the planner to
     # choose the right table. Probe the bounded identity-capable PostgreSQL
     # sources; only an exact stored ID is allowed to survive downstream.
     record_identity_resolution = (
         "record_identity" in contract_fields
-        and "entity_profile" in target_intents
         and bool(extract_business_codes(authorization_text))
         and not structured_hmc
     )
@@ -761,15 +935,9 @@ def resolve_tool_policy(
         for tool in ("function_locator", "fmeca_query"):
             if tool not in forced_tools:
                 forced_tools.append(tool)
-        # 集合主体（模块/功能）已由上方确定性身份查询绑定出业务 ID；以该
-        # ID 为种子的图投影聚合跨文档成员视图。闭合计数仍只来自 FMECA
-        # 权威记录，图结果不参与 N-of-N 计数，也不得凭图补造成员。
-        if "graph_traversal" in allowed_by_intent and "graph_traversal" not in forced_tools:
-            forced_tools.append("graph_traversal")
-            notes.append("完整集合成员已附加跨文档图聚合视图（不参与闭合计数）")
 
     if relation_expansion_required:
-        for tool in ("function_locator", "fta_query", "graph_traversal"):
+        for tool in ("function_locator", "graph_traversal"):
             if tool in allowed_by_intent and tool not in forced_tools:
                 forced_tools.append(tool)
 
@@ -783,6 +951,94 @@ def resolve_tool_policy(
         for tool in ("rbd_query", "rbd_calculator"):
             if tool not in forced_tools:
                 forced_tools.append(tool)
+
+    calculation_contract_tools: set[str] = set()
+    for authorization in validated_calculation_authorizations:
+        target = str(authorization.get("target") or "").strip()
+        if target == "fta":
+            calculation_contract_tools.add("fta_query")
+            if authorization.get("mode") == "calculate":
+                calculation_contract_tools.add("fta_analyzer")
+        elif target == "rbd":
+            calculation_contract_tools.add("rbd_query")
+            if authorization.get("mode") == "calculate":
+                calculation_contract_tools.add("rbd_calculator")
+    allowed_by_intent.update(calculation_contract_tools)
+
+    normalized_selected_anchor_ids = {
+        str(value or "").strip()
+        for value in (selected_anchor_ids or [])
+        if str(value or "").strip()
+    }
+    has_selected_anchor_contract = bool(
+        normalized_selected_anchor_ids and continuation_anchor_tools
+    )
+    has_execution_contract = bool(
+        contract_fields
+        or requested_source_tools
+        or has_selected_anchor_contract
+        or relation_expansion_required
+        or validated_calculation_authorizations
+        or structured_hmc
+    )
+    if has_execution_contract:
+        # A contract authorizes only the source families it names or owns. It
+        # must not act as a global switch that lets every planner proposal
+        # under the coarse intent ceiling execute. This distinction matters
+        # most on follow-ups: selecting one prior RBD citation authorizes its
+        # RBD re-read, not neighbouring MFL/FMECA/history lookups.
+        execution_contract_tools = {
+            *contract_owner_tools,
+            *requested_source_tools,
+            *continuation_anchor_tools,
+            *calculation_contract_tools,
+            *forced_tools,
+            "evidence_synthesis",
+        }
+        if structured_hmc:
+            # The complete code authorizes one exact PostgreSQL lookup and the
+            # documented same-family OpenSearch fallback on exact miss.
+            execution_contract_tools.add("hybrid_search")
+        if relation_expansion_required:
+            execution_contract_tools.update(RELATION_TOOLS.get(
+                str(validated_relation_expansion.get("relation_kind") or ""),
+                (),
+            ))
+        allowed_by_intent.intersection_update(execution_contract_tools)
+        hybrid_allowed_by_intent.intersection_update(execution_contract_tools)
+    if not has_execution_contract:
+        # A coarse intent is only a safety ceiling. Without a canonical answer
+        # field, explicit source, selected citation, grounded relation, or
+        # calculation contract, arbitrary planner-selected document families
+        # have no execution provenance. Preserve progress through one generic
+        # seven-family recall; its hits remain candidates until a later exact
+        # PostgreSQL binding is established.
+        allowed_by_intent.intersection_update(
+            {"hybrid_search", "evidence_synthesis"}
+        )
+        hybrid_allowed_by_intent.intersection_update({"hybrid_search"})
+        fallback_tools = ["hybrid_search"]
+        forced_tools = [
+            tool for tool in forced_tools
+            if tool not in QUERY_TOOL_NAMES or tool == "hybrid_search"
+        ]
+        notes.append("缺少可验证执行合同，仅保留一个通用混合召回")
+
+    if not relation_expansion_required:
+        # Some canonical answer fields list graph traversal as one possible
+        # way to satisfy them. Field ownership is not graph authorization:
+        # adaptive execution consumes ``authorized_tools`` even when the
+        # planner did not put a tool in the initial plan, so close both the
+        # immediate and deferred paths at this final policy boundary.
+        allowed_by_intent.discard("graph_traversal")
+        hybrid_allowed_by_intent.discard("graph_traversal")
+        contract_owner_tools.discard("graph_traversal")
+        forced_tools = [
+            tool for tool in forced_tools if tool != "graph_traversal"
+        ]
+        fallback_tools = [
+            tool for tool in fallback_tools if tool != "graph_traversal"
+        ]
 
     # 规划 JSON 已被标记为失败时，其中的残留工具名也不再可信。
     proposals = [] if planner_failed else _normalize_proposals(proposed_plan)
@@ -799,14 +1055,23 @@ def resolve_tool_policy(
         if tool == "rbd_calculator" and not explicit_rbd_calculation:
             rejected.append(tool)
             continue
+        if tool == "graph_traversal" and not relation_expansion_required:
+            rejected.append(tool)
+            continue
         accepted.append(item)
 
+    deferred_authorized_tools: set[str] = set()
     if focused_field_contract and any(
         item["tool"] in QUERY_TOOL_NAMES and item["tool"] != "hybrid_search"
-        for item in accepted
+        for item in [*accepted, *({"tool": tool} for tool in forced_tools)]
     ):
+        if "hybrid_search" in allowed_by_intent:
+            # Defer execution, not authorization. A keyword hit with the right
+            # fields can still be about the wrong object. The adaptive model
+            # may request one same-source semantic lookup after inspecting it.
+            deferred_authorized_tools.add("hybrid_search")
         accepted = [item for item in accepted if item["tool"] != "hybrid_search"]
-        notes.append("聚焦字段先查权威结构化记录；混合检索仅在未命中时补查")
+        notes.append("聚焦字段先查权威记录；保留同源语义补查，由模型检查相关性和缺口")
 
     # 完整 HMC 的单一精确查询必须先走 PostgreSQL 权威字段匹配。
     # 即使规划模型同时选择了 OpenSearch，也将其保留为后续授权能力，
@@ -818,6 +1083,7 @@ def resolve_tool_policy(
             if item["tool"] in QUERY_TOOL_NAMES and item["tool"] != "hmc_query"
         ]
         if deferred:
+            deferred_authorized_tools.update(deferred)
             accepted = [
                 item
                 for item in accepted
@@ -832,15 +1098,59 @@ def resolve_tool_policy(
     selected_query_tools = {
         item["tool"] for item in accepted if item["tool"] in QUERY_TOOL_NAMES
     }
-    if planner_failed or not selected_query_tools.union(
+    if (
+        (planner_failed or invalid_intent)
+        and not fallback_tools
+        and "hybrid_search" in allowed_by_intent
+    ):
+        # One generic lexical/semantic lookup is the only no-contract recovery
+        # path.  It does not infer a document family or answer dimension.
+        fallback_tools = ["hybrid_search"]
+    if planner_failed or invalid_intent or not selected_query_tools.union(
         tool for tool in forced_tools if tool in QUERY_TOOL_NAMES
     ):
+        added_fallback = False
         for tool in fallback_tools:
             if tool not in forced_tools:
                 forced_tools.append(tool)
-        notes.append(
-            "规划模型未给出可执行查询，已按当前信息目标使用最小安全召回"
-        )
+                added_fallback = True
+        if added_fallback:
+            notes.append("规划模型未给出可执行查询，已使用一个已授权的有界召回")
+
+    def forced_tool_reason(canonical: str) -> str:
+        if canonical in requested_source_tools:
+            return "用户明确要求回查该类资料"
+        if canonical in continuation_anchor_tools:
+            return "续轮所选对象需从同一权威记录回读本轮字段"
+        if canonical in {"hmc_query", "fta_analyzer", "rbd_calculator"}:
+            return "原始问题包含可结构化字段或明确计算请求"
+        if canonical == "function_locator" and topology_entity_resolution:
+            return "显式单路失效边界字段需要先绑定权威对象身份"
+        if record_identity_resolution:
+            return "显式业务ID需在权威结构化身份列中精确解析"
+        if collection_contract and canonical in {"function_locator", "fmeca_query"}:
+            return "完整集合合同要求回查架构身份与权威FMECA记录"
+        if canonical == "graph_traversal" and relation_expansion_required:
+            return "经当前轮原文或已选引用校验的关系合同要求多跳查询"
+        if canonical == "mfl_query" and maintenance_contract_fields:
+            return "维修合同必须回读 MFL 权威定位与处置清单"
+        if canonical in contract_owner_tools:
+            return "模型显式回答字段需要该权威资料"
+        return "规划不可用时的单一有界召回"
+
+    if (
+        contract_fields
+        and "hybrid_search" in allowed_by_intent
+        and not structured_hmc
+        and not extract_business_codes(authorization_text)
+        and not continuation_anchor_tools
+        and any(tool in DOC_TYPE_BY_TOOL for tool in [*forced_tools, *(item["tool"] for item in accepted)])
+    ):
+        # Without a stable identity, a keyword hit is only one recall channel.
+        # Search the already authorized families now; source fields being
+        # nonempty cannot establish semantic relevance or suppress this pool.
+        forced_tools.append("hybrid_search")
+        notes.append("自然描述没有稳定记录身份：同源词法与语义联合召回，再回读权威记录")
 
     for tool in forced_tools:
         canonical = _canonical_tool(tool)
@@ -849,35 +1159,7 @@ def resolve_tool_policy(
                 canonical,
                 {
                     "tool": canonical,
-                    "reason": (
-                        "用户明确要求回查该类资料"
-                        if canonical in requested_source_tools
-                        else (
-                            "原始问题包含可结构化字段或明确计算请求"
-                        if canonical in {"hmc_query", "fta_analyzer", "rbd_calculator"}
-                        else (
-                            "可靠性目标必须回读 RBD 结构和成功判据"
-                            if canonical == "rbd_query" and reliability_target
-                            else (
-                                "显式业务ID需在权威结构化身份列中精确解析"
-                                if record_identity_resolution
-                                else (
-                                    "完整集合合同要求回查架构身份与权威FMECA记录"
-                                    if collection_contract and canonical in {"function_locator", "fmeca_query"}
-                                    else (
-                                        "完整集合合同附加跨文档图聚合视图"
-                                        if collection_contract and canonical == "graph_traversal"
-                                        else (
-                                            "维修合同必须回读 MFL 权威定位与处置清单"
-                                            if canonical == "mfl_query" and maintenance_contract_fields
-                                            else "规划不可用时的最小安全召回"
-                                        )
-                                    )
-                                )
-                            )
-                        )
-                        )
-                    ),
+                    "reason": forced_tool_reason(canonical),
                     "targets": _tool_targets(canonical, target_intents),
                 },
             )
@@ -894,33 +1176,50 @@ def resolve_tool_policy(
     }
     ordered_tools = [tool for tool in _TOOL_ORDER if tool in requested_tools and tool in plan_by_tool]
 
+    explicitly_authorized_tools = {
+        *contract_owner_tools,
+        *requested_source_tools,
+        *forced_tools,
+        *deferred_authorized_tools,
+        *(item["tool"] for item in accepted),
+        "evidence_synthesis",
+    }
+    explicitly_authorized_tools.intersection_update(allowed_by_intent)
+
     authorized_doc_types: List[str] = []
     for tool in _TOOL_ORDER:
-        if tool not in allowed_by_intent:
+        if tool not in explicitly_authorized_tools:
             continue
         doc_type = DOC_TYPE_BY_TOOL.get(tool)
         if doc_type and doc_type not in authorized_doc_types:
             authorized_doc_types.append(doc_type)
 
-    hybrid_doc_types = (
-        [
-            doc_type
-            for tool in _TOOL_ORDER
-            if tool in hybrid_allowed_by_intent
-            for doc_type in [DOC_TYPE_BY_TOOL.get(tool)]
-            if doc_type
-        ]
-        if "hybrid_search" in ordered_tools
-        else []
-    )
+    hybrid_scope_tools = {
+        tool
+        for tool in explicitly_authorized_tools
+        if tool in DOC_TYPE_BY_TOOL and tool != "hybrid_search"
+    }
+    if "hybrid_search" in ordered_tools and not hybrid_scope_tools:
+        # A sole generic fallback stays bounded to the seven product document
+        # families but does not guess one family from a coarse intent.
+        hybrid_scope_tools = set(DOC_TYPE_BY_TOOL)
+    hybrid_doc_types = [
+        doc_type
+        for tool in _TOOL_ORDER
+        if tool in hybrid_scope_tools
+        for doc_type in [DOC_TYPE_BY_TOOL.get(tool)]
+        if doc_type
+    ] if "hybrid_search" in ordered_tools else []
     authorized_tools = [
-        tool for tool in _TOOL_ORDER if tool in allowed_by_intent
+        tool for tool in _TOOL_ORDER if tool in explicitly_authorized_tools
     ]
 
     return {
         "intent": normalized_intent,
         "query_targets": normalized_targets,
+        "calculation_authorizations": validated_calculation_authorizations,
         "calculation_requests": calculation_requests,
+        "relation_expansion": validated_relation_expansion,
         "authorized_tools": authorized_tools,
         "allowed_tools": ordered_tools,
         "tools_plan": [plan_by_tool[tool] for tool in ordered_tools],
@@ -930,4 +1229,15 @@ def resolve_tool_policy(
         "notes": notes,
         "requested_source_tools": requested_source_tools,
         "source_coverage_fields": source_coverage_fields,
+        "requested_sources": normalized_requested_sources,
+        "source_obligations": [
+            {
+                "tool": _TOOL_BY_DOC_TYPE[item["doc_type"]],
+                "doc_type": item["doc_type"],
+                "fields": list(item.get("requested_fields") or []),
+                "question_role": item["question_role"],
+                "basis": item["basis"],
+            }
+            for item in normalized_requested_sources
+        ],
     }

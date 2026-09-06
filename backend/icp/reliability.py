@@ -89,12 +89,13 @@ def _gate_type(node: Dict[str, Any], outgoing_edges: Sequence[Dict[str, Any]]) -
     candidates.extend(_props(edge).get("gate_type") for edge in outgoing_edges)
     for value in candidates:
         text = str(value or "").strip().upper()
+        # XOR contains OR lexically but is not an inclusive OR gate.
+        if "XOR" in text:
+            return "XOR"
         if "AND" in text or "与" == text:
             return "AND"
         if "OR" in text or "或" == text:
             return "OR"
-        if "XOR" in text:
-            return "XOR"
     return "OR"
 
 
@@ -118,6 +119,24 @@ def calculate_fta(graph: Dict[str, Any], mission_time: Optional[float] = None) -
     """计算 FTA 最小割集与顶事件概率。缺少基本事件概率时仍返回割集。"""
     vertices, children = _graph(graph)
     root = _fta_root(graph, vertices, children)
+    # The current cut-set representation contains positive events only.
+    # For XOR, A alone is not a sufficient cut when B also occurs: signed
+    # literals are needed. Do not silently reuse the coherent OR algorithm or
+    # choose a multi-input XOR convention on the user's behalf.
+    pending = [root]
+    checked: Set[str] = set()
+    while pending:
+        node_id = pending.pop()
+        if node_id in checked:
+            continue
+        checked.add(node_id)
+        outgoing = children.get(node_id, [])
+        if outgoing and _gate_type(vertices[node_id], outgoing) == "XOR":
+            raise ReliabilityModelError(
+                "当前 FTA 算法不支持 XOR 的非单调割集及多输入约定；"
+                "可查询显式结构，但不能按 OR 替代计算"
+            )
+        pending.extend(str(edge["target"]) for edge in outgoing)
     visiting: Set[str] = set()
     probability_cache: Dict[str, Optional[float]] = {}
     cut_cache: Dict[str, List[frozenset[str]]] = {}

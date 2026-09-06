@@ -1,25 +1,11 @@
 import DOMPurify from 'dompurify';
 import { Marked } from 'marked';
+import type { AgentEvidence } from '../types';
 
 // ===== formatMarkdown 处理函数 =====
 
-export interface Citation {
-  evidence_id?: string;
-  status?: string;
-  answer_citation_id?: number;
-  doc_id?: string;
-  doc_name?: string;
-  title?: string;
-  display_summary?: string;
-  content?: string;
-  snippet?: string;
-  doc_type?: string;
-  source_ref?: string;
-  record_id?: string;
-  image_url?: string;
-  document_metadata?: Record<string, unknown>;
-  [k: string]: unknown;
-}
+// Keep the renderer and API on one evidence contract, including uncited catalog rows.
+export type Citation = AgentEvidence;
 
 /** 按正文首次出现顺序返回本轮引用编号，兼容后端的 `[^n]` 标记。 */
 export function extractCitationNumbers(text?: string): number[] {

@@ -7,7 +7,7 @@ import copy
 import json
 from datetime import datetime
 from functools import partial
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 import networkx as nx
 
@@ -1273,28 +1273,13 @@ async def generate_icp_kg_background(
                 None, project_structured_document, doc_id, doc_type
             )
 
-        diagrams = diagram_repository.list_diagrams_by_document(doc_id)
-        all_latest_are_terminal = True
-        for diagram in diagrams:
-            revisions_for_diagram = diagram_repository.list_revisions(
-                str(diagram["diagram_id"])
-            )
-            if not revisions_for_diagram:
-                all_latest_are_terminal = False
-                break
-            latest = revisions_for_diagram[0]
-            is_active_projection = (
-                revision_is_projectable(latest)
-                and latest.get("projection_status") == "published"
-                and latest.get("is_active")
-            )
-            validation_status = str(latest.get("validation_status") or "")
-            is_safely_isolated = validation_status == VALIDATION_QUARANTINED
-            if not (is_active_projection or is_safely_isolated):
-                all_latest_are_terminal = False
-                break
-        final_doc_status = "kg_done" if all_latest_are_terminal else "kg_pending"
-        postgres_client.update_icp_document_status(doc_id, final_doc_status)
+        lifecycle = _diagram_lifecycle_summary(doc_id, doc_type)
+        final_doc_status = "kg_done" if lifecycle["terminal"] else "kg_pending"
+        _record_icp_graph_terminal_state(
+            doc_id,
+            final_doc_status,
+            lifecycle=lifecycle,
+        )
 
         await task_manager.update_progress(
             task_id,
@@ -1310,6 +1295,7 @@ async def generate_icp_kg_background(
             "vertices": total_vertices,
             "edges": total_edges,
             "status": final_doc_status,
+            "diagram_lifecycle": lifecycle,
             "structured_projection": structured_result or {},
             "message": f"知识图谱投影完成：{total_vertices} 节点 / {total_edges} 边",
         })
@@ -1331,7 +1317,11 @@ async def generate_icp_kg_background(
                 pass
         await task_manager.update_progress(task_id, 0, "[CANCEL] 知识图谱生成已被用户取消", log_type="cancel")
         await task_manager.update_status(task_id, "cancelled")
-        postgres_client.update_icp_document_status(doc_id, "kg_pending")
+        _record_icp_graph_terminal_state(
+            doc_id,
+            "kg_pending",
+            error="projection task cancelled",
+        )
 
     except Exception as e:
         import traceback
@@ -1353,42 +1343,97 @@ async def generate_icp_kg_background(
         await task_manager.set_error(task_id, error_detail)
         await task_manager.update_progress(task_id, 0, f"[ERROR] 知识图谱生成失败: {str(e)}", log_type="error")
         await task_manager.update_status(task_id, "failed")
-        postgres_client.update_icp_document_status(doc_id, "kg_pending")
+        _record_icp_graph_terminal_state(
+            doc_id,
+            "kg_pending",
+            error=str(e),
+        )
 
 
 _ICP_DIAGRAM_TYPES = frozenset({"function_locator", "fta", "rbd"})
 
 
-def _latest_diagram_states(doc_id: str, doc_type: str) -> List[Dict]:
-    latest: List[Dict] = []
+def _record_icp_graph_terminal_state(
+    doc_id: str,
+    status: str,
+    *,
+    lifecycle: Optional[Mapping[str, Any]] = None,
+    error: str = "",
+) -> None:
+    """Keep the document status and its asynchronous parse summary aligned."""
+
+    postgres_client.update_icp_document_status(doc_id, status)
+    graph_state: Dict[str, Any] = {"status": status}
+    if lifecycle is not None:
+        graph_state["diagram_lifecycle"] = dict(lifecycle)
+    if error:
+        graph_state["error"] = str(error)[:1000]
+    postgres_client.patch_icp_document_result(
+        doc_id,
+        {
+            "kg_pending": status != "kg_done",
+            "graph_projection": graph_state,
+        },
+    )
+
+
+def _diagram_lifecycle_summary(doc_id: str, doc_type: str) -> Dict[str, Any]:
+    """Classify every discovered diagram without inferring missing state.
+
+    A diagram master is written before visual extraction.  Consequently, no
+    revision can mean a model/response parsing failure just as easily as an
+    image without explicit topology.  Until the parser persists a positive
+    terminal outcome, absence of a revision must remain fail-closed pending.
+    Published active revisions and quarantined revisions are terminal.
+    """
+
+    summary: Dict[str, Any] = {
+        "total": 0,
+        "published": 0,
+        "quarantined": 0,
+        # Retained for response-shape compatibility.  This count may only be
+        # advanced by a future explicit, persisted no-structure outcome.
+        "no_explicit_structure": 0,
+        "unresolved_without_revision": 0,
+        "pending": 0,
+        "terminal": True,
+    }
     for diagram in diagram_repository.list_diagrams_by_document(doc_id):
         if str(diagram.get("diagram_type") or "") != doc_type:
             continue
+        summary["total"] += 1
         revisions = diagram_repository.list_revisions(str(diagram["diagram_id"]))
-        if revisions:
-            latest.append(dict(revisions[0]))
-    return latest
+        if not revisions:
+            summary["unresolved_without_revision"] += 1
+            summary["pending"] += 1
+            summary["terminal"] = False
+            continue
+        latest = revisions[0]
+        if (
+            revision_is_projectable(latest)
+            and latest.get("projection_status") == "published"
+            and latest.get("is_active")
+        ):
+            summary["published"] += 1
+            continue
+        if str(latest.get("validation_status") or "") == VALIDATION_QUARANTINED:
+            summary["quarantined"] += 1
+            continue
+        summary["pending"] += 1
+        summary["terminal"] = False
+    return summary
 
 
 def _latest_diagrams_are_terminal(doc_id: str, doc_type: str) -> bool:
     """Return true when each discovered diagram is published or quarantined.
 
-    No diagram is a terminal, warning-only outcome: the common Document vertex
-    and the other explicit structured relations are still a complete rebuildable
-    projection.  Missing engineering topology is never fabricated to fill it.
+    A document with no diagram masters is a terminal, relation-sparse result:
+    the common Document vertex and PostgreSQL explicit relations are complete.
+    A discovered master without a revision is unresolved and remains pending;
+    missing engineering topology is never fabricated to fill it.
     """
 
-    for revision in _latest_diagram_states(doc_id, doc_type):
-        if (
-            revision_is_projectable(revision)
-            and revision.get("projection_status") == "published"
-            and revision.get("is_active")
-        ):
-            continue
-        if str(revision.get("validation_status") or "") == VALIDATION_QUARANTINED:
-            continue
-        return False
-    return True
+    return bool(_diagram_lifecycle_summary(doc_id, doc_type)["terminal"])
 
 
 async def generate_icp_graph_background(
@@ -1428,7 +1473,7 @@ async def generate_icp_graph_background(
         )
 
         if doc_type not in _ICP_DIAGRAM_TYPES:
-            postgres_client.update_icp_document_status(doc_id, "kg_done")
+            _record_icp_graph_terminal_state(doc_id, "kg_done")
             await task_manager.update_progress(
                 task_id, 100, "[FINISH] 结构化显式关系图投影完成"
             )
@@ -1488,7 +1533,12 @@ async def generate_icp_graph_background(
             raise RuntimeError("工程图尚未形成可发布或可安全隔离的自动校验结果")
 
         quarantined = list(validation.get("quarantined_revision_ids") or [])
-        postgres_client.update_icp_document_status(doc_id, "kg_done")
+        lifecycle = _diagram_lifecycle_summary(doc_id, doc_type)
+        _record_icp_graph_terminal_state(
+            doc_id,
+            "kg_done",
+            lifecycle=lifecycle,
+        )
         await task_manager.update_progress(
             task_id,
             100,
@@ -1515,7 +1565,11 @@ async def generate_icp_graph_background(
             task_id, 0, "[CANCEL] 自动图处理已取消", log_type="cancel"
         )
         await task_manager.update_status(task_id, "cancelled")
-        postgres_client.update_icp_document_status(doc_id, "kg_pending")
+        _record_icp_graph_terminal_state(
+            doc_id,
+            "kg_pending",
+            error="projection task cancelled",
+        )
     except Exception as exc:
         import traceback
 
@@ -1526,4 +1580,8 @@ async def generate_icp_graph_background(
             task_id, 0, f"[ERROR] 自动图处理失败: {exc}", log_type="error"
         )
         await task_manager.update_status(task_id, "failed")
-        postgres_client.update_icp_document_status(doc_id, "kg_pending")
+        _record_icp_graph_terminal_state(
+            doc_id,
+            "kg_pending",
+            error=str(exc),
+        )

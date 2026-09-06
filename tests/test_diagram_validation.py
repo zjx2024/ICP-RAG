@@ -109,6 +109,21 @@ class DiagramAutomaticValidationTests(unittest.TestCase):
         self.assertFalse(result.publishable)
         self.assertFalse(result.formal_claims_allowed)
 
+    def test_failed_visual_candidate_cannot_contribute_confidence(self):
+        graph = _fta()
+        failed = _candidate("image_vision", graph, confidence=0.99)
+        failed["extraction_status"] = "failed"
+
+        result = evaluate_automatic_validation(
+            diagram_type="fta",
+            graph=graph,
+            candidates=[failed],
+        )
+
+        self.assertEqual(VALIDATION_QUARANTINED, result.status)
+        self.assertIsNone(result.confidence)
+        self.assertEqual((), result.source_kinds)
+
     def test_invalid_probability_quarantines_deterministic_fta(self):
         graph = _fta(probability=1.2)
         result = evaluate_automatic_validation(

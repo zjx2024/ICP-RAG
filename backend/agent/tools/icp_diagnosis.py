@@ -10,17 +10,42 @@ import logging
 import os
 import re
 import time
+import unicodedata
 from collections import defaultdict
 from difflib import SequenceMatcher
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from backend.agent.answer_contract import required_answer_fields
-from backend.agent.contracts import answer_mode_for_intent, make_evidence, make_tool_result
+from backend.agent.answer_contract import (
+    focused_answer_contract,
+    required_answer_fields,
+)
+from backend.agent.clarification_contract import (
+    make_clarification_fallback,
+    make_clarification_identity,
+    make_clarification_reason,
+    make_missing_input_requirement,
+    normalize_clarification_identity,
+    unique_contract_items,
+)
+from backend.agent.contracts import ANSWER_MODES, make_evidence, make_tool_result
+from backend.agent.evidence_packets import returned_projection_read
+from backend.agent.ranking_policy import CandidateRankingWeights, candidate_ranking_weights
 from backend.agent.evidence_display import (
     deterministic_graph_source_ref,
+    explicit_fta_gate_relations,
     summarize_diagram_locator,
     summarize_graph_structure,
 )
+from backend.agent.history_focus import (
+    history_answer_fields,
+    history_case_identity,
+    history_parent_binding,
+    history_turn_explicitly_targeted,
+    resolve_history_parent_cases,
+    select_history_parent_cases,
+)
+from backend.agent.model_selection_service import select_current_models
+from backend.agent.diagram_query_scope import bind_current_diagrams, diagram_in_scope
 from backend.agent.query_understanding import (
     bind_structured_function_entity,
     build_hybrid_query,
@@ -29,8 +54,22 @@ from backend.agent.query_understanding import (
     diagram_match_score,
     extract_business_codes,
     normalize_search_term,
+    validated_coverage_request,
 )
-from backend.agent.tool_policy import extract_hmc_components, resolve_tool_policy
+from backend.agent.rbd_contract import (
+    RBD_AUTHORITY_CONTRACT_VERSION,
+    RBD_BLOCK_BUSINESS_ID_FIELDS,
+    bind_rbd_models,
+    extract_explicit_rbd_ids,
+    literal_identity_in_query,
+    rbd_block_business_ids,
+)
+from backend.agent.tool_policy import (
+    DOC_TYPE_BY_TOOL,
+    extract_hmc_components,
+    grounded_typed_hmc_components,
+    resolve_tool_policy,
+)
 from backend.core.retrieval import knowledge_retriever
 from backend.core.parsers.document_ir import clean_text, load_document_ir
 from backend.icp.diagram_repository import diagram_repository
@@ -57,6 +96,30 @@ ICP_DOC_TYPES = (
     "mfl",
     "fault_history",
 )
+_DOCUMENT_TOOL_BY_TYPE = {
+    "function_locator": "function_locator",
+    "hmc": "hmc_query",
+    "fmeca": "fmeca_query",
+    "fta": "fta_query",
+    "rbd": "rbd_query",
+    "mfl": "mfl_query",
+    "fault_history": "fault_history_query",
+}
+_SOURCE_QUESTION_ROLES = {"evidence", "capability", "limitation", "comparison"}
+_ARCHITECTURE_ANSWER_FIELDS = {
+    "architecture_hierarchy",
+    "architecture_function",
+    "architecture_interface",
+    "relation_path",
+}
+_FUNCTION_PROFILE_FIELDS = {
+    "record_name",
+    "record_type",
+    "record_location",
+    "responsibility",
+    "record_identity",
+}
+_ARCHITECTURE_COLLECTION_KINDS = {"component", "module", "subsystem"}
 _TOOL_CALL_EVIDENCE_LIMIT = 8
 _TOOL_CALL_PREVIEW_SNIPPET_LIMIT = 260
 _TOOL_CALL_PREVIEW_SOURCE_LIMIT = 320
@@ -74,7 +137,9 @@ _DIAGNOSTIC_RECORD_HYDRATION_LIMITS = {
     "fmeca": 2,
     "mfl": 2,
 }
-_STRUCTURED_HMC_MATCH_TYPES = {"exact_code", "exact_components"}
+_STRUCTURED_HMC_MATCH_TYPES = {
+    "exact_code", "exact_components", "exact_conversation_reference",
+}
 _SEMANTIC_HISTORY_REFERENCE_MIN_SCORE = 0.25
 _FTA_DIAGRAM_BUSINESS_ID_RE = re.compile(
     r"FTA-[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?", re.IGNORECASE
@@ -85,8 +150,22 @@ _FTA_EVENT_BUSINESS_ID_RE = re.compile(
 _RBD_DIAGRAM_BUSINESS_ID_RE = re.compile(
     r"RBD-[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?", re.IGNORECASE
 )
+_TOPOLOGY_SUBJECT_KINDS = {
+    "path",
+    "channel",
+    "branch",
+    "supply_path",
+    "power_path",
+    "data_path",
+    "signal_path",
+    "redundant_leg",
+}
 _FMECA_BUSINESS_ID_RE = re.compile(
     r"(?:FM|FMECA)-[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?",
+    re.IGNORECASE,
+)
+_MFL_BUSINESS_ID_RE = re.compile(
+    r"MFL-[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?",
     re.IGNORECASE,
 )
 _SQL_BUSINESS_CODE_RE = re.compile(
@@ -203,49 +282,160 @@ def _unique_terms(state: Dict[str, Any]) -> List[str]:
 def _binding_can_drive_cross_document_expansion(
     state: Mapping[str, Any], binding: Mapping[str, Any]
 ) -> bool:
-    """Whether a Function Locator match is specific enough to become a seed.
+    """Return the already-proven cross-document authority bit.
 
-    A broad locator hit is useful for text recall, but it must not become the
-    single authoritative hand-off for a graph/relation question.  Otherwise a
-    phrase such as “供电模块” can make an arbitrary child (for example HUM)
-    hide the A/B branches the user actually asked about.  This gate does not
-    infer intent from wording: it consumes the planner's typed relation/topology
-    contract and the binder's deterministic match basis.
+    ``state`` remains in the signature for saved callers.  Intent, answer
+    fields and topology wording cannot upgrade a lexical Function candidate.
     """
 
-    if not binding.get("bound"):
-        return False
-    frame = state.get("query_frame") if isinstance(state.get("query_frame"), Mapping) else {}
-    relation = state.get("relation_expansion")
-    relation_needed = bool(
-        isinstance(relation, Mapping)
-        and (
-            relation.get("needed") is True
-            or str(relation.get("needed") or "").strip().casefold()
-            in {"1", "true", "yes"}
-        )
+    del state
+    return bool(
+        binding.get("bound") is True
+        and binding.get("cross_document_authorized") is True
+        and binding.get("business_ids")
     )
-    required_fields = {
-        str(value or "").strip()
-        for value in (frame.get("required_answer_fields") or [])
-        if str(value or "").strip()
-    }
-    topology = frame.get("topology_dependency")
-    relation_needed = relation_needed or bool(
-        {"impact_propagation", "structural_cause_chain"} & required_fields
-    ) or bool(isinstance(topology, Mapping) and topology.get("required") is True)
-    if not relation_needed:
-        return True
-    # The identifier itself, an exact stored name, an explicit route/channel
-    # marker, or an explicit same-row structural chain can safely carry a
-    # cross-document query. Generic containment/similarity remains retrieval
-    # context only and must wait for semantic rows to provide a real ID.
-    return str(binding.get("basis") or "") in {
-        "exact_business_id",
-        "exact_identity_label",
-        "explicit_branch_identity_overlap",
-        "same_row_module_function_chain",
-    }
+
+
+_FUNCTION_BUSINESS_ID_FIELDS = (
+    "component_id", "module_id", "function_id", "interface_id",
+)
+
+
+def _function_row_business_ids(row: Mapping[str, Any]) -> List[str]:
+    result: List[str] = []
+    seen: set[str] = set()
+    for field in _FUNCTION_BUSINESS_ID_FIELDS:
+        value = str(row.get(field) or "").strip()
+        identity = normalize_search_term(value)
+        if not value or not identity or identity in seen:
+            continue
+        seen.add(identity)
+        result.append(value)
+    return result
+
+
+def _stable_function_identity(value: Any) -> str:
+    """Return a complete code token, never a label or embedded fragment."""
+
+    text = unicodedata.normalize("NFKC", str(value or "")).strip()
+    codes = extract_business_codes(text, limit=2)
+    if len(codes) != 1 or unicodedata.normalize("NFKC", codes[0]).casefold() != text.casefold():
+        return ""
+    return text
+
+
+def _authorized_function_identities(
+    state: Mapping[str, Any],
+    function_rows: Sequence[Mapping[str, Any]],
+) -> Tuple[List[str], List[int], str]:
+    """Bind exact current/citation IDs to one active Function document.
+
+    Natural names and model rewrites never enter this function.  Repeated
+    occurrences of one ID inside the same document represent the same stored
+    identity; the same ID across documents/configurations is ambiguous and
+    fails closed.
+    """
+
+    occurrences: Dict[str, Dict[str, Any]] = {}
+    for index, row in enumerate(function_rows):
+        doc_id = str(row.get("doc_id") or "").strip()
+        if not doc_id:
+            continue
+        for value in _function_row_business_ids(row):
+            identity = normalize_search_term(value)
+            item = occurrences.setdefault(
+                identity, {"rendered": value, "docs": set(), "indexes": set()}
+            )
+            item["docs"].add(doc_id)
+            item["indexes"].add(index)
+
+    def resolve(values: Sequence[Any], *, doc_id: str = "") -> Tuple[List[str], List[int], bool]:
+        ids: List[str] = []
+        indexes: set[int] = set()
+        docs: set[str] = set()
+        ambiguous = False
+        for raw in values:
+            stable = _stable_function_identity(raw)
+            item = occurrences.get(normalize_search_term(stable)) if stable else None
+            if not item:
+                continue
+            item_docs = set(item["docs"])
+            if doc_id:
+                item_docs &= {doc_id}
+            if len(item_docs) != 1:
+                ambiguous = True
+                continue
+            resolved_doc = next(iter(item_docs))
+            docs.add(resolved_doc)
+            rendered = str(item["rendered"])
+            if normalize_search_term(rendered) not in {
+                normalize_search_term(value) for value in ids
+            }:
+                ids.append(rendered)
+            indexes.update(
+                index
+                for index in item["indexes"]
+                if str(function_rows[index].get("doc_id") or "").strip() == resolved_doc
+            )
+        if len(docs) > 1:
+            ambiguous = True
+        return ids, sorted(indexes), ambiguous
+
+    # Only the raw current turn may mint a new Function identity.  Ignore
+    # model-authored ``entities`` and rewritten queries here.
+    current_codes = extract_business_codes(state.get("query") or "", limit=16)
+    current_ids, current_indexes, current_ambiguous = resolve(current_codes)
+    if current_ambiguous:
+        return [], [], "ambiguous_current_query_business_id"
+    if current_ids:
+        return current_ids, current_indexes, "current_query_business_id"
+
+    selected_values: List[Tuple[str, List[Any]]] = []
+    for anchor in state.get("selected_conversation_anchors") or []:
+        if (
+            not isinstance(anchor, Mapping)
+            or str(anchor.get("doc_type") or "").strip() != "function_locator"
+        ):
+            continue
+        anchor_doc_id = str(anchor.get("doc_id") or "").strip()
+        if not anchor_doc_id:
+            continue
+        fields = (
+            anchor.get("answer_fields")
+            if isinstance(anchor.get("answer_fields"), Mapping)
+            else {}
+        )
+        selected_values.append(
+            (
+                anchor_doc_id,
+                [
+                    anchor.get("record_id"),
+                    fields.get("component_id"),
+                    fields.get("function_id"),
+                    fields.get("interface_id"),
+                ],
+            )
+        )
+    selected_ids: List[str] = []
+    selected_indexes: set[int] = set()
+    selected_docs: set[str] = set()
+    for doc_id, values in selected_values:
+        ids, indexes, ambiguous = resolve(values, doc_id=doc_id)
+        if ambiguous:
+            return [], [], "ambiguous_selected_citation_business_id"
+        if ids:
+            selected_docs.add(doc_id)
+        for value in ids:
+            if normalize_search_term(value) not in {
+                normalize_search_term(existing) for existing in selected_ids
+            }:
+                selected_ids.append(value)
+        selected_indexes.update(indexes)
+    if selected_ids and len(selected_docs) == 1:
+        return selected_ids, sorted(selected_indexes), "selected_citation_business_id"
+    if len(selected_docs) > 1:
+        return [], [], "ambiguous_selected_citation_business_id"
+    return [], [], ""
 
 
 def _apply_structured_entity_binding(
@@ -253,81 +443,103 @@ def _apply_structured_entity_binding(
     function_rows: Sequence[Mapping[str, Any]],
     terms_by_tool: Dict[str, List[str]],
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """Hand one authoritative Function Locator object to later queries.
-
-    The binder only considers stored identity/name/abbreviation/alias fields.
-    A successful binding moves those exact terms ahead of broad planner terms
-    for FMECA and RBD.  It does not claim that a similarly worded record in
-    another document is the same entity; formal cross-document links still
-    require equal business IDs or PostgreSQL-authorized graph assertions.
-    """
+    """Rank a Function candidate and separately authorize stable ID handoff."""
 
     frame = state.get("query_frame") if isinstance(state.get("query_frame"), Mapping) else {}
-    binding = bind_structured_function_entity(
-        [
-            frame.get("entities") or [],
-            frame.get("normalized_terms") or [],
-            terms_by_tool.get("function_locator") or [],
-            state.get("rewritten_query") or "",
-            state.get("query") or "",
-        ],
-        function_rows,
+    binding_values: List[Any] = [
+        frame.get("entities") or [],
+        frame.get("normalized_terms") or [],
+        terms_by_tool.get("function_locator") or [],
+        state.get("rewritten_query") or "",
+        state.get("query") or "",
+    ]
+    topology = state.get("topology_dependency")
+    if not (isinstance(topology, Mapping) and topology.get("required") is True):
+        topology = frame.get("topology_dependency")
+    if isinstance(topology, Mapping) and topology.get("required") is True:
+        # The target classifier has already separated the failed path from a
+        # surviving peer (for example B 路低压、A 路仍承担负载).  Bind only
+        # identity terms that describe that declared topology subject;
+        # otherwise equal A/B Function Locator hits form an artificial tie and
+        # erase the exact business-ID handoff needed by FMECA/RBD.
+        subject = str(topology.get("subject") or "").strip()
+        normalized_subject = normalize_search_term(subject)
+        if normalized_subject:
+            subject_values = [
+                str(value or "").strip()
+                for value in (frame.get("entities") or [])
+                if str(value or "").strip()
+                and (
+                    normalized_subject in normalize_search_term(value)
+                    or normalize_search_term(value) in normalized_subject
+                )
+            ]
+            if not subject_values:
+                subject_values = [
+                    str(value or "").strip()
+                    for value in (frame.get("normalized_terms") or [])
+                    if str(value or "").strip()
+                    and (
+                        normalized_subject in normalize_search_term(value)
+                        or normalize_search_term(value) in normalized_subject
+                    )
+                ]
+            if subject_values:
+                binding_values = [subject, subject_values]
+    candidate = bind_structured_function_entity(binding_values, function_rows)
+    authorized_ids, authorized_indexes, authorization_basis = (
+        _authorized_function_identities(state, function_rows)
     )
-    if not binding.get("bound"):
-        return [dict(row) for row in function_rows], binding
-    if not _binding_can_drive_cross_document_expansion(state, binding):
-        return [dict(row) for row in function_rows], {
-            "bound": False,
-            "ambiguous": False,
-            "business_ids": [],
-            "terms": [],
-            "row_indexes": [],
-            "basis": "generic_locator_match_not_used_as_cross_document_seed",
-        }
-
-    entity_terms = [
-        str(value or "").strip()
-        for value in binding.get("terms") or []
-        if str(value or "").strip()
-    ]
-    for tool in ("fmeca_query", "rbd_query"):
-        ordered = [*entity_terms, *(terms_by_tool.get(tool) or [])]
-        deduplicated: List[str] = []
-        seen: set[str] = set()
-        for value in ordered:
-            identity = normalize_search_term(value)
-            if not identity or identity in seen:
-                continue
-            seen.add(identity)
-            deduplicated.append(value)
-        terms_by_tool[tool] = deduplicated[:24]
-
-    # A Function Locator match is an authoritative identity hand-off.  Pass
-    # only its stored exact IDs to the remaining record families; this expands
-    # board/API/history diagnostics without creating a cross-document merge
-    # from similar prose or a model-generated synonym.
-    business_ids = [
-        str(value or "").strip()
-        for value in binding.get("business_ids") or []
-        if str(value or "").strip()
-    ]
-    for tool in ("hmc_query", "mfl_query", "fault_history_query"):
-        ordered = [*business_ids, *(terms_by_tool.get(tool) or [])]
-        deduplicated = []
-        seen = set()
-        for value in ordered:
-            identity = normalize_search_term(value)
-            if not identity or identity in seen:
-                continue
-            seen.add(identity)
-            deduplicated.append(value)
-        terms_by_tool[tool] = deduplicated[:24]
-
-    selected_indexes = {
-        int(value)
-        for value in binding.get("row_indexes") or []
-        if isinstance(value, int) or str(value).isdigit()
+    authorized = bool(authorized_ids and authorized_indexes)
+    binding = {
+        **dict(candidate),
+        "bound": authorized,
+        "cross_document_authorized": authorized,
+        "business_ids": list(authorized_ids),
+        # Cross-document consumers receive exact IDs only.  Candidate names,
+        # aliases and overlap fragments stay in the candidate fields.
+        "terms": list(authorized_ids),
+        "row_indexes": list(authorized_indexes),
+        "authorization_basis": authorization_basis,
+        "basis": authorization_basis or str(candidate.get("candidate_basis") or ""),
     }
+    # Related stored names/IDs can improve a bounded search without granting
+    # authority.  A generic containment-only winner must not steer a broad
+    # relation query to one child.  The later record/graph gates still validate
+    # identity from raw input or selected citations, never from these terms.
+    candidate_recall = bool(
+        candidate.get("candidate_bound") is True
+        and candidate.get("candidate_basis") != "identity_label_containment"
+    )
+    recall_terms = list(authorized_ids) if authorized else (
+        list(candidate.get("candidate_terms") or []) if candidate_recall else []
+    )
+    binding["retrieval_terms"] = recall_terms
+    if recall_terms:
+        for tool in (
+            "fmeca_query", "rbd_query", "hmc_query", "mfl_query",
+            "fault_history_query",
+        ):
+            ordered = [*recall_terms, *(terms_by_tool.get(tool) or [])]
+            deduplicated: List[str] = []
+            seen: set[str] = set()
+            for value in ordered:
+                identity = normalize_search_term(value)
+                if not identity or identity in seen:
+                    continue
+                seen.add(identity)
+                deduplicated.append(value)
+            terms_by_tool[tool] = deduplicated[:24]
+
+    selected_indexes = set(
+        authorized_indexes
+        if authorized
+        else (
+            candidate.get("candidate_row_indexes") or []
+            if candidate.get("candidate_bound") is True
+            else []
+        )
+    )
     selected_rows = [
         dict(row) for index, row in enumerate(function_rows) if index in selected_indexes
     ]
@@ -462,6 +674,8 @@ def _enriched_topology_dependency(
     dependency: Any,
     structured_binding: Mapping[str, Any],
     fmeca_identity_terms: Sequence[Any],
+    *,
+    raw_user_query: Any = "",
 ) -> Dict[str, Any]:
     """Attach only persisted, exact business codes to a topology contract.
 
@@ -472,16 +686,24 @@ def _enriched_topology_dependency(
 
     if not isinstance(dependency, Mapping) or dependency.get("required") is not True:
         return {}
-    candidates: List[Any] = [
-        *(dependency.get("canonical_business_ids") or []),
-        *(structured_binding.get("business_ids") or []),
-        *extract_business_codes(structured_binding.get("terms") or []),
-        *extract_business_codes(fmeca_identity_terms),
-    ]
+    # FMECA/function labels stay useful recall terms, but neither they nor a
+    # code-shaped planner rewrite may mint the canonical IDs consumed by the
+    # RBD answer boundary.  Only exact IDs grounded in the current raw turn
+    # survive this projection.
+    del fmeca_identity_terms
+    candidates: List[Any] = list(dependency.get("canonical_business_ids") or [])
+    if (
+        structured_binding.get("cross_document_authorized") is True
+        and str(structured_binding.get("authorization_basis") or "")
+        == "current_query_business_id"
+    ):
+        candidates.extend(structured_binding.get("business_ids") or [])
     business_ids: List[str] = []
     seen: set[str] = set()
     for value in candidates:
         rendered = str(value or "").strip()
+        if not literal_identity_in_query(raw_user_query, rendered):
+            continue
         identity = normalize_search_term(rendered)
         if not rendered or not identity or identity in seen:
             continue
@@ -500,90 +722,25 @@ def _closed_collection_scope_seeds(
     scope_candidates: Sequence[Mapping[str, Any]],
     state: Mapping[str, Any],
 ) -> Tuple[List[str], List[str], str]:
-    """Resolve an explicit collection subject to authoritative Function IDs.
+    """Resolve a validated collection contract to stable Function IDs.
 
-    Exact business IDs and unique exact labels win.  A cautious lexical linker
-    may then map a model-normalized entity to one returned component/function
-    candidate, but only with a high score and clear margin.  A model may also
-    explicitly list more than one current subject (for example the A and B
-    supply branches).  Those exact, same-document identities are a bounded
-    union; contextual Top-K children and stale conversation anchors are never
-    unioned to prove a parent collection.
+    This is an authority boundary, not a semantic linker.  The only accepted
+    current-turn subjects are exact stored business IDs or one globally unique
+    full stored label.  Multi-object scope requires every business ID to be
+    written in the current turn and all objects to belong to one document.
+    Anchor mode considers only the anchor IDs explicitly named by the validated
+    coverage request.  Planner ``entities``, unselected anchors, containment,
+    LCS and similarity never participate.
     """
 
-    frame = state.get("query_frame") if isinstance(state.get("query_frame"), Mapping) else {}
-    subject = str(frame.get("collection_subject") or "").strip()
-    raw_entities = frame.get("entities") or []
-    entity_values = (
-        [str(value or "").strip() for value in raw_entities]
-        if isinstance(raw_entities, (list, tuple, set))
-        else []
-    )
-    business_id_pattern = re.compile(
-        r"(?:FUNC|MOD|SUB|SYS)-[A-Z0-9]+(?:[._-][A-Z0-9]+)*",
-        re.IGNORECASE,
-    )
-    normalized_subject = normalize_search_term(subject)
-    subject_business_ids = [
-        match.group(0)
-        for match in business_id_pattern.finditer(subject)
-    ]
-    entity_business_ids = [
-        match.group(0)
-        for value in entity_values
-        for match in business_id_pattern.finditer(value)
-    ]
-    subject_related_entities = [
-        value
-        for value in entity_values
-        if normalize_search_term(value)
-        and normalized_subject
-        and normalize_search_term(value) in normalized_subject
-    ]
-    if not normalized_subject and entity_values:
-        subject_related_entities = entity_values[:1]
-
-    anchor_parent_ids: List[str] = []
-    anchor_fallback_ids: List[str] = []
-    for anchor in state.get("selected_conversation_anchors") or []:
-        if not isinstance(anchor, Mapping):
-            continue
-        fields = (
-            anchor.get("answer_fields")
-            if isinstance(anchor.get("answer_fields"), Mapping)
-            else {}
-        )
-        parent_id = str(fields.get("collection_parent_id") or "").strip()
-        if business_id_pattern.fullmatch(parent_id):
-            anchor_parent_ids.append(parent_id)
-        for raw_value in (
-            anchor.get("record_id"),
-            fields.get("component_id"),
-            fields.get("function_id"),
-        ):
-            value = str(raw_value or "").strip()
-            if business_id_pattern.fullmatch(value):
-                anchor_fallback_ids.append(value)
-
-    link_targets = list(
-        dict.fromkeys(
-            normalize_search_term(value)
-            for value in [subject, *entity_values]
-            if len(normalize_search_term(value)) >= 4
-        )
-    )
-    if not any(
-        (
-            subject_business_ids,
-            subject,
-            anchor_parent_ids,
-            anchor_fallback_ids,
-            entity_business_ids,
-            subject_related_entities,
-            link_targets,
-        )
-    ):
+    request = validated_coverage_request(state)
+    if str(request.get("scope") or "") != "complete_collection":
         return [], [], ""
+    subject = str(request.get("subject") or "").strip()
+    reference_mode = str(request.get("reference_mode") or "").strip()
+
+    def literal_key(value: Any) -> str:
+        return unicodedata.normalize("NFKC", str(value or "")).strip().casefold()
 
     candidates: Dict[Tuple[str, str, str], Dict[str, set[str]]] = {}
     for raw_row in scope_candidates:
@@ -613,7 +770,7 @@ def _closed_collection_scope_seeds(
             continue
         key = (kind, entity_id, row_doc_id)
         values = candidates.setdefault(key, {"ids": set(), "labels": set()})
-        values["ids"].add(normalize_search_term(entity_id))
+        values["ids"].add(literal_key(entity_id))
         label_fields = (
             (
                 "collection_entity_name",
@@ -626,180 +783,308 @@ def _closed_collection_scope_seeds(
             else ("collection_entity_name", "function_name")
         )
         values["labels"].update(
-            normalize_search_term(row.get(field))
+            literal_key(row.get(field))
             for field in label_fields
-            if normalize_search_term(row.get(field))
+            if literal_key(row.get(field))
         )
 
-    def unique_id_match(values: Sequence[str]) -> Tuple[Optional[Tuple[str, str, str]], bool]:
-        keys = {
-            normalize_search_term(value)
-            for value in values
-            if normalize_search_term(value)
-        }
-        matches = [
-            key for key, candidate in candidates.items() if keys & candidate["ids"]
+    def exact_id_matches(value: Any) -> List[Tuple[str, str, str]]:
+        identity = literal_key(value)
+        return [
+            key for key, candidate in candidates.items()
+            if identity and identity in candidate["ids"]
         ]
-        return (matches[0], False) if len(matches) == 1 else (None, len(matches) > 1)
 
-    def unique_label_match(values: Sequence[str]) -> Tuple[Optional[Tuple[str, str, str]], bool]:
-        keys = {
-            normalize_search_term(value)
-            for value in values
-            if normalize_search_term(value)
-        }
-        matches = [
-            key for key, candidate in candidates.items() if keys & candidate["labels"]
-        ]
-        return (matches[0], False) if len(matches) == 1 else (None, len(matches) > 1)
-
-    def unique_explicit_entity_match(
-        value: Any,
-    ) -> Tuple[Optional[Tuple[str, str, str]], bool]:
-        """Resolve one model-listed current entity without fuzzy expansion."""
-
-        text = str(value or "").strip()
-        if not text:
-            return None, False
-        ids = [match.group(0) for match in business_id_pattern.finditer(text)]
-        if ids:
-            matched_by_id, ambiguous_by_id = unique_id_match(ids)
-            if matched_by_id is not None or ambiguous_by_id:
-                return matched_by_id, ambiguous_by_id
-        return unique_label_match([text])
-
-    matched: Optional[Tuple[str, str, str]] = None
-
-    # Resolution precedence is semantic, not result-order based:
-    # 1) an ID explicitly present in the current collection subject;
-    # 2) an exact unique label in that subject;
-    # 3) the unique parent collection carried by answer-used citations;
-    # 4) other planner entities and finally cautious lexical linking.
-    # This prevents member FUNC IDs from outvoting their cited SUB parent while
-    # still allowing a newly typed current-turn ID to override old context.
-    if subject_business_ids:
-        matched, ambiguous = unique_id_match(subject_business_ids)
-        if ambiguous or matched is None:
-            return [], [], ""
-
-    if matched is None and subject:
-        matched, ambiguous = unique_label_match([subject])
-        if ambiguous:
-            return [], [], ""
-
-    anchor_parent_matches_subject = any(
-        normalize_search_term(parent_id) in candidate.get("ids", set())
-        and any(
-            label and label in normalized_subject
-            for label in candidate.get("labels", set())
-        )
-        for parent_id in anchor_parent_ids
-        for candidate in candidates.values()
-        if normalized_subject
-    )
-    if matched is None and not anchor_parent_matches_subject:
-        # ``entities`` is authored from the *current* user turn by the target
-        # model.  When it names several exact, independent Function Locator
-        # objects, preserve each one instead of letting an older single-parent
-        # anchor collapse a dual-path question to the first route.  Every
-        # object must resolve uniquely and all must belong to the same active
-        # architecture document/configuration; otherwise leave the collection
-        # open rather than guessing a union.
-        current_matches: List[Tuple[str, str, str]] = []
-        seen_current_matches: set[Tuple[str, str, str]] = set()
-        for value in entity_values:
-            current_match, current_ambiguous = unique_explicit_entity_match(value)
-            if current_ambiguous:
-                # A broad label in the entity list (for example a subsystem
-                # abbreviation) must not veto a separate, exact current
-                # object.  It simply cannot participate in the union.
-                continue
-            if current_match is not None and current_match not in seen_current_matches:
-                seen_current_matches.add(current_match)
-                current_matches.append(current_match)
-        current_docs = {item[2] for item in current_matches}
-        if len(current_matches) >= 2 and len(current_docs) == 1:
-            component_ids = [
-                entity_id
-                for kind, entity_id, _ in current_matches
-                if kind == "component"
-            ]
-            function_ids = [
-                entity_id
-                for kind, entity_id, _ in current_matches
-                if kind == "function"
-            ]
-            if component_ids or function_ids:
-                return component_ids, function_ids, next(iter(current_docs))
-
-    if matched is None:
-        normalized_parent_ids = list(dict.fromkeys(
-            normalize_search_term(value)
-            for value in anchor_parent_ids
-            if normalize_search_term(value)
-        ))
-        if len(normalized_parent_ids) > 1:
-            return [], [], ""
-        if normalized_parent_ids:
-            matched, ambiguous = unique_id_match(anchor_parent_ids)
-            if ambiguous or matched is None:
-                return [], [], ""
-        elif anchor_fallback_ids and not subject_business_ids:
-            normalized_fallback_ids = list(dict.fromkeys(
-                normalize_search_term(value)
-                for value in anchor_fallback_ids
-                if normalize_search_term(value)
-            ))
-            if len(normalized_fallback_ids) == 1:
-                matched, ambiguous = unique_id_match(anchor_fallback_ids)
-                if ambiguous:
+    resolved: List[Tuple[str, str, str]] = []
+    if reference_mode == "current_query":
+        # Extract only code tokens written inside the validated subject span.
+        # A model-created ID in ``entities`` or the rewritten query is ignored.
+        explicit_ids = extract_business_codes(subject, limit=12)
+        if explicit_ids:
+            for value in explicit_ids:
+                matches = exact_id_matches(value)
+                if len(matches) != 1:
                     return [], [], ""
-
-    if matched is None and entity_business_ids:
-        matched, ambiguous = unique_id_match(entity_business_ids)
-        if ambiguous:
+                if matches[0] not in resolved:
+                    resolved.append(matches[0])
+        else:
+            # A natural label may identify one object only by full-value
+            # equality against the complete active identity catalogue.
+            label = literal_key(subject)
+            label_matches = [
+                key for key, candidate in candidates.items()
+                if label and label in candidate["labels"]
+            ]
+            if len(label_matches) != 1:
+                return [], [], ""
+            resolved = label_matches
+    else:
+        selected_ids = set(request.get("selected_anchor_ids") or [])
+        selected_anchors = [
+            anchor
+            for anchor in (state.get("selected_conversation_anchors") or [])
+            if isinstance(anchor, Mapping)
+            and str(anchor.get("anchor_id") or "").strip() in selected_ids
+        ]
+        if len(selected_anchors) != len(selected_ids):
             return [], [], ""
-
-    if matched is None and subject_related_entities:
-        matched, ambiguous = unique_label_match(subject_related_entities)
-        if ambiguous:
-            return [], [], ""
-
-    if matched is None:
-        # This is query-to-entity linking, not cross-document entity merging.
-        # It is evaluated against the complete active identity catalogue, so a
-        # relevance window cannot hide a competing entity.  High confidence
-        # and a clear global margin are both mandatory; otherwise the
-        # collection stays open and the user can clarify the object.
-        ranked: List[Tuple[float, Tuple[str, str, str]]] = []
-        for key, values in candidates.items():
-            labels = [value for value in values["labels"] if len(value) >= 4]
-            score = max(
-                (
-                    SequenceMatcher(None, target, label).ratio()
-                    for target in link_targets
-                    for label in labels
-                ),
-                default=0.0,
+        for anchor in selected_anchors:
+            fields = (
+                anchor.get("answer_fields")
+                if isinstance(anchor.get("answer_fields"), Mapping)
+                else {}
             )
-            ranked.append((score, key))
-        ranked.sort(key=lambda item: (-item[0], item[1]))
-        if not ranked or ranked[0][0] < 0.90:
+            # A closed collection citation carries its parent explicitly.  If
+            # present it is the sole selector; member/record identities cannot
+            # outvote that parent.  Otherwise accept one exact citation ID.
+            parent_id = str(fields.get("collection_parent_id") or "").strip()
+            raw_values = [parent_id] if parent_id else [
+                anchor.get("record_id"),
+                fields.get("component_id"),
+                fields.get("function_id"),
+            ]
+            anchor_matches: List[Tuple[str, str, str]] = []
+            for value in raw_values:
+                text = str(value or "").strip()
+                if not text or not extract_business_codes(text, limit=2):
+                    continue
+                matches = exact_id_matches(text)
+                for match in matches:
+                    if match not in anchor_matches:
+                        anchor_matches.append(match)
+            if len(anchor_matches) != 1:
+                return [], [], ""
+            if anchor_matches[0] not in resolved:
+                resolved.append(anchor_matches[0])
+        # Multiple objects are authorized only when every stable ID is written
+        # in the current query.  A group of old citations is not a closed set.
+        if len(resolved) != 1:
             return [], [], ""
-        if len(ranked) > 1 and ranked[0][0] - ranked[1][0] < 0.08:
-            return [], [], ""
-        matched = ranked[0][1]
 
-    kind, entity_id, doc_id = matched
-    if kind == "component":
-        return [entity_id], [], doc_id
-    if kind == "function":
-        return [], [entity_id], doc_id
-    return [], [], ""
+    if not resolved or len({item[2] for item in resolved}) != 1:
+        return [], [], ""
+    component_ids = [entity_id for kind, entity_id, _ in resolved if kind == "component"]
+    function_ids = [entity_id for kind, entity_id, _ in resolved if kind == "function"]
+    return component_ids, function_ids, resolved[0][2]
+
+
+def _validate_architecture_collection_rows(
+    rows: Sequence[Mapping[str, Any]],
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Validate a PostgreSQL architecture inventory as one closed set.
+
+    Every row must participate in the same proof: one root, one document, one
+    parent ID, one member kind, unique members, and the same declared count
+    equal to the actual member count.  Invalid rows remain usable as ordinary
+    architecture evidence, but their ``collection_closed`` bit is cleared.
+    """
+
+    copied = [dict(row) for row in rows if isinstance(row, Mapping)]
+    proof: Dict[str, Any] = {
+        "closed": False,
+        "parent_id": "",
+        "parent_name": "",
+        "member_kind": "",
+        "member_count": 0,
+        "reason": "权威架构清单未通过闭集结构校验",
+    }
+    parents = [row for row in copied if str(row.get("collection_role") or "") == "parent"]
+    members = [row for row in copied if str(row.get("collection_role") or "") == "member"]
+    if len(parents) != 1 or not members or len(parents) + len(members) != len(copied):
+        for row in copied:
+            row["collection_closed"] = False
+        return copied, proof
+
+    parent = parents[0]
+    root_id = str(
+        parent.get("collection_parent_id") or parent.get("component_id") or ""
+    ).strip()
+    root_component_id = str(parent.get("component_id") or root_id).strip()
+    doc_ids = {str(row.get("doc_id") or "").strip() for row in copied}
+    parent_ids = {
+        str(row.get("collection_parent_id") or "").strip() for row in copied
+    }
+    member_kinds = {
+        str(row.get("collection_member_kind") or "").strip() for row in copied
+    }
+    member_ids = [
+        str(row.get("collection_member_id") or "").strip() for row in members
+    ]
+    declared_counts: List[int] = []
+    count_valid = True
+    for row in copied:
+        try:
+            declared_counts.append(int(row.get("collection_member_count")))
+        except (TypeError, ValueError):
+            count_valid = False
+            break
+    member_parent_ids = {
+        str(row.get("parent_component_id") or root_id).strip() for row in members
+    }
+    closed = bool(
+        all(row.get("collection_closed") is True for row in copied)
+        and root_id
+        and root_component_id == root_id
+        and len(doc_ids) == 1
+        and "" not in doc_ids
+        and parent_ids == {root_id}
+        and member_parent_ids == {root_id}
+        and len(member_kinds) == 1
+        and next(iter(member_kinds), "") in _ARCHITECTURE_COLLECTION_KINDS
+        and all(member_ids)
+        and len(set(member_ids)) == len(member_ids)
+        and count_valid
+        and all(value == len(members) for value in declared_counts)
+    )
+    if not closed:
+        for row in copied:
+            row["collection_closed"] = False
+        return copied, proof
+    proof.update(
+        {
+            "closed": True,
+            "parent_id": root_id,
+            "parent_name": str(parent.get("collection_parent_name") or parent.get("name") or "").strip(),
+            "member_kind": next(iter(member_kinds)),
+            "member_count": len(members),
+            "reason": "",
+        }
+    )
+    return copied, proof
 
 
 def _extract_hmc(query: str) -> Dict[str, str]:
     return extract_hmc_components(query)
+
+
+def _typed_hmc_components(state: Mapping[str, Any]) -> Dict[str, str]:
+    """Read only the plan's raw-query-grounded HMC audit slot."""
+
+    frame = state.get("query_frame")
+    if not isinstance(frame, Mapping):
+        return {}
+    current = grounded_typed_hmc_components(
+        frame.get("hmc_components"),
+        raw_user_query=state.get("query"),
+        source=frame.get("hmc_components_source"),
+    )
+    if current:
+        return current
+    from backend.agent.user_context_binding import selected_user_hmc_components
+    return selected_user_hmc_components(state)
+
+
+def _hmc_lookup_query(state: Mapping[str, Any]) -> str:
+    """Materialize only a provenance-checked selector at the SQL boundary.
+
+    The original query is unchanged in state. In particular, selecting old
+    user input cannot inherit calculation permission or establish a PG fact.
+    """
+    query = str(state.get("query") or "")
+    if _extract_hmc(query):
+        return query
+    components = _typed_hmc_components(state)
+    if not components:
+        return query
+    return " ".join(
+        f"{key.upper()} {components[key]}"
+        for key in ("lcn", "hamc", "hsc") if components.get(key)
+    )
+
+
+def _machine_missing_input_contract(
+    state: Mapping[str, Any],
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Project only actual machine-owned gaps into the clarification schema.
+
+    Planner prose and previous assistant messages are deliberately ignored.
+    ``query_frame.missing_input_requirements`` may contribute a literal basis,
+    but cannot create a slot that is absent from the state machine.
+    """
+
+    frame = state.get("query_frame")
+    raw_frame_requirements = (
+        frame.get("missing_input_requirements")
+        if isinstance(frame, Mapping)
+        else []
+    )
+    def requirement_source_name(item: Mapping[str, Any]) -> str:
+        source = item.get("source")
+        if isinstance(source, Mapping):
+            return str(source.get("name") or "").strip()
+        # Compatibility with the pre-contract scalar source shape.  It is used
+        # only to retain a literal basis for a gap the state machine also owns;
+        # it cannot create a requirement by itself.
+        return str(source or "").strip()
+
+    basis_by_slot = {
+        str(item.get("slot") or "").strip(): str(item.get("basis") or "").strip()
+        for item in (raw_frame_requirements or [])
+        if isinstance(item, Mapping)
+        and str(item.get("slot") or "").strip()
+        and requirement_source_name(item)
+        in {"missing_parameters", "unresolved_identity_slots"}
+    }
+
+    requirements: List[Dict[str, Any]] = []
+    identity_slots: List[Dict[str, Any]] = []
+    raw_parameters = state.get("missing_parameters")
+    parameters = (
+        raw_parameters
+        if isinstance(raw_parameters, Sequence)
+        and not isinstance(raw_parameters, (str, bytes))
+        else []
+    )
+    for raw in parameters:
+        slot = str(
+            raw.get("slot") or raw.get("name") or ""
+            if isinstance(raw, Mapping)
+            else raw or ""
+        ).strip()
+        if not slot:
+            continue
+        identity = make_clarification_identity(fields={"parameter": slot})
+        requirements.append(
+            make_missing_input_requirement(
+                kind="calculation_parameter",
+                slot=slot,
+                source_kind="state",
+                source_name="missing_parameters",
+                identity=identity,
+                basis=basis_by_slot.get(slot, ""),
+            )
+        )
+
+    raw_slots = state.get("unresolved_identity_slots")
+    slots = (
+        raw_slots
+        if isinstance(raw_slots, Sequence)
+        and not isinstance(raw_slots, (str, bytes))
+        else []
+    )
+    for raw in slots:
+        slot = str(
+            raw.get("slot") or raw.get("name") or ""
+            if isinstance(raw, Mapping)
+            else raw or ""
+        ).strip()
+        if not slot:
+            continue
+        raw_identity = raw.get("identity") if isinstance(raw, Mapping) else None
+        identity = normalize_clarification_identity(raw_identity)
+        if identity is None:
+            identity = make_clarification_identity(fields={"slot": slot})
+        normalized = make_missing_input_requirement(
+            kind="identity_slot",
+            slot=slot,
+            source_kind="state",
+            source_name="unresolved_identity_slots",
+            identity=identity,
+            basis=basis_by_slot.get(slot, ""),
+        )
+        requirements.append(normalized)
+        identity_slots.append(normalized)
+    return unique_contract_items(requirements), unique_contract_items(identity_slots)
 
 
 def _row_dicts(cur, rows) -> List[Dict[str, Any]]:
@@ -932,36 +1217,6 @@ def _exact_identity_rows(
     return result
 
 
-def _hmc_from_terms(terms: Sequence[str]) -> Dict[str, str]:
-    """Extract an LCN/HSC component pair from planner-produced search terms.
-
-    The planner's ``terms`` are explicit tokens, not free-form prose.  When a
-    rewrite dropped the ``LCN/HSC`` labels from the query text, this fallback
-    rebuilds the exact-component match from unambiguous digit shapes: the
-    longest 5-8 digit run is treated as LCN, the following 1-4 digit run as
-    HSC (zero-padded to four).  Only digit combinations are accepted; any other
-    occurrence leaves the query in keyword/fallback mode (fail-closed).
-    """
-
-    numbers: List[str] = []
-    for term in terms:
-        for match in re.finditer(r"(?<!\d)(\d{1,8})(?!\d)", str(term or "")):
-            value = match.group(1)
-            if value and (not numbers or value != numbers[0]):
-                numbers.append(value)
-    if len(numbers) < 2:
-        return {}
-    # 最长数字串视为 LCN，其余取第一个作为 HSC
-    lcn = max(numbers, key=len)
-    hsc_candidates = [value for value in numbers if value != lcn]
-    if not lcn or not hsc_candidates:
-        return {}
-    hsc = hsc_candidates[0]
-    if hsc.isdigit() and len(hsc) < 4:
-        hsc = hsc.zfill(4)
-    return {"lcn": lcn, "hsc": hsc, "hamc": ""}
-
-
 def _query_hmc(
     query: str,
     terms: Sequence[str],
@@ -969,47 +1224,60 @@ def _query_hmc(
     errors: Optional[List[str]] = None,
     *,
     include_repair_method: bool = True,
+    typed_components: Optional[Mapping[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
-    exact = _extract_hmc(query)
-    if not exact:
-        # 用户原文可能被规划器改写/归一化而丢失 LCN/HSC 标签，导致上面的
-        # 标签解析失败。terms 由规划器显式拆出、不含自然语言噪音；当其中
-        # 同时出现明确的 LCN（≥5 位数字）与 HSC（≤4 位数字）时，按字段等价
-        # 匹配走组件精确查询，而不是退化成关键词/语义检索。没有明确数字
-        # 组合时不猜代码，保持 fail-closed。
-        exact = _hmc_from_terms(terms)
+    parsed = _extract_hmc(query)
+    # ``typed_components`` is retained for compatibility with older callers,
+    # but a naked mapping cannot authorize an exact lookup.  The current raw
+    # query is parsed above; selected prior citations use
+    # the scoped repository re-read with server-offered identities.
+    _ = typed_components
     try:
         with postgres_client.conn.cursor() as cur:
-            if exact:
-                if exact.get("hamc"):
-                    match_type = "exact_code"
-                    cur.execute(
-                        """
+            if parsed:
+                match_type = "exact_code" if parsed.get("hamc") else "exact_components"
+                if parsed.get("hamc"):
+                    sql = """
                         SELECT h.* FROM fault_hmc h
                         JOIN icp_documents d ON d.doc_id=h.doc_id
                         WHERE d.status IN ('indexed','kg_pending','kg_done')
                           AND h.lcn=%s AND h.hamc=%s AND h.hsc=%s
                         ORDER BY h.updated_at DESC LIMIT %s
-                        """,
-                        (exact["lcn"], exact["hamc"], exact["hsc"], limit),
-                    )
+                    """
+                    params = (parsed["lcn"], parsed["hamc"], parsed["hsc"], limit)
                 else:
-                    # HAMC was not supplied.  Match only the two fields the
-                    # user actually provided; do not silently manufacture **.
-                    match_type = "exact_components"
-                    cur.execute(
-                        """
+                    # LCN+HSC is a typed equality predicate, not a complete HMC
+                    # identity.  Read at least two rows so a caller limit of one
+                    # cannot hide ambiguity.  Only one authoritative row may be
+                    # promoted to ``exact_components``; HAMC remains a stored
+                    # result, never a value guessed from the question.
+                    sql = """
                         SELECT h.* FROM fault_hmc h
                         JOIN icp_documents d ON d.doc_id=h.doc_id
                         WHERE d.status IN ('indexed','kg_pending','kg_done')
                           AND h.lcn=%s AND h.hsc=%s
                         ORDER BY h.updated_at DESC LIMIT %s
-                        """,
-                        (exact["lcn"], exact["hsc"], limit),
+                    """
+                    params = (
+                        parsed["lcn"], parsed["hsc"],
+                        min(max(int(limit), 2), 64),
                     )
+                cur.execute(
+                    sql,
+                    params,
+                )
                 rows = _row_dicts(cur, cur.fetchall())
+                if not parsed.get("hamc") and len(rows) != 1:
+                    match_type = "ambiguous_components"
                 for row in rows:
                     row["match_type"] = match_type
+                    if match_type == "exact_components":
+                        row["hmc_component_selector"] = {
+                            "lcn": parsed["lcn"],
+                            "hsc": parsed["hsc"],
+                            "resolved_hamc": str(row.get("hamc") or ""),
+                            "unique": True,
+                        }
                 return rows
 
             # A cause/symptom question must not select an HMC row solely because
@@ -1228,6 +1496,387 @@ def _rank_table_rows(
     return [row for _, row in scored[: max(int(limit), 0)]]
 
 
+_FMECA_RECORD_IDENTITY_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("failure_mode", ("fault_mode", "failure_mode")),
+    ("fault_cause", ("fault_cause", "failure_cause")),
+    ("function", ("func_management", "function")),
+)
+_MIN_FMECA_FIELD_RELEVANCE_SPAN = 4
+
+
+def _longest_structured_field_span(left: Any, right: Any) -> str:
+    """Return one literal, comparison-normalized contiguous field overlap."""
+
+    query = normalize_search_term(left)
+    field = normalize_search_term(right)
+    if not query or not field:
+        return ""
+    match = SequenceMatcher(None, query, field, autojunk=False).find_longest_match(
+        0, len(query), 0, len(field)
+    )
+    return query[match.a:match.a + match.size]
+
+
+def _fmeca_field_relevance_signature(
+    raw_user_query: Any,
+    row: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Describe literal relevance signals inside one PostgreSQL row.
+
+    Values from different rows are never joined.  A failure-mode name, its
+    recorded cause and its function may corroborate one another only because
+    PostgreSQL stored them on the same FMECA record.  Even a long unique span
+    remains retrieval relevance, not record identity; only complete typed
+    field equality below may bind the record.
+    """
+
+    matches: List[Dict[str, Any]] = []
+    for canonical_field, aliases in _FMECA_RECORD_IDENTITY_FIELDS:
+        best_span = ""
+        best_column = ""
+        for column in aliases:
+            span = _longest_structured_field_span(
+                raw_user_query, row.get(column)
+            )
+            if len(span) > len(best_span):
+                best_span = span
+                best_column = column
+        if len(best_span) < _MIN_FMECA_FIELD_RELEVANCE_SPAN:
+            continue
+        matches.append(
+            {
+                "field": canonical_field,
+                "column": best_column,
+                "span": best_span,
+                "length": len(best_span),
+            }
+        )
+    lengths = [int(item["length"]) for item in matches]
+    return {
+        "rank": (
+            max(lengths, default=0),
+            len(matches),
+            sum(length * length for length in lengths),
+        ),
+        "matches": matches,
+    }
+
+
+def _typed_fmeca_record_fields(state: Mapping[str, Any]) -> Dict[str, str]:
+    """Read the planner's closed typed-field contract for one FMECA record.
+
+    Canonical shape::
+
+        query_frame.typed_record_fields.fmeca = {
+            "failure_mode": "...",
+            "fault_cause": "...",
+            "function": "..."
+        }
+
+    These values are not facts by themselves.  They become an identity input
+    only when the complete normalized value equals a field on exactly one
+    authoritative PostgreSQL row.
+    """
+
+    frame = state.get("query_frame")
+    if not isinstance(frame, Mapping):
+        return {}
+    by_doc_type = frame.get("typed_record_fields")
+    if not isinstance(by_doc_type, Mapping):
+        return {}
+    raw_fields = by_doc_type.get("fmeca")
+    if not isinstance(raw_fields, Mapping):
+        return {}
+    allowed = {field for field, _aliases in _FMECA_RECORD_IDENTITY_FIELDS}
+    result: Dict[str, str] = {}
+    for raw_field, raw_value in raw_fields.items():
+        field = str(raw_field or "").strip()
+        value = " ".join(str(raw_value or "").split())[:500]
+        if field in allowed and normalize_search_term(value):
+            result[field] = value
+    return result
+
+
+def _fmeca_typed_fields_match(
+    row: Mapping[str, Any],
+    typed_fields: Mapping[str, Any],
+) -> bool:
+    """Require every supplied typed value to equal its complete PG field."""
+
+    aliases_by_field = dict(_FMECA_RECORD_IDENTITY_FIELDS)
+    if not typed_fields:
+        return False
+    for field, raw_value in typed_fields.items():
+        aliases = aliases_by_field.get(str(field or ""))
+        expected = normalize_search_term(raw_value)
+        if not aliases or not expected:
+            return False
+        actual = {
+            normalize_search_term(row.get(alias))
+            for alias in aliases
+            if normalize_search_term(row.get(alias))
+        }
+        if expected not in actual:
+            return False
+    return True
+
+
+def _bind_unique_fmeca_record_identity(
+    raw_user_query: Any,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    typed_fields: Optional[Mapping[str, Any]] = None,
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Bind one FMECA row only from a stable identity or full field equality.
+
+    Literal overlap and semantic scores are intentionally non-authoritative.
+    A binding can come from an explicit record code, a selected citation that
+    was re-read from PostgreSQL, or a planner-typed field whose *complete*
+    normalized value equals exactly one row.  Partial spans are retained only
+    as audit/relevance metadata and never exclude neighbours or authorize a
+    graph seed.
+    """
+
+    result = [dict(row) for row in rows]
+    for row in result:
+        row.pop("query_binding_excluded", None)
+        row.pop("record_identity_field_match", None)
+        row.pop("query_relevance_field_match", None)
+
+    base: Dict[str, Any] = {
+        "doc_type": "fmeca",
+        "bound": False,
+        "ambiguous": False,
+        "record_ids": [],
+        "row_indexes": [],
+        "basis": "",
+        "candidates": [],
+        "relevance_only": False,
+    }
+    if not result:
+        return result, base
+
+    explicit_codes = {
+        match.group(0).upper()
+        for match in _FMECA_BUSINESS_ID_RE.finditer(str(raw_user_query or ""))
+    }
+    exact_indexes = [
+        index
+        for index, row in enumerate(result)
+        if str(row.get("code") or row.get("record_code") or "").strip().upper()
+        in explicit_codes
+    ]
+    conversation_indexes = [
+        index
+        for index, row in enumerate(result)
+        if str(row.get("match_type") or "").strip()
+        == "exact_conversation_reference"
+    ]
+
+    supplied_typed_fields = {
+        str(key or "").strip(): str(value or "").strip()
+        for key, value in (typed_fields or {}).items()
+        if str(key or "").strip() and normalize_search_term(value)
+    }
+    # Typed values are an extraction of the current question, not an
+    # opportunity for a model to invent a database label.  A selected prior
+    # citation uses the separate conversation-reference path above.
+    normalized_query = normalize_search_term(raw_user_query)
+    grounded_typed_fields = {
+        key: value
+        for key, value in supplied_typed_fields.items()
+        if normalize_search_term(value) in normalized_query
+    }
+    if len(grounded_typed_fields) != len(supplied_typed_fields):
+        grounded_typed_fields = {}
+    typed_indexes = [
+        index
+        for index, row in enumerate(result)
+        if grounded_typed_fields
+        and _fmeca_typed_fields_match(row, grounded_typed_fields)
+    ]
+
+    ranked_relevance: List[
+        tuple[tuple[int, int, int], int, Dict[str, Any]]
+    ] = []
+    if normalize_search_term(raw_user_query):
+        for index, row in enumerate(result):
+            signature = _fmeca_field_relevance_signature(raw_user_query, row)
+            rank = tuple(signature["rank"])
+            if rank[0] < _MIN_FMECA_FIELD_RELEVANCE_SPAN:
+                continue
+            ranked_relevance.append((rank, index, signature))
+        ranked_relevance.sort(key=lambda item: item[0], reverse=True)
+
+    if explicit_codes and not exact_indexes:
+        base["basis"] = "explicit_record_code_not_found"
+        return result, base
+
+    if exact_indexes:
+        winning_indexes = exact_indexes
+        basis = "exact_record_code"
+        candidate_entries = [
+            {
+                "record_id": str(
+                    result[index].get("code")
+                    or result[index].get("record_code")
+                    or ""
+                ),
+                "row_index": index,
+                "rank": [10_000, 1, 100_000_000],
+                "matches": [],
+            }
+            for index in winning_indexes
+        ]
+    elif supplied_typed_fields:
+        if not grounded_typed_fields or not typed_indexes:
+            base["basis"] = (
+                "typed_field_not_grounded"
+                if not grounded_typed_fields
+                else "typed_field_no_exact_match"
+            )
+            return result, base
+        winning_indexes = typed_indexes
+        basis = "exact_typed_field_equality"
+        candidate_entries = [
+            {
+                "record_id": str(
+                    result[index].get("code")
+                    or result[index].get("record_code")
+                    or ""
+                ),
+                "row_index": index,
+                "rank": [8_000, len(grounded_typed_fields), 64_000_000],
+                "matches": [
+                    {"field": field, "value": value, "match": "full_equality"}
+                    for field, value in grounded_typed_fields.items()
+                ],
+            }
+            for index in winning_indexes
+        ]
+    elif conversation_indexes:
+        # A deictic follow-up has no new field phrase to rank.  Selected prior
+        # citations have already been re-read from PostgreSQL.  Multiple
+        # selected records remain ambiguous rather than being resolved by row
+        # order or text relevance.
+        winning_indexes = conversation_indexes
+        basis = "exact_conversation_reference"
+        candidate_entries = [
+            {
+                "record_id": str(
+                    result[index].get("code")
+                    or result[index].get("record_code")
+                    or ""
+                ),
+                "row_index": index,
+                "rank": [9_000, 1, 81_000_000],
+                "matches": [],
+            }
+            for index in winning_indexes
+        ]
+    else:
+        relevance_entries = [
+            {
+                "record_id": str(
+                    result[index].get("code")
+                    or result[index].get("record_code")
+                    or ""
+                ),
+                "row_index": index,
+                "rank": list(rank),
+                "matches": list(signature["matches"]),
+                "basis": "literal_field_relevance",
+            }
+            for rank, index, signature in ranked_relevance[:8]
+        ]
+        for entry in relevance_entries:
+            row_index = int(entry["row_index"])
+            result[row_index]["query_relevance_field_match"] = {
+                "basis": "literal_field_relevance",
+                "matches": list(entry["matches"]),
+            }
+        if relevance_entries:
+            base.update(
+                {
+                    "basis": "literal_field_relevance_only",
+                    "candidates": relevance_entries,
+                    "relevance_only": True,
+                }
+            )
+        return result, base
+
+    base["candidates"] = candidate_entries
+    if len(winning_indexes) != 1:
+        base.update(
+            {
+                "ambiguous": True,
+                "basis": f"ambiguous_{basis}",
+                "row_indexes": winning_indexes[:8],
+                "record_ids": [
+                    str(
+                        result[index].get("code")
+                        or result[index].get("record_code")
+                        or ""
+                    )
+                    for index in winning_indexes[:8]
+                    if str(
+                        result[index].get("code")
+                        or result[index].get("record_code")
+                        or ""
+                    ).strip()
+                ],
+            }
+        )
+        return result, base
+
+    winner_index = winning_indexes[0]
+    winner = result[winner_index]
+    previous_match_type = str(winner.get("match_type") or "")
+    winner["match_type"] = (
+        previous_match_type
+        if previous_match_type
+        in {"exact_conversation_reference", "exact_record_identity"}
+        else "exact_record_identity"
+    )
+    winner["record_identity_field_match"] = {
+        "basis": basis,
+        "previous_match_type": previous_match_type,
+        "matches": (
+            candidate_entries[0].get("matches")
+            if candidate_entries
+            and candidate_entries[0].get("row_index") == winner_index
+            else []
+        ),
+    }
+    for index, row in enumerate(result):
+        if index != winner_index:
+            row["query_binding_excluded"] = True
+    record_id = str(
+        winner.get("code") or winner.get("record_code") or ""
+    ).strip()
+    base.update(
+        {
+            "bound": True,
+            "record_ids": [record_id] if record_id else [],
+            "row_indexes": [winner_index],
+            "basis": basis,
+        }
+    )
+    return result, base
+
+
+def _fmeca_rows_for_bound_query(
+    rows: Sequence[Dict[str, Any]],
+    binding: Mapping[str, Any],
+) -> List[Dict[str, Any]]:
+    """Return the bound row, or every candidate when resolution is open."""
+
+    if binding.get("bound") is not True:
+        return list(rows)
+    selected = [row for row in rows if row.get("query_binding_excluded") is not True]
+    return selected or list(rows)
+
+
 def _query_fmeca(
     terms: Sequence[str],
     limit: int,
@@ -1313,6 +1962,211 @@ def _query_mfl(
     )
 
 
+_MFL_HMC_REFERENCE_SCALAR_FIELDS = (
+    "hmc_code",
+    "hmc_ref",
+    "related_hmc_code",
+)
+_MFL_HMC_REFERENCE_LIST_FIELDS = (
+    "hmc_codes",
+    "hmc_refs",
+    "related_hmc_codes",
+)
+
+
+def _canonical_complete_hmc_code(value: Any) -> str:
+    parsed = extract_hmc_components(value)
+    return str(parsed.get("hmc_code") or "").strip().casefold()
+
+
+def _explicit_mfl_hmc_references(row: Mapping[str, Any]) -> set[str]:
+    """Return only HMC IDs explicitly stored on an authoritative MFL row.
+
+    Module-fault prose, API text and semantic similarity are intentionally not
+    inspected.  The current MFL schema normally has no such field, so the safe
+    result is usually empty until a real relationship is ingested.
+    """
+
+    layers: List[Mapping[str, Any]] = [row]
+    for container_name in (
+        "document_links",
+        "explicit_references",
+        "metadata",
+        "document_metadata",
+        "raw_data",
+    ):
+        nested = _as_metadata(row.get(container_name))
+        if nested:
+            layers.append(nested)
+    result: set[str] = set()
+    for layer in layers:
+        values: List[Any] = [
+            layer.get(field)
+            for field in _MFL_HMC_REFERENCE_SCALAR_FIELDS
+            if field in layer
+        ]
+        values.extend(
+            layer.get(field)
+            for field in _MFL_HMC_REFERENCE_LIST_FIELDS
+            if field in layer
+        )
+        for raw_value in values:
+            items = (
+                raw_value
+                if isinstance(raw_value, (list, tuple, set))
+                else [raw_value]
+            )
+            for item in items:
+                canonical = _canonical_complete_hmc_code(item)
+                if canonical:
+                    result.add(canonical)
+    return result
+
+
+def _bind_mfl_rows_to_hmc(
+    hmc_rows: Sequence[Mapping[str, Any]],
+    mfl_rows: Sequence[Mapping[str, Any]],
+    *,
+    requested_components: Optional[Mapping[str, Any]] = None,
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Fail closed for an exact-HMC-to-MFL ownership claim.
+
+    A shared symptom or repair phrase is not a relationship.  When this turn
+    targets an exact HMC record, an MFL row remains in the answer context only
+    if the authoritative row explicitly stores that complete HMC code.
+    Excluded rows stay in the evidence registry for audit.
+    """
+
+    copied = [dict(row) for row in mfl_rows]
+    for row in copied:
+        row.pop("query_binding_excluded", None)
+        row.pop("hmc_relation_unverified", None)
+
+    requested = dict(requested_components or {})
+    target_codes = {
+        code
+        for row in hmc_rows
+        if str(row.get("match_type") or "") in _STRUCTURED_HMC_MATCH_TYPES
+        if (code := _canonical_complete_hmc_code(row.get("hmc_code")))
+    }
+    requested_code = _canonical_complete_hmc_code(requested.get("hmc_code"))
+    if requested_code:
+        target_codes.add(requested_code)
+    binding: Dict[str, Any] = {
+        "required": bool(target_codes),
+        "bound": False,
+        "basis": "",
+        "hmc_codes": sorted(target_codes),
+        "mfl_codes": [],
+        "excluded_mfl_codes": [],
+    }
+    if not binding["required"] or not copied:
+        return copied, binding
+
+    matched_codes: List[str] = []
+    excluded_codes: List[str] = []
+    for row in copied:
+        mfl_code = str(row.get("mfl_code") or row.get("record_code") or "").strip()
+        explicit_refs = _explicit_mfl_hmc_references(row)
+        if target_codes and explicit_refs & target_codes:
+            row["hmc_relation_match"] = {
+                "basis": "explicit_authoritative_reference",
+                "hmc_codes": sorted(explicit_refs & target_codes),
+            }
+            if mfl_code:
+                matched_codes.append(mfl_code)
+            continue
+        row["query_binding_excluded"] = True
+        row["hmc_relation_unverified"] = True
+        if mfl_code:
+            excluded_codes.append(mfl_code)
+
+    binding.update(
+        {
+            "bound": bool(matched_codes),
+            "basis": (
+                "explicit_authoritative_reference"
+                if matched_codes
+                else "no_explicit_authoritative_relation"
+            ),
+            "mfl_codes": matched_codes,
+            "excluded_mfl_codes": excluded_codes,
+        }
+    )
+    return copied, binding
+
+
+def _mfl_rows_for_hmc_binding(
+    rows: Sequence[Dict[str, Any]], binding: Mapping[str, Any]
+) -> List[Dict[str, Any]]:
+    if binding.get("required") is not True:
+        return list(rows)
+    return [row for row in rows if row.get("query_binding_excluded") is not True]
+
+
+def _diagram_family_completion_authorized(
+    doc_type: str,
+    query_frame: Any,
+) -> bool:
+    """Validate a model-authored request to inspect a diagram family.
+
+    This permission only broadens the candidate context within one document
+    family.  It does not bind a diagram identity and never authorizes a formal
+    calculation.  Open-language meaning comes from the planner; code checks
+    current-turn provenance and closed structural fields.
+    """
+
+    if not isinstance(query_frame, Mapping):
+        return False
+    original_query = unicodedata.normalize(
+        "NFKC", str(query_frame.get("original_query") or "")
+    ).casefold()
+    if not original_query:
+        return False
+
+    grounded_subjects: set[str] = set()
+    for raw in query_frame.get("subject_bindings") or []:
+        if not isinstance(raw, Mapping):
+            continue
+        if str(raw.get("doc_type") or "").strip().casefold() != doc_type:
+            continue
+        if raw.get("grounded") is not True or str(raw.get("source") or "") != "current_query":
+            continue
+        value = unicodedata.normalize("NFKC", str(raw.get("value") or "").strip()).casefold()
+        basis = unicodedata.normalize("NFKC", str(raw.get("basis") or "").strip()).casefold()
+        if len(value) < 2 or len(basis) < 2:
+            continue
+        if basis not in original_query or value not in basis:
+            continue
+        grounded_subjects.add(value)
+    if len(grounded_subjects) >= 3:
+        return True
+
+    request = query_frame.get("coverage_request")
+    if not isinstance(request, Mapping):
+        return False
+    if str(request.get("scope") or "") != "complete_collection":
+        return False
+    if str(request.get("member_kind") or "") != "record":
+        return False
+    if str(request.get("reference_mode") or "") not in {
+        "current_query", "selected_anchor",
+    }:
+        return False
+    subject = unicodedata.normalize(
+        "NFKC", str(request.get("subject") or "").strip()
+    ).casefold()
+    basis = unicodedata.normalize(
+        "NFKC", str(request.get("basis") or "").strip()
+    ).casefold()
+    return bool(
+        len(subject) >= 2
+        and len(basis) >= 2
+        and subject in original_query
+        and basis in original_query
+    )
+
+
 def _query_diagrams(
     doc_type: str,
     terms: Sequence[str],
@@ -1320,6 +2174,7 @@ def _query_diagrams(
     errors: Optional[List[str]] = None,
     *,
     entity_terms: Sequence[str] = (),
+    query_frame: Optional[Mapping[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     if doc_type not in ("fta", "rbd") or not terms:
         return []
@@ -1413,31 +2268,12 @@ def _query_diagrams(
                 (identity_score * 1_000_000 + heading_score * 1000 + score, item)
             )
         matches.sort(key=lambda pair: pair[0], reverse=True)
-        # 同义落空兜底：问题并列枚举多个对象（顿号枚举 + 分别/各自语义、
-        # ≥3 个短锚点）而权威图结构恰好直接覆盖其中一个（例如用户说
-        # “核心运算”，库内模型名为“核心处理功能”）时，按类别补齐当前
-        # 文档族的其余活动图，让回答能逐项覆盖并对确实缺失的对象显式
-        # 声明。完全零覆盖不得触发——那是真实的资料未命中，补齐全族反而
-        # 制造跨域噪声。补齐只来自同一 doc_type 的权威修订列表，不引入
-        # 相似度、别名或跨文档猜测；数量有界并排在直接命中之后。
-        anchors = [
-            value
-            for value in (_normalize_match_term(term) for term in terms)
-            if 2 <= len(value) <= _SQL_SHORT_ANCHOR_MAX_LENGTH
-        ]
-        covered: set[str] = set()
-        for _, item in matches:
-            covered.update(
-                _normalize_match_term(value)
-                for value in (item.get("retrieval_match_terms") or [])
-            )
-        enumeration_shape = bool(
-            re.search(r"、[^。]{2,40}(?:分别|各自|都)|(?:分别|各自)[^。]{0,12}(?:依赖|包括|是哪些)", str(terms[0] or ""))
-        )
+        # Broadening one semantic match to the rest of a document family is
+        # allowed only by a validated structured contract. Punctuation and a
+        # short phrase list cannot create that coverage obligation.
         category_context = bool(
-            enumeration_shape
-            and len(anchors) >= 3
-            and sum(1 for anchor in anchors if anchor in covered) == 1
+            matches
+            and _diagram_family_completion_authorized(doc_type, query_frame)
         )
         if category_context:
             matched_ids = {
@@ -1521,6 +2357,35 @@ def _graph_basic_event_summaries(graph: Mapping[str, Any]) -> List[Dict[str, str
     return result
 
 
+def _canonical_rbd_blocks(row: Mapping[str, Any]) -> List[Mapping[str, Any]]:
+    """Return structured blocks from a hydrated canonical RBD graph.
+
+    ``_query_diagrams`` exposes ``canonical_graph`` again as ``graph`` for the
+    reliability calculator, so the latter is accepted only when it is already
+    a mapping.  JSON-looking strings in ``content`` or other presentation
+    fields are deliberately never parsed here: search text may locate a graph,
+    but it cannot authorize an engineering-object identity.
+    """
+
+    graph = row.get("canonical_graph")
+    if not isinstance(graph, Mapping):
+        graph = row.get("graph")
+    if not isinstance(graph, Mapping):
+        return []
+
+    result: List[Mapping[str, Any]] = []
+    for collection_name in ("vertices", "nodes", "blocks"):
+        collection = graph.get(collection_name) or []
+        if isinstance(collection, Mapping):
+            candidates = list(collection.values())
+        elif isinstance(collection, (list, tuple)):
+            candidates = list(collection)
+        else:
+            continue
+        result.extend(item for item in candidates if isinstance(item, Mapping))
+    return result
+
+
 def _diagram_explicit_block_business_ids(row: Mapping[str, Any]) -> set[str]:
     """Read only durable block IDs carried by a persisted diagram graph.
 
@@ -1530,39 +2395,19 @@ def _diagram_explicit_block_business_ids(row: Mapping[str, Any]) -> set[str]:
     never promotes a lexical hit into a cross-document link.
     """
 
-    graph = row.get("graph") or row.get("canonical_graph") or {}
-    if not isinstance(graph, Mapping):
-        return set()
     values: List[Any] = []
-    for collection_name in ("vertices", "nodes"):
-        collection = graph.get(collection_name) or []
-        if not isinstance(collection, (list, tuple)):
-            continue
-        for vertex in collection:
-            if not isinstance(vertex, Mapping):
-                continue
-            properties = (
-                vertex.get("properties")
-                if isinstance(vertex.get("properties"), Mapping)
-                else {}
-            )
-            values.extend(
-                (
-                    vertex.get("business_id"),
-                    vertex.get("module_id"),
-                    vertex.get("component_id"),
-                    vertex.get("function_id"),
-                    properties.get("business_id"),
-                    properties.get("module_id"),
-                    properties.get("component_id"),
-                    properties.get("function_id"),
-                )
-            )
-    return {
-        normalized
-        for value in extract_business_codes(values, limit=96)
-        if (normalized := normalize_business_id(value))
-    }
+    for block in _canonical_rbd_blocks(row):
+        properties = (
+            block.get("properties")
+            if isinstance(block.get("properties"), Mapping)
+            else {}
+        )
+        for field in RBD_BLOCK_BUSINESS_ID_FIELDS:
+            values.extend((block.get(field), properties.get(field)))
+    # Reuse the same durable-field allowlist as the downstream authority
+    # validator.  In particular a graph-local ``block_id`` never crosses this
+    # boundary.
+    return set(rbd_block_business_ids(row))
 
 
 def _filter_diagrams_by_explicit_object_ids(
@@ -1576,9 +2421,9 @@ def _filter_diagrams_by_explicit_object_ids(
     """
 
     expected = {
-        normalize_business_id(value)
+        clean_text(value).casefold()
         for value in business_ids
-        if normalize_business_id(value)
+        if clean_text(value)
     }
     if not expected:
         return [dict(row) for row in rows]
@@ -1587,6 +2432,256 @@ def _filter_diagrams_by_explicit_object_ids(
         for row in rows
         if _diagram_explicit_block_business_ids(row) & expected
     ]
+
+
+def _rbd_anchor_scope_values(value: Mapping[str, Any], scope_name: str) -> set[str]:
+    """Return document/configuration qualifiers carried by an RBD anchor/row."""
+
+    aliases = {
+        "doc_id": ("doc_id",),
+        "configuration": (
+            "configuration",
+            "applicable_configuration",
+            "configuration_id",
+            "config_id",
+            "config",
+        ),
+    }[scope_name]
+    layers: List[Mapping[str, Any]] = [value]
+    for key in ("scope", "metadata", "document_metadata", "answer_fields"):
+        nested = value.get(key)
+        if isinstance(nested, Mapping):
+            layers.append(nested)
+    result: set[str] = set()
+    for layer in layers:
+        for key in aliases:
+            normalized = clean_text(layer.get(key)).casefold()
+            if normalized:
+                result.add(normalized)
+    return result
+
+
+def _rbd_stable_identity(value: Any) -> str:
+    """Normalize case/whitespace without erasing stable-ID punctuation."""
+
+    return clean_text(value).casefold()
+
+
+def _selected_rbd_anchor_selectors(
+    state: Mapping[str, Any],
+) -> List[Dict[str, set[str]]]:
+    """Return stable identities plus available scope for selected RBD citations."""
+
+    selectors: List[Dict[str, set[str]]] = []
+    for anchor in state.get("selected_conversation_anchors") or []:
+        if (
+            not isinstance(anchor, Mapping)
+            or str(anchor.get("doc_type") or "").strip().casefold() != "rbd"
+        ):
+            continue
+        fields = anchor.get("answer_fields")
+        values: List[Any] = [anchor.get("record_id")]
+        if isinstance(fields, Mapping):
+            values.extend(
+                (
+                    fields.get("diagram_key"),
+                    fields.get("diagram_id"),
+                    fields.get("revision_id"),
+                    fields.get("record_id"),
+                )
+            )
+        identities = {
+            normalized
+            for value in values
+            if (normalized := _rbd_stable_identity(value))
+        }
+        if not identities:
+            continue
+        selectors.append(
+            {
+                "identities": identities,
+                "doc_ids": _rbd_anchor_scope_values(anchor, "doc_id"),
+                "configurations": _rbd_anchor_scope_values(
+                    anchor, "configuration"
+                ),
+            }
+        )
+    return selectors
+
+
+def _selected_rbd_anchor_identities(state: Mapping[str, Any]) -> List[str]:
+    """Exact identities of RBD citations selected for this continuation.
+
+    These are record identities already offered by the server and selected by
+    the dialogue resolver.  They are used only to re-read the same PostgreSQL
+    diagram; no old structure or conclusion is reused.
+    """
+
+    result: List[str] = []
+    seen: set[str] = set()
+    for selector in _selected_rbd_anchor_selectors(state):
+        for normalized in selector["identities"]:
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            result.append(normalized)
+    return result
+
+
+def _filter_diagrams_by_anchor_identities(
+    rows: Sequence[Mapping[str, Any]],
+    identities: Sequence[Any],
+    *,
+    selectors: Sequence[Mapping[str, set[str]]] = (),
+) -> List[Dict[str, Any]]:
+    """Keep diagrams with an exact, scope-compatible citation identity."""
+
+    expected = {
+        _rbd_stable_identity(value)
+        for value in identities
+        if _rbd_stable_identity(value)
+    }
+    if not expected:
+        return [dict(row) for row in rows]
+    matched: List[Dict[str, Any]] = []
+    for raw_row in rows:
+        row = dict(raw_row)
+        actual = {
+            _rbd_stable_identity(value)
+            for value in (
+                row.get("record_id"),
+                row.get("diagram_key"),
+                row.get("diagram_id"),
+                row.get("revision_id"),
+            )
+            if _rbd_stable_identity(value)
+        }
+        if not (actual & expected):
+            continue
+        matching_selectors = [
+            selector
+            for selector in selectors
+            if actual & set(selector.get("identities") or set())
+        ]
+        if matching_selectors and not any(
+            (
+                not (selector.get("doc_ids") or set())
+                or bool(
+                    _rbd_anchor_scope_values(row, "doc_id")
+                    & set(selector.get("doc_ids") or set())
+                )
+            )
+            and (
+                not (selector.get("configurations") or set())
+                or bool(
+                    _rbd_anchor_scope_values(row, "configuration")
+                    & set(selector.get("configurations") or set())
+                )
+            )
+            for selector in matching_selectors
+        ):
+            continue
+        if not selectors or matching_selectors:
+            matched.append(row)
+    return matched
+
+
+def _explicit_rbd_request_identities(state: Mapping[str, Any]) -> List[str]:
+    """Return stable RBD business keys literally present in the user query."""
+
+    return extract_explicit_rbd_ids(state.get("query"))
+
+
+def _rbd_comparison_requested(state: Mapping[str, Any]) -> bool:
+    """Consume the planner's semantic relation; do not infer comparison words."""
+
+    frame = state.get("query_frame")
+    return bool(
+        isinstance(frame, Mapping)
+        and str(frame.get("question_semantics") or "").strip() == "compare"
+    )
+
+
+def _rbd_row_binding_identity(row: Mapping[str, Any]) -> str:
+    for key in ("revision_id", "diagram_id", "diagram_key", "record_id"):
+        value = _rbd_stable_identity(row.get(key))
+        if value:
+            return f"{key}:{value}"
+    return ""
+
+
+def _bind_requested_rbd_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    requested: bool,
+    raw_user_query: Any = "",
+    explicit_rbd_identities: Sequence[Any] = (),
+    bound_business_ids: Sequence[Any] = (),
+    anchor_identities: Sequence[Any] = (),
+    anchor_selectors: Sequence[Mapping[str, set[str]]] = (),
+    literal_subject: str = "",
+    allow_multiple: bool = False,
+    current_selection: Mapping[str, Any] | None = None,
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Resolve an RBD only through the shared formal authority contract.
+
+    ``literal_subject`` remains in the signature while saved agents and tests
+    migrate, but it is intentionally ignored.  A typed natural-language name
+    can improve retrieval; it cannot select a formal graph revision.
+    """
+
+    del literal_subject
+    selectors = list(anchor_selectors or [])
+    if not selectors and anchor_identities:
+        selectors = [
+            {
+                "identities": {
+                    _rbd_stable_identity(value)
+                    for value in anchor_identities
+                    if _rbd_stable_identity(value)
+                },
+                "doc_ids": set(),
+                "configurations": set(),
+            }
+        ]
+    return bind_rbd_models(
+        rows,
+        required=requested,
+        raw_user_query=raw_user_query,
+        explicit_rbd_ids=explicit_rbd_identities,
+        explicit_block_business_ids=bound_business_ids,
+        anchor_selectors=selectors,
+        allow_multiple=allow_multiple,
+        current_selection=current_selection,
+    )
+
+
+def _filter_requested_rbd_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    requested: bool,
+    raw_user_query: Any = "",
+    explicit_rbd_identities: Sequence[Any] = (),
+    bound_business_ids: Sequence[Any] = (),
+    anchor_identities: Sequence[Any] = (),
+    anchor_selectors: Sequence[Mapping[str, set[str]]] = (),
+    literal_subject: str = "",
+    allow_multiple: bool = False,
+) -> List[Dict[str, Any]]:
+    """Compatibility wrapper returning only answer-eligible RBD rows."""
+
+    filtered, _binding = _bind_requested_rbd_rows(
+        rows,
+        requested=requested,
+        raw_user_query=raw_user_query,
+        explicit_rbd_identities=explicit_rbd_identities,
+        bound_business_ids=bound_business_ids,
+        anchor_identities=anchor_identities,
+        anchor_selectors=anchor_selectors,
+        literal_subject=literal_subject,
+        allow_multiple=allow_multiple,
+    )
+    return filtered
 
 
 def _hybrid_search(
@@ -2424,88 +3519,64 @@ def _query_fmeca_by_codes(
         return []
 
 
-def _conversation_fmeca_codes(state: Mapping[str, Any]) -> List[str]:
-    """Return only FMECA identities selected from server-offered prior citations."""
 
-    values: List[str] = []
-    for anchor in state.get("selected_conversation_anchors") or []:
-        if not isinstance(anchor, Mapping) or str(anchor.get("doc_type") or "") != "fmeca":
+
+
+
+
+
+def _conversation_record_selectors(state: Mapping[str, Any], doc_type: str) -> List[Dict[str, str]]:
+    """Consume the planner-selected record universe without classifying prose.
+
+    Current identities/corrections take priority. A selected citation is a
+    locator for a new PG read, not a fact, a relation or a complete collection.
+    Diagrams and architecture collections keep their existing typed loaders.
+    """
+    if doc_type not in {"hmc", "fmeca", "mfl", "fault_history"}:
+        return []
+    dialogue = state.get("dialogue_context") or {}
+    if dialogue.get("context_used") is False or dialogue.get("status") in {"missing", "ambiguous", "standalone"}:
+        return []
+    frame = state.get("query_frame") or {}
+    if doc_type == "fmeca" and frame.get("coverage_scope") == "complete_collection":
+        return []
+    query = str(state.get("query") or "")
+    if doc_type == "hmc" and (_extract_hmc(query) or _typed_hmc_components(state)):
+        return []
+    anchors = [anchor for anchor in state.get("selected_conversation_anchors") or []
+               if isinstance(anchor, Mapping) and anchor.get("doc_type") == doc_type]
+    current_codes = set(extract_business_codes([query]))
+    anchor_codes = {str(anchor.get("record_id") or "").upper() for anchor in anchors}
+    if current_codes - anchor_codes:
+        return []
+    selectors = []
+    for anchor in anchors:
+        doc_id = str(anchor.get("doc_id") or "").strip()
+        if not doc_id:
             continue
-        fields = anchor.get("answer_fields")
-        candidates: List[Any] = [anchor.get("record_id")]
-        if isinstance(fields, Mapping):
-            candidates.extend(fields.get(key) for key in ("record_code",))
-        for candidate in candidates:
-            code = str(candidate or "").strip()
-            if _FMECA_BUSINESS_ID_RE.fullmatch(code) and code not in values:
-                values.append(code)
-    return values[:12]
-
-
-def _conversation_hmc_queries(state: Mapping[str, Any]) -> List[str]:
-    """Build exact HMC field queries only from selected prior citations."""
-
-    values: List[str] = []
-    for anchor in state.get("selected_conversation_anchors") or []:
-        if not isinstance(anchor, Mapping) or str(anchor.get("doc_type") or "") != "hmc":
-            continue
-        fields = anchor.get("answer_fields")
-        if not isinstance(fields, Mapping):
-            fields = {}
-        code = str(fields.get("hmc_code") or anchor.get("record_id") or "").strip()
-        if code and _extract_hmc(code):
-            if code not in values:
-                values.append(code)
-            continue
-        lcn = str(fields.get("lcn") or "").strip()
-        hsc = str(fields.get("hsc") or "").strip()
-        hamc = str(fields.get("hamc") or "").strip()
-        if lcn and hsc:
-            field_query = f"LCN {lcn} "
-            if hamc:
-                field_query += f"HAMC {hamc} "
-            field_query += f"HSC {hsc}"
-            if _extract_hmc(field_query) and field_query not in values:
-                values.append(field_query)
-    return values[:8]
-
-
-def _query_hmc_from_conversation_anchors(
-    queries: Sequence[str],
-    terms: Sequence[str],
-    limit: int,
-    errors: Optional[List[str]],
-    *,
-    include_repair_method: bool,
-) -> List[Dict[str, Any]]:
-    """Re-read selected historical HMC records; never reuse their old prose."""
-
-    rows: List[Dict[str, Any]] = []
-    seen: set[Tuple[str, str, str, str]] = set()
-    for query in queries:
-        remaining = max(int(limit) - len(rows), 1)
-        for row in _query_hmc(
-            query,
-            terms,
-            remaining,
-            errors,
-            include_repair_method=include_repair_method,
-        ):
-            identity = (
-                str(row.get("doc_id") or ""),
-                str(row.get("lcn") or ""),
-                str(row.get("hamc") or ""),
-                str(row.get("hsc") or ""),
-            )
-            if identity in seen:
+        fields = anchor.get("answer_fields") or {}
+        selector = {"doc_id": doc_id}
+        if doc_type == "hmc":
+            variant = str(fields.get("variant_id") or "").strip()
+            if variant:
+                selector.update(kind="variant_id", variant_id=variant)
+            else:
+                components = {key: str(fields.get(key) or "").strip() for key in ("lcn", "hamc", "hsc")}
+                if not all(components.values()):
+                    components = _extract_hmc(str(anchor.get("record_id") or ""))
+                if not all(components.get(key) for key in ("lcn", "hamc", "hsc")):
+                    continue
+                selector.update(kind="components", **{key: components[key] for key in ("lcn", "hamc", "hsc")})
+                if anchor.get("source_ref"):
+                    selector["source_ref"] = str(anchor["source_ref"])
+        else:
+            record_id = str(anchor.get("record_id") or "").strip()
+            if not record_id:
                 continue
-            seen.add(identity)
-            enriched = dict(row)
-            enriched["match_type"] = "exact_conversation_reference"
-            rows.append(enriched)
-            if len(rows) >= max(int(limit), 0):
-                return rows
-    return rows
+            selector["record_id"] = record_id
+        if selector not in selectors:
+            selectors.append(selector)
+    return selectors[:12]
 
 
 _HISTORY_REFERENCE_TABLES: Dict[str, Tuple[str, str]] = {
@@ -2516,28 +3587,55 @@ _HISTORY_REFERENCE_TABLES: Dict[str, Tuple[str, str]] = {
 
 def _semantic_history_reference_context(
     rows: Sequence[Mapping[str, Any]],
+    *,
+    state: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Dict[str, Dict[str, Any]]]:
-    """Return explicit cross-document IDs from semantically hydrated history.
+    """Return explicit child IDs owned by the selected history parent.
 
-    Only a history row first discovered by OpenSearch and then re-read through
-    its exact PostgreSQL storage identity may seed this expansion.  Keyword
-    history rows are deliberately excluded: otherwise a broad history query
-    could fan out into unrelated document families.
+    The same pure parent selector is used by the answer stage.  Therefore a
+    high-scoring semantic neighbour cannot create exact FMECA/MFL/HMC rows
+    after another authoritative case wins the current-turn focus.  Multiple
+    parents are accepted only when the user explicitly compares identified
+    cases; every other unresolved parent choice fails closed.
     """
 
-    result: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(dict)
+    current_state: Mapping[str, Any] = state if isinstance(state, Mapping) else {}
+    if not history_turn_explicitly_targeted(current_state):
+        return {}
+    selection = resolve_history_parent_cases(
+        current_state,
+        rows,
+        require_explicit_target=True,
+    )
+    selected_parent_ids = set(selection.selected_case_ids)
+    if not selection.authorizes_exact_links or not selected_parent_ids:
+        return {}
+    if len(selected_parent_ids) > 1 and not selection.comparison:
+        return {}
+
+    parent_groups: Dict[str, List[Mapping[str, Any]]] = defaultdict(list)
     for row in rows:
-        if str(row.get("match_type") or "") != "semantic_id_hydration":
-            continue
+        parent_id = history_case_identity(row)
+        if parent_id in selected_parent_ids:
+            parent_groups[parent_id].append(row)
+
+    selected_rows: List[Mapping[str, Any]] = []
+    for parent_id in selected_parent_ids:
+        eligible = list(parent_groups.get(parent_id, []))
+        if not eligible:
+            return {}
+        selected_rows.extend(eligible)
+
+    result: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(dict)
+    for row in selected_rows:
         record_id = str(row.get("id") or "").strip()
-        case_id = str(row.get("case_id") or "").strip()
+        case_id = str(
+            history_answer_fields(row).get("case_id")
+            or row.get("record_id")
+            or row.get("title")
+            or ""
+        ).strip()
         score = row.get("retrieval_match_score")
-        try:
-            normalized_score = float(score)
-        except (TypeError, ValueError):
-            normalized_score = 0.0
-        if normalized_score < _SEMANTIC_HISTORY_REFERENCE_MIN_SCORE:
-            continue
         for ref_type, codes in _explicit_history_references(row).items():
             for code in codes:
                 current = result[ref_type].setdefault(
@@ -2564,7 +3662,56 @@ def _semantic_history_reference_context(
                     current["history_record_ids"].append(record_id)
                 if case_id and case_id not in current["history_case_ids"]:
                     current["history_case_ids"].append(case_id)
-    return {ref_type: dict(values) for ref_type, values in result.items()}
+
+    frame = (
+        current_state.get("query_frame")
+        if isinstance(current_state.get("query_frame"), Mapping)
+        else {}
+    )
+    original_query = str(
+        frame.get("original_query") or current_state.get("query") or ""
+    )
+
+    def normalized_codes(values: Sequence[Any]) -> set[str]:
+        return {
+            str(value or "").strip().casefold()
+            for value in values
+            if str(value or "").strip()
+        }
+
+    def canonical_hmc(value: Any) -> str:
+        parsed = _extract_hmc(str(value or ""))
+        code = str(parsed.get("hmc_code") or "").strip().casefold()
+        if code:
+            return code
+        return re.sub(r"[^a-z0-9*]+", "", str(value or "").casefold())
+
+    # Current user-authored child IDs remain stronger than inherited links.
+    # Detect conflicts by the document schema, rather than by the first text
+    # segment: FM-* and FMECA-* are one family, while equivalent formatted HMC
+    # strings canonicalize to the same LCN/HAMC/HSC identity.
+    filtered: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for ref_type, values in result.items():
+        reference_codes = normalized_codes(list(values))
+        conflict = False
+        if ref_type == "fmeca":
+            explicit_codes = normalized_codes(
+                _FMECA_BUSINESS_ID_RE.findall(original_query)
+            )
+            conflict = bool(explicit_codes - reference_codes)
+        elif ref_type == "mfl":
+            explicit_codes = normalized_codes(
+                _MFL_BUSINESS_ID_RE.findall(original_query)
+            )
+            conflict = bool(explicit_codes - reference_codes)
+        elif ref_type == "hmc":
+            parsed = _extract_hmc(original_query) if original_query else {}
+            explicit_hmc = canonical_hmc(parsed.get("hmc_code"))
+            reference_hmc = {canonical_hmc(code) for code in values}
+            conflict = bool(explicit_hmc and explicit_hmc not in reference_hmc)
+        if not conflict:
+            filtered[ref_type] = dict(values)
+    return filtered
 
 
 def _query_history_linked_rows(
@@ -2739,7 +3886,8 @@ def _answer_fields(**fields: Any) -> Dict[str, Any]:
                 result[key] = nested
         elif isinstance(value, (list, tuple, set)):
             cleaned = [
-                item if isinstance(item, (bool, int, float)) else str(item).strip()
+                _answer_fields(**dict(item)) if isinstance(item, Mapping)
+                else item if isinstance(item, (bool, int, float)) else str(item).strip()
                 for item in value
                 if _has_answer_value(item)
             ]
@@ -2806,7 +3954,26 @@ def _direct_evidence(tool: str, rows: Sequence[Dict[str, Any]]) -> List[Dict[str
         source_ref = str(row.get("source_ref") or row.get("source_section") or "")
         scope = _scope(row.get("scope") or row.get("document_metadata"))
         display_summary = ""
-        direct_metadata: Dict[str, Any] = {}
+        direct_metadata: Dict[str, Any] = {"source_read": returned_projection_read(row)}
+        if isinstance(row.get("record_read"), Mapping):
+            direct_metadata["source_read"]["record_read"] = dict(row["record_read"])
+        source_metadata = _as_metadata(row.get("document_metadata"))
+        for identity_key in ("revision_id", "variant_id"):
+            identity_value = _record_id(row, identity_key) or _record_id(source_metadata, identity_key)
+            if identity_value:
+                direct_metadata[identity_key] = identity_value
+        if row.get("query_binding_excluded") is True:
+            direct_metadata["query_binding_excluded"] = True
+        if row.get("hmc_relation_unverified") is True:
+            direct_metadata["hmc_relation_unverified"] = True
+        if isinstance(row.get("hmc_relation_match"), Mapping):
+            direct_metadata["hmc_relation_match"] = dict(
+                row["hmc_relation_match"]
+            )
+        if isinstance(row.get("query_relevance_field_match"), Mapping):
+            direct_metadata["query_relevance_field_match"] = dict(
+                row["query_relevance_field_match"]
+            )
         if row.get("reference_source") == "fault_history":
             direct_metadata.update(
                 {
@@ -2912,11 +4079,13 @@ def _direct_evidence(tool: str, rows: Sequence[Dict[str, Any]]) -> List[Dict[str
             hmc_metadata = _as_metadata(row.get("document_metadata"))
             hmc_metadata.update(
                 {
+                    "variant_id": str(row.get("variant_id") or ""),
                     "hmc_code": str(row.get("hmc_code") or ""),
                     "lcn": str(row.get("lcn") or ""),
                     "hamc": str(row.get("hamc") or ""),
                     "hsc": str(row.get("hsc") or ""),
                     "answer_fields": _answer_fields(
+                        variant_id=row.get("variant_id"),
                         hmc_code=row.get("hmc_code"),
                         lcn=row.get("lcn"),
                         hamc=row.get("hamc"),
@@ -2926,6 +4095,14 @@ def _direct_evidence(tool: str, rows: Sequence[Dict[str, Any]]) -> List[Dict[str
                     ),
                 }
             )
+            if isinstance(row.get("hmc_anchor_selector"), Mapping):
+                hmc_metadata["hmc_anchor_selector"] = dict(
+                    row["hmc_anchor_selector"]
+                )
+            if isinstance(row.get("hmc_component_selector"), Mapping):
+                hmc_metadata["hmc_component_selector"] = dict(
+                    row["hmc_component_selector"]
+                )
             hmc_metadata.update(direct_metadata)
             symptom = make_evidence(
                 source_kind="postgres",
@@ -2976,6 +4153,18 @@ def _direct_evidence(tool: str, rows: Sequence[Dict[str, Any]]) -> List[Dict[str
         elif tool == "fmeca_query":
             record_id = _record_id(row, "code", "id")
             title = str(row.get("fault_mode") or record_id)
+            # Keep query-level identity decisions beside the authoritative row
+            # instead of deleting lower-ranked neighbours.  EvidenceGate can
+            # then exclude a non-target from the reasoning window while the
+            # complete PostgreSQL result remains available in the audit
+            # registry.  These flags describe relevance for this turn only;
+            # they do not downgrade the source record itself.
+            if row.get("query_binding_excluded") is True:
+                direct_metadata["query_binding_excluded"] = True
+            if isinstance(row.get("record_identity_field_match"), Mapping):
+                direct_metadata["record_identity_field_match"] = dict(
+                    row["record_identity_field_match"]
+                )
             probability_raw = _first_answer_value(row, "probability_raw", "failure_probability_raw")
             probability = _first_answer_value(row, "probability", "failure_probability")
             probability_display = probability_raw if _has_answer_value(probability_raw) else probability
@@ -3156,6 +4345,18 @@ def _direct_evidence(tool: str, rows: Sequence[Dict[str, Any]]) -> List[Dict[str
                 title=title,
             )
             validation_status = _graph_validation_status(row)
+            gate_relations = (
+                explicit_fta_gate_relations(graph)
+                if tool == "fta_query" and validation_status in FORMAL_VALIDATION_STATUSES
+                else []
+            )
+            structural_cause_chain = display_summary
+            if gate_relations:
+                structural_cause_chain += "\n显式门与输入（不是割集计算）：\n" + "\n".join(
+                    f"{relation['event_name']} ← {relation['gate_type']}("
+                    + "；".join(child["event_name"] for child in relation["inputs"]) + ")"
+                    for relation in gate_relations
+                )
             if validation_status in FORMAL_VALIDATION_STATUSES:
                 manually_confirmed = validation_status == "manual_confirmed"
                 authority = "confirmed_relation" if manually_confirmed else "validated_relation"
@@ -3195,10 +4396,16 @@ def _direct_evidence(tool: str, rows: Sequence[Dict[str, Any]]) -> List[Dict[str
                     limitations=limitations,
                     metadata={
                         "is_active": row.get("is_active") is True,
+                        **direct_metadata,
                         "projection_status": str(row.get("projection_status") or ""),
                         "diagram_id": str(row.get("diagram_id") or ""),
                         "revision_id": str(row.get("revision_id") or ""),
                         "diagram_key": str(row.get("diagram_key") or ""),
+                        "rbd_block_business_ids": (
+                            sorted(rbd_block_business_ids(row))
+                            if tool == "rbd_query"
+                            else []
+                        ),
                         "validation_status": validation_status,
                         "validation_tier": str(row.get("validation_tier") or ""),
                         "validation_method": str(row.get("validation_method") or ""),
@@ -3209,8 +4416,9 @@ def _direct_evidence(tool: str, rows: Sequence[Dict[str, Any]]) -> List[Dict[str
                         # structure without ever treating JSON as user prose.
                         "answer_fields": _answer_fields(
                             structural_cause_chain=(
-                                display_summary if tool == "fta_query" else None
+                                structural_cause_chain if tool == "fta_query" else None
                             ),
+                            gate_relations=gate_relations,
                             structure_summary=display_summary,
                             basic_events=(
                                 _graph_basic_event_summaries(graph)
@@ -3354,7 +4562,6 @@ def _format_domain_context(
     history_rows: Sequence[Dict[str, Any]],
     hybrid_rows: Sequence[Dict[str, Any]],
     confidence: float,
-    clarification: str,
 ) -> str:
     sections = [
         f"【用户故障描述】\n{query}",
@@ -3434,8 +4641,6 @@ def _format_domain_context(
             )
         sections.append("【跨七类文档混合召回】\n" + "\n".join(lines))
 
-    if clarification:
-        sections.append("【仍需确认】\n" + clarification)
     return "\n\n".join(sections)
 
 
@@ -3444,116 +4649,34 @@ def _candidate_faults(
     fmeca_rows: Sequence[Dict[str, Any]],
     hybrid_rows: Sequence[Dict[str, Any]],
     evidence: Sequence[Dict[str, Any]] = (),
+    *, weights: Optional[CandidateRankingWeights] = None,
 ) -> List[Dict[str, Any]]:
-    candidates: Dict[str, Dict[str, Any]] = defaultdict(
-        lambda: {
-            "score": 0.0,
-            "evidence": [],
-            "supporting_evidence_ids": [],
-            "exact_hmc_match": False,
-            "structured_hmc_match": False,
-            "authoritative_support": False,
+    from backend.agent.candidate_ranking import rank_candidates
+
+    def prepare(row, doc_type, *identity_keys):
+        metadata = _as_metadata(row.get("document_metadata"))
+        return {
+            **row, "doc_type": doc_type,
+            "record_id": _record_id(row, *identity_keys),
+            "candidate_scope": _scope(row.get("scope") or metadata),
+            "revision_id": _record_id(row, "revision_id") or _record_id(metadata, "revision_id"),
+            "variant_id": _record_id(row, "variant_id") or _record_id(metadata, "variant_id"),
         }
+
+    return rank_candidates(
+        [prepare(row, "hmc", "hmc_code", "id") for row in hmc_rows],
+        [prepare(row, "fmeca", "code", "id") for row in fmeca_rows],
+        [prepare(row, _search_doc_type(row), "record_id") for row in hybrid_rows],
+        evidence,
+        weights=weights if weights is not None else candidate_ranking_weights(),
+        structured_hmc_matches=frozenset(_STRUCTURED_HMC_MATCH_TYPES),
     )
-    search_scored: set[Tuple[str, str]] = set()
-
-    def attach(candidate: Dict[str, Any], *, doc_type: str, record_id: str = "", chunk_id: str = "") -> None:
-        for item in evidence:
-            if item.get("doc_type") != doc_type:
-                continue
-            if record_id and str(item.get("record_id") or "") != record_id:
-                continue
-            if chunk_id and str(item.get("chunk_id") or "") != chunk_id:
-                continue
-            # 维修动作不反向支撑故障候选；OpenSearch 命中仍只是线索。
-            if item.get("claim_type") == "maintenance_action":
-                continue
-            evidence_id = str(item.get("evidence_id") or "")
-            if evidence_id and evidence_id not in candidate["supporting_evidence_ids"]:
-                candidate["supporting_evidence_ids"].append(evidence_id)
-
-    for row in hmc_rows:
-        name = str(row.get("fault_desc") or row.get("hmc_code") or "").strip()
-        if not name:
-            continue
-        candidate = candidates[name]
-        match_type = str(row.get("match_type") or "")
-        exact_match = match_type == "exact_code"
-        component_match = match_type == "exact_components"
-        candidate["score"] += 0.55 if exact_match else (0.45 if component_match else 0.3)
-        candidate["exact_hmc_match"] = candidate["exact_hmc_match"] or exact_match
-        candidate["structured_hmc_match"] = (
-            candidate["structured_hmc_match"] or match_type in _STRUCTURED_HMC_MATCH_TYPES
-        )
-        candidate["authoritative_support"] = True
-        candidate["evidence"].append({"source": "HMC", "id": row.get("hmc_code")})
-        attach(candidate, doc_type="hmc", record_id=_record_id(row, "hmc_code", "id"))
-    for row in fmeca_rows:
-        name = str(row.get("fault_mode") or row.get("code") or "").strip()
-        if not name:
-            continue
-        candidate = candidates[name]
-        candidate["score"] += 0.25
-        candidate["authoritative_support"] = True
-        candidate["evidence"].append({"source": "FMECA", "id": row.get("code")})
-        attach(candidate, doc_type="fmeca", record_id=_record_id(row, "code", "id"))
-    for row in hybrid_rows[:12]:
-        doc_type = _search_doc_type(row)
-        if doc_type not in {"hmc", "fmeca"}:
-            continue
-        name = str(row.get("title") or "").strip()
-        if not name:
-            continue
-        raw_score = row.get("score", 0)
-        try:
-            score = min(float(raw_score), 1.0)
-        except Exception:
-            score = 0.0
-        candidate = candidates[name]
-        search_key = (doc_type, name.casefold())
-        # Multiple chunks with the same title are duplicate retrieval clues, not
-        # independent corroboration.  Score the clue once while retaining a few
-        # source IDs for auditability.
-        if search_key not in search_scored:
-            candidate["score"] += 0.1 + 0.15 * max(score, 0)
-            search_scored.add(search_key)
-        candidate["evidence"].append(
-            {"source": doc_type, "id": row.get("chunk_id")}
-        )
-        attach(
-            candidate,
-            doc_type=doc_type,
-            chunk_id=str(row.get("chunk_id") or row.get("id") or ""),
-        )
-
-    ranked = []
-    for name, value in candidates.items():
-        ranked.append(
-            {
-                "fault": name,
-                "score": round(min(value["score"], 0.99), 3),
-                "evidence": value["evidence"][:6],
-                "supporting_evidence_ids": value["supporting_evidence_ids"][:8],
-                "exact_hmc_match": bool(value["exact_hmc_match"]),
-                "structured_hmc_match": bool(value["structured_hmc_match"]),
-                "authoritative_support": bool(value["authoritative_support"]),
-            }
-        )
-    ranked.sort(
-        key=lambda item: (
-            bool(item.get("exact_hmc_match")),
-            bool(item.get("structured_hmc_match")),
-            bool(item.get("authoritative_support")),
-            float(item.get("score") or 0.0),
-        ),
-        reverse=True,
-    )
-    return ranked[:8]
 
 
 def _graph_seed_bindings(
     *,
     function_rows: Sequence[Dict[str, Any]] = (),
+    function_business_ids: Sequence[Any] = (),
     hmc_rows: Sequence[Dict[str, Any]] = (),
     fmeca_rows: Sequence[Dict[str, Any]] = (),
     fta_rows: Sequence[Dict[str, Any]] = (),
@@ -3636,10 +4759,29 @@ def _graph_seed_bindings(
             "diagram_id": diagram_id,
         }
 
+    authorized_function_ids = {
+        normalize_search_term(value)
+        for value in function_business_ids
+        if normalize_search_term(value)
+    }
     for row in function_rows:
-        add("function", row.get("function_id"), source_tool="function_locator", row=row)
-        add("component", row.get("module_id"), source_tool="function_locator", row=row)
-        add("component", row.get("component_id"), source_tool="function_locator", row=row)
+        for kind, field in (
+            ("function", "function_id"),
+            ("component", "module_id"),
+            ("component", "component_id"),
+            ("interface", "interface_id"),
+        ):
+            value = row.get(field)
+            if normalize_search_term(value) not in authorized_function_ids:
+                continue
+            add(
+                kind,
+                value,
+                source_tool="function_locator",
+                row=row,
+                binding_status="exact",
+                match_type="exact_function_identity",
+            )
 
     for row in hmc_rows:
         match_type = str(row.get("match_type") or "keyword")
@@ -3648,12 +4790,29 @@ def _graph_seed_bindings(
             row.get("hmc_code"),
             source_tool="hmc_query",
             row=row,
-            binding_status="exact" if match_type == "exact_code" else "candidate",
+            binding_status=(
+                "exact" if match_type in _STRUCTURED_HMC_MATCH_TYPES else "candidate"
+            ),
             match_type=match_type,
         )
 
     for row in fmeca_rows:
-        add("fmeca_record", row.get("code"), source_tool="fmeca_query", row=row)
+        match_type = str(row.get("match_type") or "structured_query")
+        add(
+            "fmeca_record",
+            row.get("code"),
+            source_tool="fmeca_query",
+            row=row,
+            binding_status=(
+                "exact"
+                if match_type in {
+                    "exact_record_identity",
+                    "exact_conversation_reference",
+                }
+                else "candidate"
+            ),
+            match_type=match_type,
+        )
     for row in mfl_rows:
         add("mfl_record", row.get("mfl_code"), source_tool="mfl_query", row=row)
     for row in history_rows:
@@ -3768,6 +4927,173 @@ def _graph_request(
     }
 
 
+def _planned_answer_mode(state: Mapping[str, Any]) -> str:
+    """Consume the plan's validated presentation contract, never coarse intent."""
+
+    value = str(state.get("answer_mode") or "").strip()
+    return value if value in ANSWER_MODES else "knowledge_explanation"
+
+
+def _validated_source_roles(
+    state: Mapping[str, Any], raw_user_query: Any
+) -> Dict[str, set[str]]:
+    """Return source roles backed by a current span or a selected citation.
+
+    ``requested_source_tools`` is an execution list and therefore cannot by
+    itself prove that the user asked a source-capability question. The semantic
+    decision crosses this node only through the planner's structured source
+    objects, whose document/tool pair and provenance are rechecked here.
+    """
+
+    frame = state.get("query_frame")
+    frame = frame if isinstance(frame, Mapping) else {}
+    query = str(raw_user_query or "")
+    selected_anchor_doc_types = {
+        str(anchor.get("doc_type") or "").strip()
+        for anchor in (state.get("selected_conversation_anchors") or [])
+        if isinstance(anchor, Mapping)
+        and str(anchor.get("doc_type") or "").strip() in ICP_DOC_TYPES
+        and any(
+            str(anchor.get(key) or "").strip()
+            for key in ("anchor_id", "record_id", "evidence_id")
+        )
+    }
+    result: Dict[str, set[str]] = defaultdict(set)
+
+    def accept(*, doc_type: Any, tool: Any, role: Any, basis: Any) -> None:
+        normalized_doc_type = str(doc_type or "").strip()
+        expected_tool = _DOCUMENT_TOOL_BY_TYPE.get(normalized_doc_type, "")
+        normalized_tool = str(tool or expected_tool).strip()
+        normalized_role = str(role or "").strip()
+        normalized_basis = str(basis or "").strip()
+        provenance_ok = bool(normalized_basis and normalized_basis in query)
+        if normalized_basis == "selected_anchor":
+            provenance_ok = normalized_doc_type in selected_anchor_doc_types
+        if (
+            not expected_tool
+            or normalized_tool != expected_tool
+            or normalized_role not in _SOURCE_QUESTION_ROLES
+            or not provenance_ok
+        ):
+            return
+        result[normalized_tool].add(normalized_role)
+
+    raw_sources = frame.get("requested_sources")
+    if isinstance(raw_sources, Sequence) and not isinstance(
+        raw_sources, (str, bytes)
+    ):
+        for item in raw_sources[:16]:
+            if not isinstance(item, Mapping):
+                continue
+            accept(
+                doc_type=item.get("doc_type"),
+                tool="",
+                role=item.get("question_role"),
+                basis=item.get("basis"),
+            )
+
+    raw_obligations = frame.get("source_obligations")
+    if isinstance(raw_obligations, Sequence) and not isinstance(
+        raw_obligations, (str, bytes)
+    ):
+        for item in raw_obligations[:16]:
+            if not isinstance(item, Mapping):
+                continue
+            accept(
+                doc_type=item.get("doc_type"),
+                tool=item.get("tool"),
+                role=item.get("question_role"),
+                basis=item.get("basis"),
+            )
+    return dict(result)
+
+
+def _source_boundary_explanation_from_contract(
+    state: Mapping[str, Any], raw_user_query: Any
+) -> bool:
+    """Read the closed focus plus its provenance-bearing source contract."""
+
+    frame = state.get("query_frame")
+    frame = frame if isinstance(frame, Mapping) else {}
+    focuses = {
+        str(value or "").strip()
+        for value in (frame.get("response_focus") or [])
+        if str(value or "").strip()
+    }
+    if not focuses & {"source_capability", "source_limitation"}:
+        return False
+    return any(
+        roles & {"capability", "limitation"}
+        for roles in _validated_source_roles(state, raw_user_query).values()
+    )
+
+
+def _structured_query_routes(
+    state: Mapping[str, Any],
+    *,
+    allowed_tools: set[str],
+    raw_user_query: Any,
+    explicit_business_codes: Sequence[Any],
+) -> Dict[str, bool]:
+    """Derive evidence paths from validated fields and source contracts.
+
+    Intent labels remain useful to the upstream policy as a permission ceiling,
+    but they do not decide whether this node expands Function Locator, filters an
+    exact record, or exits through the architecture-only path.
+    """
+
+    frame = state.get("query_frame")
+    frame = frame if isinstance(frame, Mapping) else {}
+    fields = set(required_answer_fields(state))
+    source_roles = _validated_source_roles(state, raw_user_query)
+    answer_mode = _planned_answer_mode(state)
+    function_allowed = "function_locator" in allowed_tools
+    direct_document_tools = set(_DOCUMENT_TOOL_BY_TYPE.values()) & allowed_tools
+    coverage_request = frame.get("coverage_request")
+    architecture_collection = bool(
+        function_allowed
+        and closed_inventory_requested(state)
+        and isinstance(coverage_request, Mapping)
+        and str(coverage_request.get("member_kind") or "")
+        in _ARCHITECTURE_COLLECTION_KINDS
+    )
+    architecture_query = bool(
+        function_allowed
+        and (
+            answer_mode == "architecture_knowledge"
+            or bool(fields & _ARCHITECTURE_ANSWER_FIELDS)
+            or architecture_collection
+        )
+    )
+    function_source_is_explicit = "function_locator" in source_roles
+    function_profile_query = bool(
+        function_allowed
+        and fields & _FUNCTION_PROFILE_FIELDS
+        and (
+            function_source_is_explicit
+            or direct_document_tools <= {"function_locator"}
+        )
+    )
+    function_knowledge_query = architecture_query or function_profile_query
+    function_knowledge_only = bool(
+        function_knowledge_query
+        and not closed_inventory_requested(state)
+        and not (direct_document_tools - {"function_locator"})
+    )
+    exact_record_identity_lookup = bool(
+        "record_identity" in fields
+        and any(str(value or "").strip() for value in explicit_business_codes)
+        and direct_document_tools
+    )
+    return {
+        "exact_record_identity_lookup": exact_record_identity_lookup,
+        "architecture_query": architecture_query,
+        "function_profile_query": function_profile_query,
+        "function_knowledge_query": function_knowledge_query,
+        "function_knowledge_only": function_knowledge_only,
+    }
+
+
 async def icp_diagnosis_node(state) -> Dict[str, Any]:
     """按策略白名单执行只读工具，并生成统一 Evidence/ToolResult。"""
     scope_route = str(state.get("scope_route") or "")
@@ -3780,9 +5106,13 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
             "candidate_faults": [],
             "diagnostic_support": 0.0,
             "diagnostic_confidence": 0.0,
-            "clarification_question": str(
-                state.get("clarification_question") or ""
-            ),
+            # The scope router/answer model owns user-facing wording.  This
+            # execution guard must not echo a question as retrieval authority.
+            "clarification_question": "",
+            "missing_input_requirements": [],
+            "unresolved_identity_slots": [],
+            "clarification_reasons": [],
+            "clarification_fallback": make_clarification_fallback(required=False),
             "domain_results": [],
             "vector_results": [],
             "tool_calls": [],
@@ -3796,8 +5126,29 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
     raw_user_query = str(state.get("query") or query).strip()
     terms = _unique_terms(state)
     intent = state.get("intent", "symptom_diagnosis")
-    answer_mode = answer_mode_for_intent(intent)
-    diagnostic_narrowing = answer_mode in {"fault_diagnosis", "exact_code_lookup"}
+    answer_mode = _planned_answer_mode(state)
+    frame = state.get("query_frame") if isinstance(state.get("query_frame"), Mapping) else {}
+    missing_input_requirements, unresolved_identity_slots = (
+        _machine_missing_input_contract(state)
+    )
+    diagnostic_closure = frame.get("diagnostic_closure")
+    source_boundary_explanation = _source_boundary_explanation_from_contract(
+        state, raw_user_query
+    )
+    diagnostic_narrowing = (
+        not source_boundary_explanation
+        and not (
+            focused_answer_contract(state)
+            and not ({"fault_cause", "failure_mode"} & set(required_answer_fields(state)))
+        )
+        and (
+            answer_mode in {"fault_diagnosis", "exact_code_lookup"}
+            or bool(
+                isinstance(diagnostic_closure, Mapping)
+                and diagnostic_closure.get("required") is True
+            )
+        )
+    )
     limit = max(4, int(state.get("sql_limit", 8) or 8))
     retrieval_top_k = max(8, int(state.get("retrieval_top_k", 12) or 12))
     allowed_tools_present = "allowed_tools" in state
@@ -3807,44 +5158,29 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
     )
     structured_hydration_tools = set(
         state.get("structured_hydration_tools") or []
-    ) & authorization_ceiling
-    target_intents = {
-        str(item.get("intent") or "")
-        for item in (state.get("query_targets") or [])
-        if isinstance(item, Mapping) and str(item.get("intent") or "")
-    }
-    if intent:
-        target_intents.add(str(intent))
-    explicit_business_codes = extract_business_codes(
-        [
-            raw_user_query,
-            (state.get("query_frame") or {}).get("entities")
-            if isinstance(state.get("query_frame"), Mapping)
-            else [],
-        ]
-    )
-    exact_record_identity_lookup = (
-        "entity_profile" in target_intents
-        and "record_identity" in set(required_answer_fields(state))
-        and bool(explicit_business_codes)
-    )
-    architecture_query = "architecture_query" in target_intents
-    function_knowledge_intents = {
-        "architecture_query", "entity_profile", "function_location",
-    }
-    function_knowledge_query = bool(target_intents & function_knowledge_intents)
+    ) & set(state.get("authorized_tools") or state.get("allowed_tools") or [])
+    # A follow-up may authorize only MFL while its selected conversation
+    # anchor is an exact HMC record. Re-read that HMC row as a bounded
+    # hydration input so the HMC→MFL relation gate can distinguish a confirmed
+    # cross-document link from a merely similar MFL symptom.
+    if (
+        "mfl_query" in allowed_tools
+        and "hmc_query" in structured_hydration_tools
+        and any(
+            isinstance(anchor, Mapping)
+            and str(anchor.get("doc_type") or "") == "hmc"
+            for anchor in (state.get("selected_conversation_anchors") or [])
+        )
+    ):
+        allowed_tools.add("hmc_query")
+    # Stable record IDs can authorize an exact lookup only when the user typed
+    # them in this turn.  Planner entities remain semantic recall hints and may
+    # not mint an identity selector.
+    explicit_business_codes = extract_business_codes(raw_user_query)
     complete_collection_request = closed_inventory_requested(state)
     # A complete-collection question asks what exists in one authoritative
     # scope; it is not a request to narrow those members to a single diagnosis.
     diagnostic_narrowing = diagnostic_narrowing and not complete_collection_request
-    # 只有单一类实体/架构知识目标可以走专用的提前返回。若同一问题
-    # 还包含影响、原因、维修等目标，必须继续执行其余已授权查询；
-    # 例如“这个模块重要吗”需要同时取回职责和有证据的失效影响。
-    function_knowledge_only = (
-        function_knowledge_query
-        and not complete_collection_request
-        and not (target_intents - function_knowledge_intents)
-    )
     policy_hybrid_doc_types: List[str] = []
     # 只对旧版/手工构造且缺少该字段的状态做兼容降级。显式空集合
     # 代表策略决定不执行直接查询，不能被再次扩张为固定工具套餐。
@@ -3866,9 +5202,51 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
                 isinstance(state.get("relation_expansion"), Mapping)
                 and state["relation_expansion"].get("needed") is True
             ),
+            selected_anchor_doc_types=[
+                str(anchor.get("doc_type") or "")
+                for anchor in (state.get("selected_conversation_anchors") or [])
+                if isinstance(anchor, Mapping)
+                and str(anchor.get("doc_type") or "")
+            ],
+            calculation_authorizations=state.get(
+                "calculation_authorizations"
+            ),
         )
         allowed_tools = set(fallback_policy["allowed_tools"])
         policy_hybrid_doc_types = list(fallback_policy["hybrid_doc_types"])
+    # A selected exact HMC anchor is already an authorized conversation
+    # locator.  When the current turn asks MFL about that anchor, the bounded
+    # HMC re-read is required to establish (or reject) the cross-document
+    # relation; otherwise the writer sees an orphan MFL row and may attach its
+    # action/API to the HMC code by similarity.  This adds only the exact
+    # anchor hydration read, never a free HMC search.
+    if (
+        "mfl_query" in allowed_tools
+        and any(
+            isinstance(anchor, Mapping)
+            and str(anchor.get("doc_type") or "") == "hmc"
+            and isinstance(anchor.get("answer_fields"), Mapping)
+            and str(anchor.get("record_id") or "").strip()
+            for anchor in (state.get("selected_conversation_anchors") or [])
+        )
+    ):
+        allowed_tools.add("hmc_query")
+    structured_routes = _structured_query_routes(
+        state,
+        allowed_tools=allowed_tools,
+        raw_user_query=raw_user_query,
+        explicit_business_codes=explicit_business_codes,
+    )
+    exact_record_identity_lookup = structured_routes[
+        "exact_record_identity_lookup"
+    ]
+    architecture_query = structured_routes["architecture_query"]
+    function_profile_query = structured_routes["function_profile_query"]
+    function_knowledge_query = structured_routes["function_knowledge_query"]
+    # Only a contract whose required fields can all be served by the authorized
+    # Function Locator path may exit early. Mixed RBD/FMECA/history requests keep
+    # their own tools even if the coarse intent happens to say architecture.
+    function_knowledge_only = structured_routes["function_knowledge_only"]
     # ``entity_profile`` describes the user's information need, not a storage
     # family.  FMECA/MFL/history/HMC business IDs use the same intent but must
     # reach their own PostgreSQL query instead of being swallowed by the
@@ -3896,12 +5274,48 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
     function_call: Optional[Dict[str, Any]] = None
     structured_entity_binding: Dict[str, Any] = {
         "bound": False,
+        "candidate_bound": False,
+        "cross_document_authorized": False,
         "ambiguous": False,
         "business_ids": [],
         "terms": [],
         "row_indexes": [],
         "basis": "",
+        "candidate_business_ids": [],
+        "candidate_terms": [],
+        "candidate_row_indexes": [],
+        "candidate_basis": "",
+        "authorization_basis": "",
     }
+    structured_record_binding: Dict[str, Any] = {
+        "doc_type": "fmeca",
+        "bound": False,
+        "ambiguous": False,
+        "record_ids": [],
+        "row_indexes": [],
+        "basis": "",
+        "candidates": [],
+        "relevance_only": False,
+    }
+    hmc_mfl_binding: Dict[str, Any] = {
+        "required": False,
+        "bound": False,
+        "basis": "",
+        "hmc_codes": [],
+        "mfl_codes": [],
+        "excluded_mfl_codes": [],
+    }
+    rbd_query_binding: Dict[str, Any] = {
+        "contract_version": RBD_AUTHORITY_CONTRACT_VERSION,
+        "required": False,
+        "bound": False,
+        "ambiguous": False,
+        "basis": "",
+        "record_ids": [],
+        "candidate_record_ids": [],
+        "model_bindings": [],
+    }
+    architecture_inventory_proof: Dict[str, Any] = {}
     terms_by_tool = {
         tool: build_tool_terms(state, tool, terms)
         for tool in (
@@ -3909,6 +5323,8 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
             "rbd_query", "mfl_query", "fault_history_query",
         )
     }
+    typed_hmc_components = _typed_hmc_components(state)
+    typed_fmeca_fields = _typed_fmeca_record_fields(state)
 
     if "function_locator" in allowed_tools:
         started = time.time()
@@ -3930,7 +5346,7 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
         # function table did not bind an object. Broad architecture queries
         # otherwise expand from their matched functions through explicit IDs.
         should_query_components = (
-            "entity_profile" in target_intents
+            function_profile_query
             or complete_collection_request
             or not function_rows
             # FMECA and RBD frequently store a module abbreviation/ID while
@@ -4095,12 +5511,35 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
         if (
             architecture_query
             and closed_inventory_requested(state)
-            and function_rows
         ):
+            scope_seed_rows: List[Dict[str, Any]] = []
             try:
-                inventory_rows = icp_repository.expand_architecture_inventory(
-                    function_rows,
-                    limit=16,
+                scope_candidates = icp_repository.list_collection_scope_candidates() or []
+                component_ids, function_ids, scope_doc_id = (
+                    _closed_collection_scope_seeds(scope_candidates, state)
+                )
+                scope_seed_rows = [
+                    {
+                        "doc_id": scope_doc_id,
+                        "content_type": "function_component",
+                        "component_id": value,
+                    }
+                    for value in component_ids
+                ] + [
+                    {
+                        "doc_id": scope_doc_id,
+                        "content_type": "function_record",
+                        "function_id": value,
+                    }
+                    for value in function_ids
+                ]
+                inventory_rows = (
+                    icp_repository.expand_architecture_inventory(
+                        scope_seed_rows,
+                        limit=16,
+                    )
+                    if scope_seed_rows
+                    else []
                 )
             except Exception as exc:
                 logger.warning("Whole-system architecture inventory expansion failed: %s", exc)
@@ -4111,6 +5550,9 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
                     pass
                 inventory_rows = []
             if inventory_rows:
+                inventory_rows, architecture_inventory_proof = (
+                    _validate_architecture_collection_rows(inventory_rows)
+                )
                 # Closed-list rows lead the evidence stream so the system and
                 # every direct subsystem are available before leaf functions.
                 # Their metadata also lets the answer layer verify N-of-N
@@ -4135,6 +5577,11 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
                 function_retrieval_info["postgres_inventory_count"] = len(
                     inventory_rows
                 )
+            elif scope_seed_rows:
+                architecture_inventory_proof = {
+                    "closed": False,
+                    "reason": "权威结构化资料未返回可闭合的架构集合",
+                }
         function_rows = _enrich_function_sources(function_rows, function_errors)
         function_call = _tool_call(
             "function_locator",
@@ -4148,14 +5595,27 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
             intent=intent,
         )
         function_call["postgres_authoritative_count"] = len(function_rows)
-        if structured_entity_binding.get("bound"):
+        if (
+            structured_entity_binding.get("bound")
+            or structured_entity_binding.get("candidate_bound")
+            or structured_entity_binding.get("ambiguous")
+        ):
             function_call["structured_entity_binding"] = {
                 "business_ids": list(
                     structured_entity_binding.get("business_ids") or []
                 ),
+                "cross_document_authorized": bool(
+                    structured_entity_binding.get("cross_document_authorized")
+                ),
                 "basis": structured_entity_binding.get("basis") or "",
                 "query_terms": list(
                     structured_entity_binding.get("terms") or []
+                ),
+                "candidate_business_ids": list(
+                    structured_entity_binding.get("candidate_business_ids") or []
+                ),
+                "candidate_basis": str(
+                    structured_entity_binding.get("candidate_basis") or ""
                 ),
             }
         tool_calls.append(function_call)
@@ -4212,16 +5672,11 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
     # layer cannot mix system, subsystem and leaf-function rows into one
     # falsely-counted list.
     architecture_collection_frame: Optional[Dict[str, Any]] = None
+    coverage_contract = validated_coverage_request(state)
     collection_member_kind = str(
-        (
-            state.get("query_frame") or {}
-        ).get("collection_member_kind") or ""
-    ) if isinstance(state.get("query_frame"), Mapping) else ""
-    collection_subject = str(
-        (
-            state.get("query_frame") or {}
-        ).get("collection_subject") or ""
-    ).strip() if isinstance(state.get("query_frame"), Mapping) else ""
+        coverage_contract.get("member_kind") or ""
+    ).strip()
+    collection_subject = str(coverage_contract.get("subject") or "").strip()
     if complete_collection_request and collection_member_kind in {"failure_mode", "cause"}:
         collection_resolution.update(
             {
@@ -4339,40 +5794,26 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
                 collection_resolution["reason"] = "权威结构化资料未返回可闭合的集合"
 
     if architecture_query and complete_collection_request:
-        inventory_members = [
-            row
-            for row in function_rows
-            if row.get("collection_closed") is True
-            and str(row.get("collection_role") or "") == "member"
-            and str(row.get("collection_member_kind") or "").strip()
-        ]
-        if inventory_members:
-            first_inventory = inventory_members[0]
-            proven_kind = str(
-                first_inventory.get("collection_member_kind") or ""
-            ).strip()
-            parent_id = str(
-                first_inventory.get("collection_parent_id") or ""
-            ).strip()
-            parent_name = str(
-                first_inventory.get("collection_parent_name") or ""
-            ).strip()
-            declared_counts = {
-                int(row.get("collection_member_count") or 0)
-                for row in inventory_members
-                if str(row.get("collection_member_count") or "").strip()
+        collection_resolution.update(
+            {
+                "requested": True,
+                "requested_member_kind": collection_member_kind,
+                "subject": collection_subject,
             }
-            declared_count = max(declared_counts) if declared_counts else 0
+        )
+        if architecture_inventory_proof.get("closed") is True:
+            proven_kind = str(architecture_inventory_proof.get("member_kind") or "")
+            parent_id = str(architecture_inventory_proof.get("parent_id") or "")
+            parent_name = str(architecture_inventory_proof.get("parent_name") or "")
             collection_resolution.update(
                 {
-                    "requested": True,
                     "closed": True,
                     "member_kind": proven_kind,
-                    "requested_member_kind": collection_member_kind,
-                    "subject": collection_subject,
                     "parent_id": parent_id,
                     "parent_name": parent_name,
-                    "member_count": declared_count or len(inventory_members),
+                    "member_count": int(
+                        architecture_inventory_proof.get("member_count") or 0
+                    ),
                 }
             )
             architecture_collection_frame = dict(
@@ -4392,6 +5833,12 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
             if "closed_collection_members" not in required_fields:
                 required_fields.append("closed_collection_members")
             architecture_collection_frame["required_answer_fields"] = required_fields
+        else:
+            collection_resolution["closed"] = False
+            collection_resolution["reason"] = str(
+                architecture_inventory_proof.get("reason")
+                or "权威架构清单未通过闭集结构校验"
+            )
 
     if function_knowledge_only:
         # PostgreSQL owns Function Locator facts. The following graph node may
@@ -4433,7 +5880,14 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
                 )
             )
         _attach_tool_call_evidence(tool_calls, tool_results, evidence)
-        seed_bindings = _graph_seed_bindings(function_rows=function_rows)
+        seed_bindings = _graph_seed_bindings(
+            function_rows=function_rows,
+            function_business_ids=(
+                structured_entity_binding.get("business_ids") or []
+                if structured_entity_binding.get("cross_document_authorized") is True
+                else []
+            ),
+        )
         return {
             "diagnostic_context": context,
             # 架构知识问答不制造“候选故障/诊断置信度/故障追问”。
@@ -4441,6 +5895,10 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
             "diagnostic_support": 0.0,
             "diagnostic_confidence": 0.0,
             "clarification_question": "",
+            "missing_input_requirements": missing_input_requirements,
+            "unresolved_identity_slots": unresolved_identity_slots,
+            "clarification_reasons": [],
+            "clarification_fallback": make_clarification_fallback(required=False),
             "domain_results": domain_results,
             "vector_results": domain_results,
             "tool_calls": tool_calls,
@@ -4450,6 +5908,8 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
             "graph_seed_bindings": seed_bindings,
             "graph_traversal_request": _graph_request(seed_bindings, allowed_tools),
             "collection_resolution": collection_resolution,
+            "structured_entity_binding": dict(structured_entity_binding),
+            "structured_record_binding": dict(structured_record_binding),
             **(
                 {"query_frame": architecture_collection_frame}
                 if architecture_collection_frame is not None
@@ -4463,11 +5923,24 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
     }
     direct_errors: Dict[str, List[str]] = {name: [] for name in direct_rows}
     direct_errors["fmeca_query"].extend(collection_errors)
+    anchor_selectors = {tool: _conversation_record_selectors(state, doc_type)
+                        for doc_type, tool in _DOCUMENT_TOOL_BY_TYPE.items() if tool in direct_rows}
+    if collection_resolution.get("requested"):
+        anchor_selectors["fmeca_query"] = []
+    anchor_reads: Dict[str, List[Dict[str, Any]]] = {}
 
     def run_direct(tool: str, call, *, match_query: Optional[str] = None) -> None:
         started = time.time()
+        selectors = anchor_selectors.get(tool) or []
         try:
-            direct_rows[tool] = list(call())
+            if selectors:
+                result = icp_repository.get_records_by_business_selectors(
+                    DOC_TYPE_BY_TOOL[tool], selectors,
+                )
+                direct_rows[tool] = result["rows"]
+                anchor_reads[tool] = result["reads"]
+            else:
+                direct_rows[tool] = list(call())
             if exact_record_identity_lookup and tool in _IDENTITY_FIELDS_BY_TOOL:
                 direct_rows[tool] = _exact_identity_rows(
                     direct_rows[tool],
@@ -4491,8 +5964,13 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
             "fault_history_query": (("case_id",), ("fault_symptom", "root_cause", "final_solution")),
         }[tool]
         params = {"terms": terms_by_tool[tool], "limit": limit}
-        if tool == "hmc_query":
+        if selectors:
+            params.update(conversation_anchor_selectors=selectors, anchor_reads=anchor_reads.get(tool, []),
+                          match_type="exact_conversation_reference")
+        if tool == "hmc_query" and not selectors:
             parsed_hmc = _extract_hmc(match_query or raw_user_query)
+            if not parsed_hmc and not match_query:
+                parsed_hmc = typed_hmc_components
             params["match_type"] = (
                 "exact_code"
                 if parsed_hmc.get("hamc")
@@ -4500,57 +5978,29 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
             )
         tool_calls.append(_tool_call(tool, len(rows), started, _preview_rows(rows, *preview_keys), **params))
 
+    conversation_hmc_selectors = anchor_selectors.get("hmc_query") or []
     if "hmc_query" in allowed_tools:
-        conversation_hmc_queries = _conversation_hmc_queries(state)
+        hmc_lookup_query = _hmc_lookup_query(state)
         run_direct(
             "hmc_query",
-            (
-                lambda: _query_hmc_from_conversation_anchors(
-                    conversation_hmc_queries,
-                    terms_by_tool["hmc_query"],
-                    limit,
-                    direct_errors["hmc_query"],
-                    include_repair_method=answer_mode == "maintenance_guidance",
-                )
-                if conversation_hmc_queries
-                else _query_hmc(
-                    raw_user_query,
-                    terms_by_tool["hmc_query"],
-                    limit,
-                    direct_errors["hmc_query"],
-                    include_repair_method=answer_mode == "maintenance_guidance",
-                )
+            lambda: _query_hmc(
+                hmc_lookup_query, terms_by_tool["hmc_query"], limit, direct_errors["hmc_query"],
+                include_repair_method=answer_mode == "maintenance_guidance",
+                typed_components=typed_hmc_components,
             ),
-            match_query=conversation_hmc_queries[0] if conversation_hmc_queries else None,
+            match_query=hmc_lookup_query,
         )
-        if conversation_hmc_queries and tool_calls:
-            tool_calls[-1]["conversation_anchor_codes"] = conversation_hmc_queries
     if "fmeca_query" in allowed_tools:
-        conversation_fmeca_codes = _conversation_fmeca_codes(state)
-        if collection_resolution.get("requested") and collection_rows:
-            # A prior FMECA citation can seed the collection subject, but is
-            # never itself treated as the complete set. Only the repository's
-            # explicit-ID expansion may mark the response closed.
-            fmeca_call = lambda: collection_rows
-        elif conversation_fmeca_codes:
-            fmeca_call = lambda: _query_fmeca_by_codes(
-                conversation_fmeca_codes,
-                max(limit, len(conversation_fmeca_codes)),
-                direct_errors["fmeca_query"],
-                match_type="exact_conversation_reference",
-            )
-        else:
-            fmeca_call = lambda: _query_fmeca(
-                terms_by_tool["fmeca_query"],
-                limit,
-                direct_errors["fmeca_query"],
-                entity_terms=structured_entity_binding.get("terms") or [],
-            )
-        run_direct("fmeca_query", fmeca_call)
+        run_direct(
+            "fmeca_query",
+            lambda: collection_rows if collection_resolution.get("requested") and collection_rows
+            else _query_fmeca(
+                terms_by_tool["fmeca_query"], limit, direct_errors["fmeca_query"],
+                entity_terms=structured_entity_binding.get("retrieval_terms") or [],
+            ),
+        )
         if collection_resolution.get("requested") and tool_calls:
             tool_calls[-1]["collection_resolution"] = dict(collection_resolution)
-        if conversation_fmeca_codes and tool_calls:
-            tool_calls[-1]["conversation_anchor_codes"] = conversation_fmeca_codes
     fmeca_rbd_identity_terms: List[str] = []
     runtime_topology_dependency = state.get("topology_dependency")
     frame_topology_dependency = (
@@ -4564,6 +6014,30 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
         and runtime_topology_dependency.get("required") is True
         else frame_topology_dependency
     )
+    rbd_binding_required = "rbd_query" in allowed_tools
+    allow_multiple_rbd = _rbd_comparison_requested(state)
+    explicit_rbd_anchor_selectors = _selected_rbd_anchor_selectors(state)
+    explicit_rbd_anchor_identities = _selected_rbd_anchor_identities(state)
+    explicit_rbd_request_identities = _explicit_rbd_request_identities(state)
+    # A stable ID written in the current question supersedes an older selected
+    # citation.  Combining both would either union unrelated models or make a
+    # valid current ID fail the old anchor's document/configuration scope.
+    stable_rbd_identities = list(explicit_rbd_anchor_identities)
+    active_rbd_anchor_selectors = (
+        [] if explicit_rbd_request_identities else explicit_rbd_anchor_selectors
+    )
+    explicit_rbd_business_ids = (
+        list(structured_entity_binding.get("business_ids") or [])
+        if structured_entity_binding.get("cross_document_authorized") is True
+        and str(structured_entity_binding.get("authorization_basis") or "")
+        == "current_query_business_id"
+        else []
+    )
+    explicit_rbd_business_ids = [
+        value
+        for value in explicit_rbd_business_ids
+        if literal_identity_in_query(raw_user_query, value)
+    ]
     if (
         "rbd_query" in allowed_tools
         and isinstance(topology_dependency, Mapping)
@@ -4591,19 +6065,14 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
                 terms_by_tool["fta_query"],
                 max(4, limit // 2),
                 direct_errors["fta_query"],
+                query_frame=(
+                    state.get("query_frame")
+                    if isinstance(state.get("query_frame"), Mapping)
+                    else None
+                ),
             ),
         )
     if "rbd_query" in allowed_tools:
-        requested_source_tools = {
-            str(value or "").strip()
-            for value in (
-                state.get("requested_source_tools")
-                or (state.get("query_frame") or {}).get("requested_source_tools")
-                or []
-            )
-            if str(value or "").strip()
-        }
-
         def rbd_call():
             rows = _query_diagrams(
                 "rbd",
@@ -4611,24 +6080,19 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
                 max(4, limit // 2),
                 direct_errors["rbd_query"],
                 entity_terms=_prepend_query_terms(
-                    structured_entity_binding.get("terms") or [],
+                    structured_entity_binding.get("retrieval_terms") or [],
                     fmeca_rbd_identity_terms,
                 ),
+                query_frame=(
+                    state.get("query_frame")
+                    if isinstance(state.get("query_frame"), Mapping)
+                    else None
+                ),
             )
-            # If the user expressly asked us to consult RBD and Function
-            # Locator produced a durable object ID, a broad RBD hit is not
-            # enough. Keep only graphs that persist the same ID on a block.
-            # Returning no row is preferable to answering with a different
-            # system model and calling it evidence for the requested object.
-            if (
-                "rbd_query" in requested_source_tools
-                and structured_entity_binding.get("bound")
-                and structured_entity_binding.get("business_ids")
-            ):
-                return _filter_diagrams_by_explicit_object_ids(
-                    rows,
-                    structured_entity_binding.get("business_ids") or [],
-                )
+            # Keep the raw PostgreSQL candidates until locator hydration and
+            # structured-ID handoffs have finished.  The shared authority
+            # validator is applied once below to the complete ingress set, so
+            # an early ambiguous filter cannot erase the audit candidates.
             return rows
 
         run_direct(
@@ -4656,6 +6120,7 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
         )
 
     hybrid_rows: List[Dict[str, Any]] = []
+    hybrid_locator_rows: List[Dict[str, Any]] = []
     hybrid_retrieval_info: Dict[str, Any] = {}
     hybrid_call: Optional[Dict[str, Any]] = None
     if "hybrid_search" in allowed_tools:
@@ -4691,6 +6156,38 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
                 hybrid_doc_types,
             )
             hybrid_scope_warnings.extend(returned_scope_warnings)
+            hybrid_locator_rows = list(hybrid_rows)
+            if rbd_binding_required:
+                # An RBD search hit is only a locator.  Without a durable
+                # Function Locator ID, require the user-named object to occur
+                # literally before the hit can become answer evidence or a
+                # PostgreSQL hydration seed.  Other document families in a
+                # mixed-source request remain available.
+                non_rbd_rows = [
+                    row for row in hybrid_rows if _search_doc_type(row) != "rbd"
+                ]
+                rbd_locator_rows = [
+                    row for row in hybrid_rows if _search_doc_type(row) == "rbd"
+                ]
+                filtered_rbd_rows = _filter_requested_rbd_rows(
+                    rbd_locator_rows,
+                    requested=True,
+                    raw_user_query=raw_user_query,
+                    explicit_rbd_identities=explicit_rbd_request_identities,
+                    bound_business_ids=explicit_rbd_business_ids,
+                    anchor_identities=stable_rbd_identities,
+                    anchor_selectors=active_rbd_anchor_selectors,
+                    allow_multiple=allow_multiple_rbd,
+                )
+                hybrid_rows = [*non_rbd_rows, *filtered_rbd_rows]
+                filtered_count = len(hybrid_locator_rows) - len(hybrid_rows)
+                if filtered_count:
+                    hybrid_retrieval_info["explicit_rbd_subject_filtered"] = {
+                        "explicit_rbd_ids": list(explicit_rbd_request_identities),
+                        "business_ids": list(explicit_rbd_business_ids),
+                        "anchor_identities": list(stable_rbd_identities),
+                        "count": filtered_count,
+                    }
         else:
             hybrid_retrieval_info = {
                 "fallback": "策略未允许任何七类文档范围，未执行 OpenSearch 混合召回"
@@ -4754,7 +6251,7 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
     # remain bounded independently.
     locator_limit_per_type = max(6, min(limit, 8))
     locator_handoffs = _search_locator_handoffs(
-        [*(state.get("search_locator_hits") or []), *hybrid_rows],
+        [*(state.get("search_locator_hits") or []), *hybrid_locator_rows],
         limit=max(24, locator_limit_per_type * len(ICP_DOC_TYPES)),
         limit_per_type=locator_limit_per_type,
     )
@@ -4854,31 +6351,14 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
         and isinstance(topology_dependency, Mapping)
         and topology_dependency.get("required") is True
     ):
-        # The broad literal Function Locator query may miss the object while
-        # hybrid retrieval later discovers one row.  That hit has now been
-        # re-read by its PostgreSQL storage identity, so it is safe to perform
-        # the same conservative structured binding after hydration.  This
-        # enriches only the durable answer contract; it neither reruns an RBD
-        # query nor expands the planner's tool permissions.
-        post_hydration_binding = bind_structured_function_entity(
-            [
-                topology_dependency.get("subject") or "",
-                (state.get("query_frame") or {}).get("entities")
-                if isinstance(state.get("query_frame"), Mapping)
-                else [],
-                (state.get("query_frame") or {}).get("normalized_terms")
-                if isinstance(state.get("query_frame"), Mapping)
-                else [],
-                state.get("rewritten_query") or "",
-                state.get("query") or "",
-            ],
-            function_rows,
+        # Re-run the same provenance-aware boundary after semantic hydration.
+        # Re-reading a row by storage identity proves the row exists; it does
+        # not prove that a natural-language query selected its business ID.
+        _, post_hydration_binding = _apply_structured_entity_binding(
+            state, function_rows, terms_by_tool
         )
         if (
-            post_hydration_binding.get("bound")
-            and _binding_can_drive_cross_document_expansion(
-                state, post_hydration_binding
-            )
+            post_hydration_binding.get("retrieval_terms")
         ):
             structured_entity_binding = post_hydration_binding
             binding_summary = {
@@ -4887,8 +6367,10 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
                 ),
                 "basis": structured_entity_binding.get("basis") or "",
                 "query_terms": list(
-                    structured_entity_binding.get("terms") or []
+                    structured_entity_binding.get("retrieval_terms") or []
                 ),
+                "candidate_business_ids": list(structured_entity_binding.get("candidate_business_ids") or []),
+                "cross_document_authorized": bool(structured_entity_binding.get("cross_document_authorized")),
                 "stage": "postgres_hydration",
             }
             if hybrid_call is not None:
@@ -4901,11 +6383,20 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
                     collection_resolution.get("requested") and collection_rows
                 )
             ):
-                exact_fmeca_rows = _query_fmeca_by_business_ids(
-                    structured_entity_binding.get("business_ids") or [],
-                    max(limit, 8),
-                    direct_errors["fmeca_query"],
-                )
+                if _binding_can_drive_cross_document_expansion(state, structured_entity_binding):
+                    exact_fmeca_rows = _query_fmeca_by_business_ids(
+                        structured_entity_binding.get("business_ids") or [],
+                        max(limit, 8), direct_errors["fmeca_query"],
+                    )
+                else:
+                    # Recalled names/related IDs may fill a query window, but
+                    # must not use the exact-identity hydration path or mark
+                    # its rows as an authoritative identity selection.
+                    exact_fmeca_rows = _query_fmeca(
+                        terms_by_tool["fmeca_query"], max(limit, 8),
+                        direct_errors["fmeca_query"],
+                        entity_terms=structured_entity_binding.get("retrieval_terms") or [],
+                    )
                 existing_fmeca_ids = {
                     str(row.get("id") or row.get("code") or "")
                     for row in direct_rows["fmeca_query"]
@@ -4925,6 +6416,8 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
                             "business_ids": list(
                                 structured_entity_binding.get("business_ids") or []
                             ),
+                            "candidate_business_ids": list(structured_entity_binding.get("candidate_business_ids") or []),
+                            "cross_document_authorized": bool(structured_entity_binding.get("cross_document_authorized")),
                         }
                     for call in tool_calls:
                         if call.get("tool") != "fmeca_query":
@@ -4992,14 +6485,26 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
     if hybrid_call is not None and hydrated_record_counts:
         hybrid_call["postgres_hydrated"] = dict(hydrated_record_counts)
 
-    # A semantically recalled history row may carry explicit HMC/FMECA/MFL
-    # business IDs.  The row above has already been re-read by its exact
-    # PostgreSQL storage ID, so those stored references can safely authorize a
-    # bounded cross-document lookup.  This is intentionally not fuzzy entity
-    # resolution: only exact codes from ``semantic_id_hydration`` rows are
-    # used, and every linked result is read back from an active PG document.
+    # Select the history parent once and carry that decision to the answer
+    # stage.  Retrieval/rerank scores may identify presentation candidates,
+    # but only a verified identity can authorize the parent's stored exact
+    # HMC/FMECA/MFL links.
+    history_parent_selection = select_history_parent_cases(
+        state,
+        direct_rows["fault_history_query"],
+        require_explicit_target=True,
+    )
+    current_history_parent_binding = history_parent_binding(
+        history_parent_selection,
+        direct_rows["fault_history_query"],
+    )
+    history_binding_state = {
+        **state,
+        "history_parent_binding": current_history_parent_binding,
+    }
     history_reference_context = _semantic_history_reference_context(
-        direct_rows["fault_history_query"]
+        direct_rows["fault_history_query"],
+        state=history_binding_state,
     )
     history_linked_counts: Dict[str, int] = {}
     history_linked_specs = (
@@ -5099,6 +6604,21 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
     if hybrid_call is not None and history_linked_counts:
         hybrid_call["history_reference_hydrated"] = dict(history_linked_counts)
 
+    fta_query_binding: Dict[str, Any] = {}
+    if "fta_query" in (allowed_tools | structured_hydration_tools) and direct_rows["fta_query"]:
+        fta_candidates = direct_rows["fta_query"]
+        direct_rows["fta_query"], fta_query_binding = await bind_current_diagrams(
+            state, fta_candidates, doc_type="fta",
+        )
+        excluded_fta = [{**row, "query_binding_excluded": True} for row in fta_candidates
+                        if not diagram_in_scope(row, fta_query_binding, query=raw_user_query)]
+        evidence.extend(_direct_evidence("fta_query", excluded_fta))
+        for call in tool_calls:
+            if call.get("tool") == "fta_query":
+                call["current_model_scope"] = dict(fta_query_binding)
+                call["count"] = len(direct_rows["fta_query"])
+                call["results_preview"] = _preview_rows(direct_rows["fta_query"], ("title", "image_title"), ("title",))
+
     # A formally validated FTA carries explicit failure-mode IDs.  Once a
     # semantic locator has been re-hydrated, use those IDs to fetch FMECA truth
     # rows exactly.  Re-running a broad lexical FMECA query would throw away the
@@ -5136,6 +6656,36 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
                 )
                 break
 
+    # Semantic hydration, formal references and history links may all append
+    # valid PostgreSQL rows.  Before any of them becomes a graph seed or answer
+    # candidate, bind the user's *original* wording to at most one same-row
+    # structured FMECA identity.  The full row set remains in the evidence
+    # registry for audit; only a uniquely strongest match narrows reasoning.
+    if not (
+        collection_resolution.get("requested")
+        and collection_rows
+    ):
+        direct_rows["fmeca_query"], structured_record_binding = (
+            _bind_unique_fmeca_record_identity(
+                raw_user_query,
+                direct_rows["fmeca_query"],
+                typed_fields=typed_fmeca_fields,
+            )
+        )
+    focused_fmeca_rows = _fmeca_rows_for_bound_query(
+        direct_rows["fmeca_query"], structured_record_binding
+    )
+    for call in tool_calls:
+        if call.get("tool") != "fmeca_query":
+            continue
+        call["structured_record_binding"] = dict(structured_record_binding)
+        call["results_preview"] = _preview_rows(
+            focused_fmeca_rows,
+            ("code", "fault_mode"),
+            ("fault_mode", "fault_cause", "final_impact"),
+        )
+        break
+
     # 首轮结构化图查询可能因纯词法错配而空手而归：用户说“B路稳压偏低”，而
     # 权威行存储的是“B路稳压供电/B路输出欠压”，SQL 词法召回无法命中。语义
     # 召回后按存储身份水合出的显式业务 ID（绑定对象 FUNC-121/MOD-PWR-PSUB，
@@ -5147,7 +6697,7 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
         and topology_dependency.get("required") is True
     ):
         post_hydration_identity_terms = _shared_fmeca_identity_terms(
-            direct_rows["fmeca_query"],
+            focused_fmeca_rows,
             structured_business_ids=[
                 *(structured_entity_binding.get("business_ids") or []),
                 *(topology_dependency.get("canonical_business_ids") or []),
@@ -5165,6 +6715,7 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
         ):
             if (
                 diagram_tool not in (allowed_tools | structured_hydration_tools)
+                or (diagram_tool == "fta_query" and fta_query_binding.get("required"))
                 or direct_rows[diagram_tool]
                 or not post_hydration_identity_terms
             ):
@@ -5188,6 +6739,11 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
                 max(4, limit // 2),
                 direct_errors[diagram_tool],
                 entity_terms=post_hydration_identity_terms,
+                query_frame=(
+                    state.get("query_frame")
+                    if isinstance(state.get("query_frame"), Mapping)
+                    else None
+                ),
             )
             if not backfilled_rows:
                 continue
@@ -5229,6 +6785,131 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
                     )
                 )
 
+    if direct_rows["fta_query"] and not fta_query_binding:
+        direct_rows["fta_query"], fta_query_binding = await bind_current_diagrams(
+            state, direct_rows["fta_query"], doc_type="fta",
+        )
+
+    if rbd_binding_required:
+        # Semantic locator hydration and the topology identity retry both run
+        # after the first direct query.  Re-apply the explicit-object boundary
+        # here so neither path can reintroduce a neighbouring RBD model.
+        final_rbd_business_ids = (
+            list(structured_entity_binding.get("business_ids") or [])
+            if structured_entity_binding.get("cross_document_authorized") is True
+            and str(structured_entity_binding.get("authorization_basis") or "")
+            == "current_query_business_id"
+            else explicit_rbd_business_ids
+        )
+        final_rbd_business_ids = [
+            value
+            for value in final_rbd_business_ids
+            if literal_identity_in_query(raw_user_query, value)
+        ]
+        before_count = len(direct_rows["rbd_query"])
+        current_rbd_selection = None
+        # Selected citations bound the re-read universe, not the number of
+        # models requested now. A continuation can ask for several results
+        # without being classified as a comparison. Resolve that meaning
+        # against the current rows; never authorize the whole anchor set just
+        # because it contains multiple models.
+        needs_semantic_selection = not active_rbd_anchor_selectors or (
+            len(active_rbd_anchor_selectors) > 1 and not allow_multiple_rbd
+        )
+        if (
+            not explicit_rbd_request_identities
+            and not final_rbd_business_ids
+            and needs_semantic_selection
+        ):
+            current_rbd_selection = await select_current_models(
+                state, direct_rows["rbd_query"], doc_type="rbd"
+            )
+        direct_rows["rbd_query"], rbd_query_binding = _bind_requested_rbd_rows(
+            direct_rows["rbd_query"],
+            requested=True,
+            raw_user_query=raw_user_query,
+            explicit_rbd_identities=explicit_rbd_request_identities,
+            bound_business_ids=final_rbd_business_ids,
+            anchor_identities=stable_rbd_identities,
+            anchor_selectors=active_rbd_anchor_selectors,
+            allow_multiple=allow_multiple_rbd,
+            current_selection=current_rbd_selection,
+        )
+        filter_note = {
+            "contract_version": RBD_AUTHORITY_CONTRACT_VERSION,
+            "basis": rbd_query_binding.get("basis") or "unresolved",
+            "explicit_rbd_ids": list(explicit_rbd_request_identities),
+            "business_ids": list(final_rbd_business_ids),
+            "anchor_identities": list(stable_rbd_identities),
+            "removed_count": before_count - len(direct_rows["rbd_query"]),
+            "binding": dict(rbd_query_binding),
+        }
+        for call in tool_calls:
+            if call.get("tool") != "rbd_query":
+                continue
+            call["count"] = len(direct_rows["rbd_query"])
+            call["explicit_subject_filter"] = dict(filter_note)
+            call["results_preview"] = _preview_rows(
+                direct_rows["rbd_query"],
+                ("title", "image_title", "diagram_id"),
+                ("title", "image_title"),
+            )
+            break
+
+    # Exact labels are accepted only with the machine selector attached by the
+    # corresponding unique PostgreSQL read.  A hydrated/forged label cannot
+    # upgrade a semantic candidate.
+    for row in direct_rows["hmc_query"]:
+        match_type = str(row.get("match_type") or "")
+        component_selector = row.get("hmc_component_selector")
+        if (
+            match_type == "exact_components"
+            and not (
+                isinstance(component_selector, Mapping)
+                and component_selector.get("unique") is True
+            )
+        ) or (
+            match_type == "exact_conversation_reference"
+            and not isinstance(row.get("hmc_anchor_selector"), Mapping)
+        ):
+            row["match_type"] = "keyword"
+
+    if "hmc_query" in allowed_tools and "mfl_query" in allowed_tools:
+        requested_hmc_components = _extract_hmc(raw_user_query)
+        if not requested_hmc_components:
+            requested_hmc_components = typed_hmc_components
+        if not requested_hmc_components and conversation_hmc_selectors:
+            selector = conversation_hmc_selectors[0]
+            if selector.get("kind") == "components":
+                requested_hmc_components = {
+                    key: str(selector.get(key) or "")
+                    for key in ("lcn", "hamc", "hsc")
+                }
+                requested_hmc_components["hmc_code"] = "".join(
+                    requested_hmc_components[key]
+                    for key in ("lcn", "hamc", "hsc")
+                )
+        direct_rows["mfl_query"], hmc_mfl_binding = _bind_mfl_rows_to_hmc(
+            direct_rows["hmc_query"],
+            direct_rows["mfl_query"],
+            requested_components=requested_hmc_components,
+        )
+        if hmc_mfl_binding.get("required") is True:
+            eligible_mfl_rows = _mfl_rows_for_hmc_binding(
+                direct_rows["mfl_query"], hmc_mfl_binding
+            )
+            for call in tool_calls:
+                if call.get("tool") != "mfl_query":
+                    continue
+                call["hmc_relation_binding"] = dict(hmc_mfl_binding)
+                call["answer_eligible_count"] = len(eligible_mfl_rows)
+                call["results_preview"] = _preview_rows(
+                    eligible_mfl_rows,
+                    ("mfl_code", "api_name"),
+                    ("module_fault", "subcircuit_fault", "api_usage"),
+                )
+                break
+
     # Attach applicability/version and produce evidence only after semantic
     # locators have been hydrated into PostgreSQL truth rows.
     for tool, rows in list(direct_rows.items()):
@@ -5245,10 +6926,12 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
                 make_tool_result(
                     tool=tool,
                     status=_tool_status(direct_rows[tool], direct_errors[tool]),
-                    params={"terms": terms_by_tool[tool], "limit": limit},
+                    params={"terms": terms_by_tool[tool], "limit": limit,
+                            "conversation_anchor_selectors": anchor_selectors.get(tool, [])},
                     data={
                         "count": len(direct_rows[tool]),
                         "semantic_hydrated_count": semantic_hydrated_count,
+                        "anchor_reads": anchor_reads.get(tool, []),
                     },
                     evidence_ids=[item["evidence_id"] for item in current_evidence],
                     backend="postgres",
@@ -5257,18 +6940,26 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
             )
 
     hmc_rows = direct_rows["hmc_query"]
-    fmeca_rows = direct_rows["fmeca_query"]
+    fmeca_rows = _fmeca_rows_for_bound_query(
+        direct_rows["fmeca_query"], structured_record_binding
+    )
     fta_rows = direct_rows["fta_query"]
     rbd_rows = direct_rows["rbd_query"]
-    mfl_rows = direct_rows["mfl_query"]
+    mfl_rows = _mfl_rows_for_hmc_binding(
+        direct_rows["mfl_query"], hmc_mfl_binding
+    )
     history_rows = direct_rows["fault_history_query"]
     history_hybrid = [
         row for row in hybrid_rows
         if _search_doc_type(row) == "fault_history"
     ]
 
-    candidates = _candidate_faults(hmc_rows, fmeca_rows, hybrid_rows, evidence)
-    exact_hmc = any(row.get("match_type") == "exact_code" for row in hmc_rows)
+    ranking_weights = candidate_ranking_weights()
+    candidates = _candidate_faults(hmc_rows, fmeca_rows, hybrid_rows, evidence, weights=ranking_weights)
+    exact_hmc = any(
+        row.get("match_type") in {"exact_code", "exact_conversation_reference"}
+        for row in hmc_rows
+    )
     component_hmc = any(row.get("match_type") == "exact_components" for row in hmc_rows)
     source_count = sum(
         bool(rows)
@@ -5285,9 +6976,7 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
     if exact_hmc:
         support = 0.95
     elif component_hmc:
-        # LCN+HSC is an authoritative structured match, but it is weaker than
-        # a complete triplet and may legitimately return multiple HAMC rows.
-        support = 0.84 if len(hmc_rows) == 1 else 0.72
+        support = 0.84
     elif candidates and source_count >= 4:
         support = 0.82
     elif candidates and source_count >= 2:
@@ -5297,36 +6986,161 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
     else:
         support = 0.2
 
-    clarification = ""
-    # Candidate narrowing questions belong only to actual diagnosis/code lookup.
-    # Knowledge explanations such as “电容老化会有什么影响” may still use the
-    # same evidence pipeline, but candidate scores are internal retrieval aids and
-    # must not turn a complete question into a generic diagnostic questionnaire.
-    if diagnostic_narrowing:
-        if component_hmc and len(hmc_rows) > 1:
-            clarification = (
-                "LCN 与 HSC 在 HMC 权威记录中命中多条不同 HAMC。请补充 HAMC，"
-                "或结合原始告警文字和故障阶段区分这些候选。"
+    clarification_reasons: List[Dict[str, Any]] = []
+    if structured_record_binding.get("ambiguous") is True:
+        identity = make_clarification_identity(
+            doc_type="fmeca",
+            record_ids=structured_record_binding.get("record_ids") or [],
+            fields={"binding_basis": structured_record_binding.get("basis") or ""},
+        )
+        unresolved = make_missing_input_requirement(
+            kind="identity_slot",
+            slot="fmeca_record_identity",
+            source_kind="binding",
+            source_name="structured_record_binding",
+            identity=identity,
+        )
+        missing_input_requirements = unique_contract_items(
+            missing_input_requirements, [unresolved]
+        )
+        unresolved_identity_slots = unique_contract_items(
+            unresolved_identity_slots, [unresolved]
+        )
+        clarification_reasons.append(
+            make_clarification_reason(
+                kind="ambiguous_identity",
+                source_kind="binding",
+                source_name="structured_record_binding",
+                identity=identity,
+                blocked_claims=["exact_record_identity"],
             )
-        elif support < 0.65:
-            clarification = (
-                "当前信息不足以唯一定位故障。请补充：①故障发生阶段（上电/初始化/运行中）；"
-                "②原始告警文字或 HMC；③是否伴随重启、过温、通信中断或显示异常；"
-                "④重新上电后是否恢复。"
+        )
+
+    # A labelled LCN+HSC parse proves exactly which identity component is
+    # absent.  It may become a closed slot only when the authoritative lookup
+    # remains ambiguous; a single source row resolves it without guessing.
+    supplied_hmc = _extract_hmc(raw_user_query) or typed_hmc_components
+    component_record_ids = [
+        str(row.get("hmc_code") or "").strip()
+        for row in hmc_rows
+        if row.get("match_type") in {"exact_components", "ambiguous_components"}
+        and str(row.get("hmc_code") or "").strip()
+    ]
+    if supplied_hmc and not supplied_hmc.get("hamc") and len(component_record_ids) > 1:
+        identity = make_clarification_identity(
+            doc_type="hmc",
+            record_ids=component_record_ids,
+            fields={
+                "lcn": supplied_hmc.get("lcn") or "",
+                "hsc": supplied_hmc.get("hsc") or "",
+            },
+        )
+        unresolved = make_missing_input_requirement(
+            kind="identity_slot",
+            slot="hamc",
+            source_kind="tool_result",
+            source_name="hmc_query",
+            identity=identity,
+        )
+        missing_input_requirements = unique_contract_items(
+            missing_input_requirements, [unresolved]
+        )
+        unresolved_identity_slots = unique_contract_items(
+            unresolved_identity_slots, [unresolved]
+        )
+        clarification_reasons.append(
+            make_clarification_reason(
+                kind="ambiguous_identity",
+                source_kind="tool_result",
+                source_name="hmc_query",
+                identity=identity,
+                blocked_claims=["exact_hmc_fact"],
             )
-        elif (
-            len(candidates) == 1
-            and not candidates[0].get("structured_hmc_match")
-        ):
-            clarification = (
-                "当前只有一个非精确关键词候选，仍不足以收敛诊断。请补充原始告警或完整 HMC、"
-                "故障发生阶段、可复现条件及伴随现象。"
+        )
+
+    if (
+        isinstance(rbd_query_binding, Mapping)
+        and rbd_query_binding.get("required") is True
+        and rbd_query_binding.get("bound") is not True
+    ):
+        identity = make_clarification_identity(
+            doc_type="rbd",
+            record_ids=(
+                rbd_query_binding.get("candidate_record_ids")
+                or rbd_query_binding.get("record_ids")
+                or []
+            ),
+            fields={"binding_basis": rbd_query_binding.get("basis") or ""},
+        )
+        unresolved = make_missing_input_requirement(
+            kind="identity_slot",
+            slot="rbd_model_identity",
+            source_kind="binding",
+            source_name="rbd_query_binding",
+            identity=identity,
+        )
+        missing_input_requirements = unique_contract_items(
+            missing_input_requirements, [unresolved]
+        )
+        unresolved_identity_slots = unique_contract_items(
+            unresolved_identity_slots, [unresolved]
+        )
+        clarification_reasons.append(
+            make_clarification_reason(
+                kind=(
+                    "ambiguous_identity"
+                    if rbd_query_binding.get("ambiguous") is True
+                    else "unresolved_identity"
+                ),
+                source_kind="binding",
+                source_name="rbd_query_binding",
+                identity=identity,
+                blocked_claims=["rbd_model_identity", "formal_calculation"],
             )
-        elif len(candidates) >= 2 and candidates[0]["score"] - candidates[1]["score"] < 0.12:
-            clarification = (
-                "前两项候选接近，请补充故障发生阶段、可复现条件以及是否存在明确告警码，"
-                "以区分相邻故障模式。"
+        )
+
+    # Candidate counts and retrieval scores may restrict claim strength, but
+    # cannot select a domain-specific follow-up dimension.  When there is no
+    # concrete machine slot, expose only a generic fallback marker and let the
+    # answer model formulate a useful question from the full evidence context.
+    weak_single_candidate = bool(
+        len(candidates) == 1
+        and not candidates[0].get("structured_hmc_match")
+    )
+    close_candidates = bool(
+        len(candidates) >= 2
+        and candidates[0]["score"] - candidates[1]["score"] < 0.12
+    )
+    insufficient_evidence = bool(
+        diagnostic_narrowing
+        and (support < 0.65 or weak_single_candidate or close_candidates)
+    )
+    if insufficient_evidence:
+        supporting_ids = [
+            evidence_id
+            for candidate in candidates[:3]
+            for evidence_id in (candidate.get("supporting_evidence_ids") or [])
+        ]
+        clarification_reasons.append(
+            make_clarification_reason(
+                kind="insufficient_evidence",
+                source_kind="evidence_synthesis",
+                source_name="candidate_support",
+                identity=make_clarification_identity(
+                    fields={
+                        "candidate_count": len(candidates),
+                        "diagnostic_support": round(support, 3),
+                    }
+                ),
+                blocked_claims=["unique_diagnosis"],
+                evidence_ids=supporting_ids,
             )
+        )
+
+    clarification_reasons = unique_contract_items(clarification_reasons)
+    clarification_fallback = make_clarification_fallback(
+        required=bool(insufficient_evidence and not missing_input_requirements)
+    )
 
     context = _format_domain_context(
         query=query,
@@ -5339,7 +7153,6 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
         history_rows=history_rows,
         hybrid_rows=hybrid_rows,
         confidence=support,
-        clarification=clarification,
     )
 
     domain_results: List[Dict[str, Any]] = []
@@ -5364,7 +7177,7 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
                 "content": f"{row.get('fault_desc', '')}\n维修方法：{row.get('repair_method', '')}",
                 "score": (
                     1.0
-                    if row.get("match_type") == "exact_code"
+                    if row.get("match_type") in _STRUCTURED_HMC_MATCH_TYPES
                     else (0.9 if row.get("match_type") == "exact_components" else 0.75)
                 ),
             }
@@ -5385,15 +7198,22 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
                     for c in candidates
                 ],
                 evidence_support=round(support, 3),
-                clarification_required=bool(clarification),
+                clarification_required=bool(
+                    missing_input_requirements
+                    or clarification_fallback.get("required") is True
+                ),
             )
         )
     tool_results.append(
         make_tool_result(
             tool="evidence_synthesis",
             status="ok" if candidates else "empty",
-            params={"candidate_limit": 8},
-            data={"candidate_count": len(candidates), "diagnostic_support": round(support, 3)},
+            params={"candidate_limit": 8, "ranking_profile": ranking_weights.public_dict()},
+            data={
+                "candidate_count": len(candidates),
+                "diagnostic_support": round(support, 3),
+                "clarification_reasons": clarification_reasons,
+            },
             evidence_ids=[item["evidence_id"] for item in evidence],
             backend="local_deterministic",
         )
@@ -5402,6 +7222,11 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
 
     seed_bindings = _graph_seed_bindings(
         function_rows=function_rows,
+        function_business_ids=(
+            structured_entity_binding.get("business_ids") or []
+            if structured_entity_binding.get("cross_document_authorized") is True
+            else []
+        ),
         hmc_rows=hmc_rows,
         fmeca_rows=fmeca_rows,
         fta_rows=fta_rows,
@@ -5409,10 +7234,25 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
         mfl_rows=mfl_rows,
         history_rows=history_rows,
     )
+    graph_request_bindings = seed_bindings
+    if (
+        structured_record_binding.get("ambiguous") is True
+        or structured_record_binding.get("relevance_only") is True
+    ):
+        # Ambiguous identities and partial-field relevance remain useful audit
+        # candidates, but neither may authorize a graph expansion.
+        # Independently bound Function Locator/HMC/diagram seeds remain
+        # eligible.
+        graph_request_bindings = [
+            item
+            for item in seed_bindings
+            if str(item.get("source_tool") or "") != "fmeca_query"
+        ]
     enriched_topology_dependency = _enriched_topology_dependency(
         topology_dependency,
         structured_entity_binding,
         fmeca_rbd_identity_terms,
+        raw_user_query=raw_user_query,
     )
 
     return {
@@ -5421,7 +7261,11 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
         "diagnostic_support": round(support, 3),
         # 旧前端字段仅兼容展示；语义已经改为“证据支持度”，不是故障概率。
         "diagnostic_confidence": round(support, 3),
-        "clarification_question": clarification,
+        "clarification_question": "",
+        "missing_input_requirements": missing_input_requirements,
+        "unresolved_identity_slots": unresolved_identity_slots,
+        "clarification_reasons": clarification_reasons,
+        "clarification_fallback": clarification_fallback,
         "domain_results": domain_results,
         # 兼容旧 Answer/引用逻辑：把跨源结果同时写入 vector_results。
         "vector_results": domain_results,
@@ -5430,9 +7274,17 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
         "evidence_registry": evidence,
         "search_locator_hits": locator_handoffs,
         "graph_seed_bindings": seed_bindings,
-        "graph_traversal_request": _graph_request(seed_bindings, allowed_tools),
+        "graph_traversal_request": _graph_request(
+            graph_request_bindings, allowed_tools
+        ),
         "collection_resolution": collection_resolution,
         "topology_dependency": enriched_topology_dependency,
+        "structured_entity_binding": dict(structured_entity_binding),
+        "structured_record_binding": dict(structured_record_binding),
+        "history_parent_binding": dict(current_history_parent_binding),
+        "hmc_mfl_binding": dict(hmc_mfl_binding),
+        "rbd_query_binding": dict(rbd_query_binding),
+        "fta_query_binding": dict(fta_query_binding),
         **(
             {"query_frame": architecture_collection_frame}
             if architecture_collection_frame is not None

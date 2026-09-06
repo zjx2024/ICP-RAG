@@ -14,6 +14,7 @@ import re
 from typing import Any, Dict, Mapping, Optional
 
 from backend.agent.model_role_service import agent_model_role_service
+from backend.agent.model_runtime_policy import bounded_model_transport
 from backend.core.llm_service import llm_service
 
 logger = logging.getLogger(__name__)
@@ -52,121 +53,8 @@ _ROUTE_ALIASES = {
     "clarify": SCOPE_CLARIFICATION,
 }
 
-# 这里只识别用户明确点名的七类产品资料。它不是检索词扩展表，也不会
-# 决定后续调用什么工具；唯一用途是区分“补查某类资料”和“询问智能体
-# 是否具备该能力”，防止入口路由在两者之间短路到能力介绍。
-_DOCUMENT_SOURCE_ALIASES = (
-    (
-        "function_locator",
-        (
-            "function locator",
-            "function-locator",
-            "系统架构与功能说明",
-            "系统架构文档",
-            "功能说明文档",
-            "架构文档",
-        ),
-    ),
-    ("hmc", ("hmc", "hmc故障代码手册", "故障代码手册")),
-    ("fta", ("fta", "fta故障树分析", "故障树分析", "故障树文档")),
-    (
-        "rbd",
-        ("rbd", "rbd可靠性框图分析", "可靠性框图分析", "可靠性框图文档", "可靠性框图"),
-    ),
-    (
-        "fmeca",
-        ("fmeca", "fmeca故障模式影响及危害性分析", "故障模式影响及危害性分析"),
-    ),
-    ("mfl", ("mfl", "mfl维修故障清单", "维修故障清单")),
-    (
-        "fault_history",
-        ("故障历史查询文档", "故障历史文档", "故障历史", "历史排故案例"),
-    ),
-)
-
-_KNOWLEDGE_TURN_PATTERN = re.compile(
-    r"(?i)(?:"
-    r"\b(?:FUNC|MOD|SUB|LCN|HAMC|HSC|HMC|FM|FTA|RBD|MFL)[-_ *A-Z0-9]*\b"
-    r"|系统架构|子系统|模块|部件|接口|通道|电源|电容|可靠性"
-    r"|故障|异常|损坏|失效|告警|影响|原因|维修|修复|重启|复位"
-    r")"
-)
-
-
 def _compact_text(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or "")).casefold()
-
-
-def _mentioned_document_sources(query: str) -> tuple[str, ...]:
-    compact = _compact_text(query)
-    found = []
-    for doc_type, aliases in _DOCUMENT_SOURCE_ALIASES:
-        if any(_compact_text(alias) in compact for alias in aliases):
-            found.append(doc_type)
-    return tuple(found)
-
-
-def _is_pure_source_capability_question(query: str) -> bool:
-    """Return whether the user only asks what sources the agent *can* query.
-
-    The check is deliberately narrow. Content-bearing requests such as
-    “能查一下 RBD 里的 A 路影响吗” retain the words after the source name and
-    therefore do not satisfy this contract.
-    """
-
-    compact = _compact_text(query).strip("，。！？?!")
-    prefix = re.match(
-        r"^(?:你|这个智能体|该智能体|本系统|系统)?"
-        r"(?:是否能|能不能|能否|能|是否可以|可不可以|可以|是否支持|支持|会不会|会)"
-        r"(?:查一下|查|查询|检索|读取|处理|使用|看)?",
-        compact,
-    )
-    if prefix is None:
-        return False
-    remainder = compact[prefix.end() :].strip("，。！？?!吗么呢")
-    if re.fullmatch(r"(?:哪些|什么|这几类|这些)?(?:资料|文档|知识|知识库内容)", remainder):
-        return True
-    if not _mentioned_document_sources(remainder):
-        return False
-    for _, aliases in _DOCUMENT_SOURCE_ALIASES:
-        for alias in sorted(aliases, key=len, reverse=True):
-            remainder = remainder.replace(_compact_text(alias), "")
-    remainder = re.sub(r"(?:文档|资料|数据|内容|和|及|与|或|、|,|，|/)", "", remainder)
-    return not remainder
-
-
-def _source_followup_kind(query: str) -> str:
-    """Classify an explicit named-source retrieval correction, if present."""
-
-    if not _mentioned_document_sources(query) or _is_pure_source_capability_question(query):
-        return ""
-    compact = _compact_text(query)
-    if re.search(
-        r"(?:请|麻烦)?(?:你)?(?:补查|补充查询|补充检索|追加查询|追加检索|"
-        r"重新查询|重新检索|再查|再查询|再检索|一并查询|一并检索)",
-        compact,
-    ):
-        return "supplement"
-    if re.search(
-        r"(?:请|麻烦)(?:你)?(?:查|查询|检索|参考|结合|使用|用)"
-        r"|(?:补充|追加).*(?:依据|证据|来源|资料|文档)"
-        r"|(?:结合|参考|使用|用).*(?:再|重新|补充)(?:回答|分析|判断)",
-        compact,
-    ):
-        return "supplement"
-    if re.search(
-        r"(?:为什么|为何|怎么|咋)(?:还|却|就|都)?(?:没|没有|不曾|不)"
-        r"(?:去)?(?:查|查询|检索|看|参考|用|使用|结合|引用)",
-        compact,
-    ):
-        return "omission"
-    if re.search(
-        r"(?:没|没有|不)(?:去)?(?:查|查询|检索|看|参考|用|使用|结合|引用)"
-        r".*(?:吗|呢|[?？])$",
-        compact,
-    ):
-        return "omission"
-    return ""
 
 
 def _has_prior_knowledge_turn(messages: Any, current_query: str) -> bool:
@@ -197,9 +85,6 @@ def _has_prior_knowledge_turn(messages: Any, current_query: str) -> bool:
     if previous_user_index < 0:
         return False
 
-    previous_query = str(items[previous_user_index].get("content") or "")
-    if _is_pure_source_capability_question(previous_query):
-        return False
     for item in items[previous_user_index + 1 :]:
         if str(item.get("scope_route") or "") == SCOPE_KNOWLEDGE_BASE:
             return True
@@ -214,55 +99,9 @@ def _has_prior_knowledge_turn(messages: Any, current_query: str) -> bool:
             continue
         if item.get("conversation_anchors"):
             return True
-        if re.search(r"\[\^\d+\]", str(item.get("content") or "")):
+        if item.get("answer_delivery_manifest") or item.get("citations"):
             return True
-
-    return bool(
-        _mentioned_document_sources(previous_query)
-        or _KNOWLEDGE_TURN_PATTERN.search(previous_query)
-    )
-
-
-def _is_named_source_followup(query: str, messages: Any) -> bool:
-    return bool(
-        _source_followup_kind(query)
-        and _has_prior_knowledge_turn(messages, query)
-    )
-
-
-# 询问点名资料“本身能证明什么/不能替代什么”是对该类资料内容边界的知识
-# 问题，需要检索该类资料后回答。主语是“你/智能体”的能力问法不在此列。
-_SOURCE_BOUNDARY_QUESTION_PATTERN = re.compile(
-    r"(?:能证明什么|不能证明什么|证明什么|能替代什么|不能替代什么|"
-    r"能不能直接给出|能否直接给出|能直接给出|能直接给|不能直接给|"
-    r"能不能替代|能否替代|能替代|不能替代|能说明什么|不能说明什么)"
-)
-
-# 上一轮知识/诊断查询后，询问“继续排查还缺什么信息”是对该轮证据边界
-# 的自然延续；路由到能力介绍会打断诊断并丢掉会话上下文。
-_CONTINUE_INVESTIGATION_PATTERN = re.compile(
-    r"(?:为了继续|继续查|继续排查|继续定位|接着查|接着排查|往下查|"
-    r"接下来(?:要|需要)?(?:查|排查|定位|做什么)|"
-    r"(?:最少|至少)?还需要(?:我)?(?:提供|补充|给出)(?:什么|哪些)(?:原始)?"
-    r"(?:信息|资料|输入|线索)|"
-    r"还(?:缺|需要)(?:什么|哪些)(?:信息|资料))"
-)
-
-
-def _is_named_source_boundary_question(query: str) -> bool:
-    compact = _compact_text(query)
-    if re.match(r"^(?:你|这个智能体|该智能体|本系统|系统|我)", compact):
-        return False
-    if not _mentioned_document_sources(query):
-        return False
-    return bool(_SOURCE_BOUNDARY_QUESTION_PATTERN.search(compact))
-
-
-def _is_continue_investigation_followup(query: str, messages: Any) -> bool:
-    compact = _compact_text(query)
-    if not _CONTINUE_INVESTIGATION_PATTERN.search(compact):
-        return False
-    return _has_prior_knowledge_turn(messages, query)
+    return False
 
 SCOPE_ROUTER_PROMPT = """你是 ICP 航空电子知识智能体的入口路由器。只判断处理路径，不回答问题，不规划工具。
 
@@ -384,7 +223,8 @@ def _prepare_scope_model(model: Optional[Mapping[str, Any]]) -> Optional[Dict[st
         prepared["reasoning"] = False
         prepared["temperature"] = 0.0
         prepared["format"] = "json"
-    return prepared
+    prepared["stream"] = False
+    return bounded_model_transport(prepared, SCOPE_ROUTER_TIMEOUT_SECONDS)
 
 
 def _model_for_state(state: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
@@ -418,62 +258,13 @@ async def scope_router_node(state: Mapping[str, Any], config=None) -> Dict[str, 
             "tools_plan": [],
         }
 
-    # “补查/漏查某类资料”是上一轮知识任务的继续，不是询问智能体能力。
-    # 该确定性复核只决定入口路径；具体查哪些记录仍由 plan 授权。
-    if _is_named_source_followup(query, state.get("messages")):
-        return {
-            "scope_route": SCOPE_KNOWLEDGE_BASE,
-            "scope_route_source": "deterministic_source_followup",
-            "scope_route_reason": "用户承接上一轮知识问题，要求补查明确点名的工程资料",
-            "scope_confidence": 1.0,
-            "clarification_question": "",
-        }
-
-    # 询问点名资料自身“能证明什么、不能替代什么”问的是资料内容边界，
-    # 属于知识问题；分类模型容易把“能不能”误读成能力询问，这里确定性
-    # 纠正。主语为“你/智能体”的问法仍由能力路径处理。
-    if _is_named_source_boundary_question(query):
-        return {
-            "scope_route": SCOPE_KNOWLEDGE_BASE,
-            "scope_route_source": "deterministic_source_boundary",
-            "scope_route_reason": "用户询问点名工程资料自身的证明边界，需检索该类资料回答",
-            "scope_confidence": 1.0,
-            "clarification_question": "",
-        }
-
-    # 上一轮知识/诊断查询后询问“继续查还需要提供什么”，是对本轮证据
-    # 边界的追问，必须留在知识流程内，不能短路到能力自我介绍。
-    if _is_continue_investigation_followup(query, state.get("messages")):
-        return {
-            "scope_route": SCOPE_KNOWLEDGE_BASE,
-            "scope_route_source": "deterministic_continue_investigation",
-            "scope_route_reason": "用户承接上一轮诊断，询问继续排查所需的补充信息",
-            "scope_confidence": 1.0,
-            "clarification_question": "",
-        }
-
-    # 仅覆盖形态非常明确的能力问法，避免模型把“能查某记录吗”一类实际
-    # 知识请求误送检索；带有来源内部对象或问题维度的请求不会命中这里。
-    if _is_pure_source_capability_question(query):
-        return {
-            "scope_route": SCOPE_AGENT_CAPABILITY,
-            "scope_route_source": "deterministic_source_capability",
-            "scope_route_reason": "用户只询问可查询的资料范围",
-            "scope_confidence": 1.0,
-            "clarification_question": "",
-            "authorized_tools": [],
-            "allowed_tools": [],
-            "tools_plan": [],
-            "calculation_requests": [],
-            "relation_expansion": {"needed": False, "reason": ""},
-        }
-
     prompt = SCOPE_ROUTER_PROMPT.format(
         query=query,
         history=_format_history(state.get("messages")),
     )
     parsed: Optional[Dict[str, Any]] = None
     failure_reason = ""
+    failure_kind = ""
     try:
         response = await asyncio.wait_for(
             asyncio.to_thread(
@@ -486,23 +277,32 @@ async def scope_router_node(state: Mapping[str, Any], config=None) -> Dict[str, 
         parsed = parse_scope_response(response)
         if parsed is None:
             failure_reason = "范围分类模型没有返回有效 JSON"
+            failure_kind = "invalid_output"
     except asyncio.TimeoutError:
         failure_reason = f"范围分类超过 {SCOPE_ROUTER_TIMEOUT_SECONDS:g} 秒时间预算"
+        failure_kind = "timeout"
     except Exception as exc:
         failure_reason = f"范围分类模型不可用：{exc}"
+        failure_kind = "model_error"
 
     if parsed is None:
         logger.warning(failure_reason)
+        try:
+            from backend.agent.tracing import record_degradation
+            record_degradation("scope_router", detail=failure_kind)
+        except Exception as exc:
+            logger.debug("Unable to trace scope fallback: %s", type(exc).__name__)
         # 分类器不可用时不能把未知请求直接送入七类资料宽召回。让用户
         # 重试或明确对象，比错误调用领域工具更安全。
         return {
             "scope_route": SCOPE_CLARIFICATION,
             "scope_route_source": "safe_fallback",
+            "scope_failure_kind": failure_kind,
             "scope_route_reason": failure_reason,
             "scope_confidence": 0.0,
             "clarification_question": (
-                "我暂时无法确认这个问题是否属于当前知识库范围。"
-                "请补充相关系统、模块、FUNC/HMC 编号或故障现象后重试。"
+                "入口模型暂时未能完成问题分类，本轮尚未查询工程资料。"
+                "请稍后重试；这不表示你的问题缺少对象或不在知识库范围内。"
             ),
             "authorized_tools": [],
             "allowed_tools": [],
@@ -513,6 +313,7 @@ async def scope_router_node(state: Mapping[str, Any], config=None) -> Dict[str, 
     update: Dict[str, Any] = {
         "scope_route": route,
         "scope_route_source": "model",
+        "scope_failure_kind": "",
         "scope_route_reason": parsed["reason"],
         "scope_confidence": parsed["confidence"],
         "clarification_question": parsed["clarification_question"],
@@ -523,6 +324,7 @@ async def scope_router_node(state: Mapping[str, Any], config=None) -> Dict[str, 
                 "authorized_tools": [],
                 "allowed_tools": [],
                 "tools_plan": [],
+                "calculation_authorizations": [],
                 "calculation_requests": [],
                 "relation_expansion": {"needed": False, "reason": ""},
             }

@@ -32,6 +32,84 @@ def _draft(record_type, values, business_id, row):
 
 
 class FunctionArchitectureParserIntegrationTests(unittest.TestCase):
+    def test_vision_failure_persists_empty_candidate_for_terminal_quarantine(self):
+        parsed = {
+            "blocks": {
+                "architecture": {
+                    "title": "总体架构",
+                    "text": "",
+                    "tables": [],
+                    "images": [
+                        {
+                            "index": 1,
+                            "title": "架构图",
+                            "storage_key": "images/doc-vision-failed/architecture.png",
+                            "image_url": "/images/doc-vision-failed/architecture.png",
+                            "content_type": "image/png",
+                            "source_ref": "architecture.docx#image=1",
+                        }
+                    ],
+                }
+            }
+        }
+        postgres = MagicMock()
+        artifact = MagicMock()
+        artifact.stat.return_value = SimpleNamespace(sha256="c" * 64)
+        diagrams = MagicMock()
+        diagrams.upsert_diagram.return_value = {"diagram_id": "diagram-failed"}
+        diagrams.upsert_candidate.return_value = {"candidate_id": "candidate-failed"}
+        diagrams.create_or_reuse_revision.return_value = {
+            "review_status": "pending"
+        }
+        diagrams.archive_missing_diagrams.return_value = {}
+        docx_parser = MagicMock()
+        docx_parser.process.return_value = parsed
+
+        with tempfile.TemporaryDirectory() as directory:
+            source_path = Path(directory) / "architecture.docx"
+            source_path.touch()
+            image_path = Path(directory) / "architecture.png"
+            image_path.write_bytes(b"mock-image")
+            artifact.materialize.return_value = nullcontext(str(image_path))
+            parser = architecture.FunctionArchitectureParser()
+            with (
+                patch.object(architecture, "postgres_client", postgres),
+                patch.object(architecture, "artifact_store", artifact),
+                patch.object(architecture, "diagram_repository", diagrams),
+                patch.object(architecture, "DocumentParser", return_value=docx_parser),
+                patch.object(
+                    architecture,
+                    "analyze_icp_diagram",
+                    side_effect=RuntimeError("vision unavailable"),
+                ),
+                patch.object(parser, "_safe_index", return_value=0),
+            ):
+                result = parser._process_images(
+                    str(source_path),
+                    ParseContext(
+                        doc_id="doc-vision-failed",
+                        doc_type="function_locator",
+                        file_name="architecture.docx",
+                    ),
+                    [],
+                )
+
+        failed_candidate = diagrams.upsert_candidate.call_args.kwargs
+        self.assertEqual("failed", failed_candidate["extraction_status"])
+        self.assertEqual([], failed_candidate["raw_graph"]["vertices"])
+        self.assertEqual([], failed_candidate["raw_graph"]["edges"])
+        self.assertIn(
+            "vision unavailable",
+            failed_candidate["source_locator"]["extraction_error"],
+        )
+        self.assertEqual(
+            ["candidate-failed"],
+            diagrams.create_or_reuse_revision.call_args.kwargs["candidate_ids"],
+        )
+        self.assertEqual(1, result["vision_candidates"])
+        self.assertEqual({"pending": 1}, result["review_status_counts"])
+        self.assertIn("vision unavailable", result["vision_failed"][0]["reason"])
+
     def test_authority_snapshot_stable_projections_and_unconfirmed_vision_boundary(self):
         extraction = FunctionExtractionResult(
             components=[

@@ -385,6 +385,39 @@ class FunctionArchitectureParser(Parser):
                     result["vision_failed"].append(
                         {"kind": "architecture_vision", "source_ref": image_id, "reason": str(exc)[:500]}
                     )
+                    failed_candidate = diagram_repository.upsert_candidate(
+                        diagram_id=diagram_id,
+                        source_kind="image_vision",
+                        source_fingerprint=fingerprint,
+                        raw_graph={
+                            "diagram_type": "function_locator",
+                            "root_fault_id": "",
+                            "metadata": {
+                                "image_url": image.get("image_url", ""),
+                                "storage_key": storage_key,
+                                "source_block": block_key,
+                                "mime_type": mime_type,
+                                "source_ref": image_source_ref,
+                            },
+                            "vertices": [],
+                            "edges": [],
+                        },
+                        source_locator={
+                            "block": block_key,
+                            "image_id": image_id,
+                            "image_url": image.get("image_url", ""),
+                            "storage_key": storage_key,
+                            "mime_type": mime_type,
+                            "source_ref": image_source_ref,
+                            "extraction_error": str(exc)[:500],
+                        },
+                        extractor_name="analyze_icp_diagram",
+                        extractor_version="1",
+                        extraction_status="failed",
+                    )
+                    candidate_ids.setdefault(diagram_id, []).append(
+                        str(failed_candidate["candidate_id"])
+                    )
                     continue
 
                 vertices = list(analysis.get("vertices") or [])
@@ -457,8 +490,6 @@ class FunctionArchitectureParser(Parser):
                     },
                     projection_failures,
                 )
-                if not vertices and not edges:
-                    continue
                 try:
                     model_name = ""
                     if isinstance(ctx.model_config, Mapping):
@@ -484,6 +515,9 @@ class FunctionArchitectureParser(Parser):
                         extractor_version="1",
                         model_name=model_name or None,
                         prompt_version="function-architecture-v1",
+                        extraction_status=(
+                            "succeeded" if vertices or edges else "skipped"
+                        ),
                     )
                     candidate_ids.setdefault(diagram_id, []).append(
                         str(candidate["candidate_id"])
