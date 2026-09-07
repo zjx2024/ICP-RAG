@@ -1962,6 +1962,57 @@ def _query_mfl(
     )
 
 
+_HISTORY_SEARCH_COLUMNS = (
+    "case_id", "device_type", "fault_symptom", "related_module", "related_function",
+    "diagnosis_method", "root_cause", "final_solution", "hmc_code", "fmeca_code",
+    "fta_ref", "rbd_ref", "mfl_code", "occurred_at", "personnel", "mission_phase",
+    "verification_result", "preventive_action",
+)
+
+
+def _query_history(
+    terms: Sequence[str], limit: int, errors: Optional[List[str]] = None
+) -> List[Dict[str, Any]]:
+    """Recall history cases through the shared modern SQL recall path.
+
+    The previous repository-only ILIKE search fed raw planner phrases into an
+    eight-slot OR query ordered by updated_at: a spaced variant ("A 通道")
+    could not match stored unspaced text ("A通道"), complete authored
+    sentences crowded the short anchors out of the term budget, and a single
+    generic token could fill the LIMIT with noise before any ranking ran.
+    ``_query_table`` applies the same noise-normalized term selection, len²
+    specificity ordering and bounded over-fetch used by every other direct
+    document query; case steps are hydrated afterwards exactly as before.
+    """
+    rows = _query_table(
+        "fault_history_cases",
+        _HISTORY_SEARCH_COLUMNS,
+        terms,
+        limit,
+        errors,
+    )
+    if not rows:
+        return rows
+    try:
+        with postgres_client.conn.cursor() as cur:
+            for row in rows:
+                cur.execute(
+                    "SELECT step_no, content FROM fault_history_steps "
+                    "WHERE case_pk=%s ORDER BY step_no",
+                    (row.get("id"),),
+                )
+                row["steps"] = [item[1] for item in cur.fetchall()]
+    except Exception as exc:
+        logger.warning("History step hydration failed: %s", exc)
+        if errors is not None:
+            errors.append(str(exc))
+        try:
+            postgres_client.conn.rollback()
+        except Exception:
+            pass
+    return rows
+
+
 _MFL_HMC_REFERENCE_SCALAR_FIELDS = (
     "hmc_code",
     "hmc_ref",
@@ -6114,8 +6165,9 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
     if "fault_history_query" in allowed_tools:
         run_direct(
             "fault_history_query",
-            lambda: icp_repository.search_history(
-                terms_by_tool["fault_history_query"], limit=limit
+            lambda: _query_history(
+                terms_by_tool["fault_history_query"], limit,
+                direct_errors["fault_history_query"],
             ),
         )
 

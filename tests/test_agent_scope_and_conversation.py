@@ -1801,8 +1801,8 @@ class ConversationAnchorTests(unittest.TestCase):
             {
                 "business_id": "HIS-SYN-020",
                 "tool": "fault_history_query",
-                "query_owner": diagnosis_module.icp_repository,
-                "query_attr": "search_history",
+                "query_owner": diagnosis_module,
+                "query_attr": "_query_history",
                 "doc_type": "fault_history",
                 "claim_type": "historical_case",
                 "row": {
@@ -2063,8 +2063,8 @@ class ConversationAnchorTests(unittest.TestCase):
                         return_value=mfl_rows,
                     ) as mfl_query,
                     patch.object(
-                        diagnosis_module.icp_repository,
-                        "search_history",
+                        diagnosis_module,
+                        "_query_history",
                         return_value=history_rows,
                     ) as history_query,
                     patch.object(
