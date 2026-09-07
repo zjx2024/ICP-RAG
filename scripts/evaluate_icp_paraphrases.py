@@ -1292,6 +1292,18 @@ class SemanticJudge:
             "the answer delivered that aspect. Do not infer an absent qualification "
             "or attribution on the answer's behalf. Reason must identify the "
             "answered or missing dimensions and conflicting evidence. "
+            "When evaluation input contains answer_citations, add one dedicated "
+            "check per citation-bearing statement: quote the statement with its "
+            "marker, then verify that the cited record's excerpt actually "
+            "contains what the statement attributes to it; passed=false when the "
+            "citation does not support the statement. An obligation phrased as "
+            "必须/明确/explicitly/必须明确核对 requires the answer itself to "
+            "state it; implying it by listing correct facts is not delivery. "
+            "When a criterion carries an exclusion clause (an alternative the "
+            "answer must NOT satisfy it with, e.g. 只重列清单或只说已包含不能 "
+            "代替对上轮遗漏的回答), decompose that clause into its own "
+            "prohibition-style check: passed only when the answer performs the "
+            "required act itself, not merely the excluded alternative. "
             "Return exactly one JSON "
             "object with one key, criteria. Its value must be an array containing "
             "exactly one object per supplied criterion with keys id, passed, reason, checks; "
@@ -1375,9 +1387,35 @@ class SemanticJudge:
 
 def _normalized_judge_quote(text: str) -> str:
     # Presentation-only equivalence. Keep numbers, negation, punctuation and
-    # HMC wildcard asterisks; this is not fuzzy or semantic quote matching.
+    # HMC wildcard asterisks inside words; this is not fuzzy or semantic quote
+    # matching.  Answers carry markdown emphasis (``**bold**``) around the very
+    # phrases the judge quotes; a verbatim copy naturally omits the markers,
+    # so emphasis characters are stripped on both sides rather than turning a
+    # faithful quote into a protocol failure.  Ellipsis remains a real
+    # rewrite signal and is handled by the segment check below.
     text = re.sub(r"\[\^\d+\]", "", unicodedata.normalize("NFKC", text))
-    return re.sub(r"\s+", "", text.replace("`", ""))
+    return re.sub(r"[*_]+", "", re.sub(r"\s+", "", text.replace("`", "")))
+
+
+_ELLIPSIS_RUN = re.compile(r"(?:\.{3,}|…+)")
+
+
+def _judge_quote_supported(quote: str, answer: str) -> bool:
+    """A quote is supported when every non-ellipsis segment appears in the
+    answer, in order.  Judges legitimately abbreviate long spans with ``...``
+    between verbatim segments; a genuinely altered or invented phrase has no
+    matching segment and still fails."""
+    segments = [s for s in _ELLIPSIS_RUN.split(quote) if s.strip()]
+    if not segments:
+        return False
+    normalized_answer = _normalized_judge_quote(answer)
+    position = 0
+    for segment in segments:
+        found = normalized_answer.find(_normalized_judge_quote(segment), position)
+        if found < 0:
+            return False
+        position = found + 1
+    return True
 
 
 def _validate_grounded_semantic_judgement(
@@ -1409,7 +1447,7 @@ def _validate_grounded_semantic_judgement(
                         f"语义 Judge {result['id']}/{check['aspect']} 缺少正文摘录：{quote!r}；"
                         "请复制待核对的完整声明及其引用，不能只摘脚注编号"
                     )
-                if _normalized_judge_quote(quote) not in _normalized_judge_quote(answer):
+                if not _judge_quote_supported(quote, answer):
                     raise ApiError(
                         f"语义 Judge {result['id']}/{check['aspect']} 引用了最终答案不存在的原话：{quote!r}；"
                         "请从最终答案复制连续原文，不要拼接或改写"
