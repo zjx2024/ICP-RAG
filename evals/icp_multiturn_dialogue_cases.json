@@ -748,9 +748,6 @@
             "required_scope_routes": [
               "knowledge_base"
             ],
-            "required_used_doc_types": [
-              "rbd"
-            ],
             "forbidden_used_doc_types": [
               "function_locator",
               "fmeca",
@@ -758,7 +755,6 @@
               "mfl",
               "fault_history"
             ],
-            "min_citations": 1,
             "max_answer_chars": 450,
             "semantic_criteria": [
               {
@@ -851,9 +847,6 @@
           "assertions": {
             "required_scope_routes": [
               "knowledge_base"
-            ],
-            "forbidden_used_doc_types": [
-              "rbd"
             ],
             "max_answer_chars": 450,
             "answer_not_repeat_prior": [
