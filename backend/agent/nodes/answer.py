@@ -4,6 +4,7 @@ from backend.agent.nodes.answer_evidence_context import (
     _citation_ledger,
     _context_evidence,
 )
+from backend.agent.nodes.answer_backstop import answer_backstop
 from backend.agent.nodes.answer_payload import (
     _bounded_json_value,
     _bounded_text,
@@ -1011,6 +1012,17 @@ async def answer_node(state, config=None) -> Dict:
     observe_answer_stage(
         "before_public_compaction", final_answer, citations=prompt_citations
     )
+    # 发布边界的确定性保底：契约字段与计算结果若未被模型稿消费，按已批准
+    # 记录逐行转写补全；内容不经过二次生成，引用编号仍交给 compaction 统一
+    # 校验来源合法性。
+    final_answer, backstop_report = answer_backstop(
+        final_answer, state, _citation_ledger(state), prompt_citations
+    )
+    if backstop_report:
+        observe_answer_stage(
+            "backstop_rendered",
+            json.dumps(backstop_report, ensure_ascii=False, default=str),
+        )
     final_answer, citations, evidence_catalog = _compact_answer_citations(
         final_answer,
         prompt_citations,
@@ -1030,6 +1042,7 @@ async def answer_node(state, config=None) -> Dict:
         ],
         "answer_completion_status": reviewed["status"],
         "answer_unconfirmed_fields": reviewed["unconfirmed_goals"],
+        "answer_backstop": backstop_report,
         # Legacy field labels are not semantic proof of delivery. Natural goals
         # with actual evidence identities replace the answer-side field checklist.
         "delivered_answer_fields": [],

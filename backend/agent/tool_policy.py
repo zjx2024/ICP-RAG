@@ -10,6 +10,7 @@ import re
 from typing import Any, Dict, List, Mapping, Optional, Sequence, TypedDict
 
 from backend.agent.answer_contract import (
+    MFL_CONTRACT_FIELDS,
     RBD_ANSWER_FIELDS,
     ensure_intent_answer_fields,
     is_focused_answer_contract,
@@ -49,13 +50,7 @@ _SOURCE_COVERAGE_FIELDS: Dict[str, tuple[str, ...]] = {
 # API 上报与平台摸底状态只存在于 MFL 权威记录中。目标模型已把这些字段写进
 # required_fields 后，强制 MFL 查询只是合同补全；HMC/FMECA 仍按各自字段提供
 # 内容，这里不重写意图、也不把 MFL 扩成无边界清单。
-_MFL_CONTRACT_FIELDS = frozenset({
-    "maintenance_action",
-    "maintenance_locator",
-    "maintenance_api",
-    "platform_test_status",
-    "platform_test_result",
-})
+_MFL_CONTRACT_FIELDS = MFL_CONTRACT_FIELDS
 
 CANONICAL_TOOL_NAMES = {
     "function_locator",
@@ -699,6 +694,18 @@ def resolve_tool_policy(
     # of source B merely because B usually stores X. Preserve X as an answer
     # obligation even when A's actual rows have no support for it.
     scoped_fields = set(source_coverage_fields)
+    # 用户点名的资料族只授权该族的读取，但 MFL 合同字段的所有权仍归 MFL：
+    # 规划模型把“资料中的检查与处置”窄化成单一 FMECA 来源时，维修处置的
+    # 权威清单不能因此失去 MFL 回读。只有用户本轮明确点名 MFL 时，这些
+    # 字段才允许由该来源条目独占。
+    if _MFL_CONTRACT_FIELDS & scoped_fields and not any(
+        item["doc_type"] == "mfl" for item in normalized_requested_sources
+    ):
+        scoped_fields -= _MFL_CONTRACT_FIELDS
+        notes.append(
+            "维修合同字段权威属主为MFL，已保留MFL清单回读："
+            + "、".join(sorted(_MFL_CONTRACT_FIELDS & set(source_coverage_fields)))
+        )
     query_contract_tools = list(dict.fromkeys([*tools_for_answer_fields([
         field for field in contract_fields if field not in scoped_fields
     ]), *requested_source_tools]))

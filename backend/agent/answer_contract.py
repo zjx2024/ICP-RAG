@@ -36,6 +36,19 @@ RESPONSE_FOCUS_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 
+# 板级/SUR/功能子电路定位、维修处置、API 上报与平台摸底状态只存在于 MFL
+# 权威记录中。目标模型把这些字段写进 required_fields 后，它们同时是回答
+# 契约和 MFL 的所有权声明：其他资料族（如 FMECA 的补偿措施）可以提供
+# 相近内容，但权威清单始终由 MFL 回读闭合。
+MFL_CONTRACT_FIELDS = frozenset({
+    "maintenance_action",
+    "maintenance_locator",
+    "maintenance_api",
+    "platform_test_status",
+    "platform_test_result",
+})
+
+
 # These are user-facing information dimensions, not database column names.
 # Composite dimensions (for example ``architecture_function``) may be backed
 # by several source columns, while scalar FMECA dimensions stay independent so

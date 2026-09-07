@@ -66,6 +66,73 @@ class RequestedSourceCoverageTests(unittest.TestCase):
                     self.assertEqual([source], decision["authorized_doc_types"])
                     self.assertNotIn("fmeca_query", decision["authorized_tools"])
 
+    def test_non_mfl_source_cannot_scope_away_mfl_contract_fields(self):
+        """维修合同字段的权威属主是 MFL：模型把“资料中的处置”窄化成单一
+        FMECA 来源时，MFL 清单回读仍须保留。"""
+        from backend.agent.tool_policy import resolve_tool_policy
+
+        wording = "这种情况下如何验证，再决定是否更换？请把资料中的检查与处置分开说。"
+        request = [{
+            "doc_type": "fmeca",
+            "basis": "请把资料中的检查与处置分开说",
+            "question_role": "evidence",
+            "requested_fields": ["detection_method", "maintenance_action"],
+        }]
+        decision = resolve_tool_policy(
+            intent="maintenance_query",
+            raw_user_query=wording,
+            requested_sources=request,
+            required_answer_fields=["detection_method", "maintenance_action"],
+        )
+        self.assertIn("mfl_query", decision["authorized_tools"])
+        self.assertIn("mfl", decision["authorized_doc_types"])
+        self.assertIn("fmeca", decision["authorized_doc_types"])
+        self.assertTrue(
+            any(
+                "MFL" in note or "mfl" in note
+                for note in decision.get("notes") or []
+            )
+        )
+
+    def test_explicit_mfl_source_keeps_contract_scoping(self):
+        from backend.agent.tool_policy import resolve_tool_policy
+
+        wording = "维修清单对这类失效建议怎么处理？"
+        request = [{
+            "doc_type": "mfl",
+            "basis": "维修清单对这类失效建议怎么处理",
+            "question_role": "evidence",
+            "requested_fields": ["maintenance_action"],
+        }]
+        decision = resolve_tool_policy(
+            intent="maintenance_query",
+            raw_user_query=wording,
+            requested_sources=request,
+            required_answer_fields=["maintenance_action"],
+        )
+        self.assertIn("mfl_query", decision["authorized_tools"])
+        self.assertIn("mfl", decision["authorized_doc_types"])
+
+    def test_non_maintenance_source_scoping_is_unchanged(self):
+        """不含 MFL 合同字段的来源请求维持原有窄边界。"""
+        from backend.agent.tool_policy import resolve_tool_policy
+
+        wording = "请向资料甲核实检测依据"
+        request = [{
+            "doc_type": "fmeca",
+            "basis": "请向资料甲核实检测依据",
+            "question_role": "capability",
+            "requested_fields": ["detection_method"],
+        }]
+        decision = resolve_tool_policy(
+            intent="entity_profile",
+            raw_user_query=wording,
+            requested_sources=request,
+            required_answer_fields=["detection_method"],
+        )
+        self.assertEqual(["fmeca"], decision["authorized_doc_types"])
+        self.assertNotIn("mfl_query", decision["authorized_tools"])
+
 
     def test_source_boundary_window_uses_selected_rbd_not_locator_neighbors(self):
         rbd = {

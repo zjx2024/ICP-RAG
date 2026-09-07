@@ -97,6 +97,7 @@ AGENT_FILES: Tuple[str, ...] = (
     "backend/agent/nodes/adaptive_tools.py",
     "backend/agent/nodes/evidence_gate.py",
     "backend/agent/nodes/answer.py",
+    "backend/agent/nodes/answer_backstop.py",
     "backend/agent/nodes/answer_presence.py",
     "backend/agent/nodes/answer_claim_units.py",
     "backend/agent/nodes/answer_collections.py",
