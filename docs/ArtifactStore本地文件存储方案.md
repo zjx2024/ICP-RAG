@@ -1,5 +1,10 @@
 # ArtifactStore 本地文件存储方案
 
+> **状态（2026-09-07）**：本方案已实施完成。MinIO 数据已通过官方 API 整体迁移到
+> LocalFS 并通过全量校验；一次性迁移工具（`scripts/migrate_minio_to_localfs.py`、
+> `requirements-migration.txt`）已移除。本文保留为设计决策与回滚思路的历史记录，
+> 文中的迁移操作命令不再可用。
+
 本方案将 ICP-RAG 的原始文档、工程图证据和解析产物从运行时 MinIO
 服务迁移到 `ArtifactStore + LocalFS`。当前目标是单机可靠运行、完全本地
 自部署和低运维复杂度，同时保留未来切换 S3 或分布式存储的业务边界。

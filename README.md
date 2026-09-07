@@ -174,22 +174,12 @@ docker compose -p icp up -d --build
 ./restart-app.sh
 ```
 
-### 7.3 从旧 MinIO 迁移
+### 7.3 历史迁移说明
 
-MinIO 不再是主运行时服务。旧 `volumes/minio` 中的对象必须经 MinIO API 流式迁移，
-不能直接拷贝 `xl.meta`：
-
-```bash
-python -m venv .venv-migration
-source .venv-migration/bin/activate
-pip install -r requirements-migration.txt
-python scripts/migrate_minio_to_localfs.py --dry-run
-python scripts/migrate_minio_to_localfs.py --resume
-python scripts/migrate_minio_to_localfs.py --verify-only
-```
-
-详细窗口、备份、回滚和完整参数见
-[`docs/ArtifactStore本地文件存储方案.md`](docs/ArtifactStore本地文件存储方案.md)。迁移验证完成前不要删除历史 MinIO 卷。
+项目早期使用 MinIO 存储对象，已通过官方 API 完成向 ArtifactStore(LocalFS) 的整体迁移，
+迁移工具（`migrate_minio_to_localfs.py`、`requirements-migration.txt`）已随迁移完成移除。
+如需了解当时的迁移方案与回滚设计，见
+[`docs/ArtifactStore本地文件存储方案.md`](docs/ArtifactStore本地文件存储方案.md)。
 
 ## 8. 测试
 

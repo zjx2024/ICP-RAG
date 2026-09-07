@@ -38,19 +38,6 @@ declare -A IMAGES=(
 
 # MinIO 不再是运行时依赖。如旧卷尚未完成迁移，只允许导出调用方
 # 明确指定的不可变旧镜像 ID/digest，避免 latest 打开旧卷并改写元数据。
-if [[ "${INCLUDE_LEGACY_MINIO_IMAGE:-0}" == "1" ]]; then
-    if [[ -z "${LEGACY_MINIO_IMAGE:-}" ]]; then
-        echo "[ERROR] INCLUDE_LEGACY_MINIO_IMAGE=1 时必须设置 LEGACY_MINIO_IMAGE"
-        echo "        可用: docker inspect --format '{{.Image}}' <旧MinIO容器>"
-        exit 1
-    fi
-    if [[ "$LEGACY_MINIO_IMAGE" == *:latest ]]; then
-        echo "[ERROR] LEGACY_MINIO_IMAGE 不允许使用 :latest；请传旧容器的镜像 ID 或 digest"
-        exit 1
-    fi
-    IMAGES[legacy-minio]="$LEGACY_MINIO_IMAGE"
-fi
-
 echo "[INFO] 导出镜像到 $OUT_DIR/ ..."
 for name in "${!IMAGES[@]}"; do
     img="${IMAGES[$name]}"
@@ -69,8 +56,6 @@ echo "[INFO] 请手动拷贝以下内容到新机器（迁移包）:"
 echo "  - $OUT_DIR/          全部镜像 tar"
 echo "  - volumes/           数据目录（先 ./stop.sh 停止服务再拷，保证一致性）"
 echo "  - docker-compose.yml .env start.sh stop.sh restart-app.sh entrypoint.sh"
-echo "  - scripts/migrate_minio_to_localfs.py requirements-migration.txt（如仍需迁移历史 MinIO）"
-echo "  - volumes/minio/     仅作历史迁移源，校验完成前不要删除"
 echo ""
 echo "新机器恢复步骤:"
 echo "  1. gunzip -c images/*.tar.gz | docker load（逐个加载镜像）"
