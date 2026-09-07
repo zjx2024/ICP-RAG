@@ -33,7 +33,10 @@ sources 中的句柄必须逐字复制输入 sources 列表；不要创造 safet
 草稿引用只是线索。最终引用由程序根据你核验的 sources 生成，不需为维持草稿编号而选择不支持命题的字段。
 若提供 previous_validation_feedback，这是上一版本的具体校验缺口，不是当前正文的裁决或新事实。重新审核当前全部段落，并纠正来源选择/断言分类；旧段落编号不可直接复用。原则说明中提及具体设备身份时，也须选当前记录的身份字段，不能只选泛化 policy。
 engineering 是本轮批准记录的字段；conversation 只证明先前说过什么；observation 只证明本轮查询/关联状态，未查或片段未显示不等于原文没有。
+缺席声明必须核对：草稿任何段落声称“资料未提供/没有记载/证据中未给出 X”或以“证据不足、无法回答”拒绝回答时，你必须先在输入 sources 的全部摘录中逐字查找 X 及可回答该分问的字段；任一来源已明确提供就必须填 issue 指出具体来源（假缺席），不得放行。只有核对后确实不存在才允许缺席或拒答表述。
+RBD 终态否定（“所问部件未被独立建为功能块/成功路径节点”）是本轮确定性核对结论：选择 rbd_representation 类 observation 即可支持该否定句及其边界说明，按 conditional_analysis/query_status 归类，不得因缺少工程记录绑定而拒绝该段。
 policy 仅解释产品资料类别及辅助分析边界，不能支持某设备的具体拓扑、API、维修、数值或唯一诊断。presentation 仅为无事实含义的行文衔接。
+资料能力边界陈述（如“RBD 只支持既定模型下的成功结构/冗余/可计算概率，不能直接给出根因、维修或放行结论”“某类资料不能替代另一类资料”）属于产品资料类别解释：选择 policy:document_semantics 或 policy:safety 即可证明，不得以缺少工程来源为由拒绝该类段落。
 claims 如实覆盖该段全部断言，不得少报或伪装：source_fact/conditional_analysis/unique_diagnosis/formal_topology/formal_calculation/formal_numeric_result/conversation/query_status/policy/presentation。
 数值计算必须同时声明 formal_calculation 和 formal_numeric_result，割集只需 formal_calculation；遵守 safety 和 calculation_requests。
 source_fact/conditional_analysis 及正式工程断言必须有 engineering 来源；会话、查询、政策声明须选对应类型来源。可混合多种断言，但每种均需依据。
@@ -448,9 +451,15 @@ def validate_review(raw: str, *, prepared: Mapping, ledger: Mapping,
             # establish.  Models often label the sentence
             # ``conditional_analysis``; the observation category, rather than
             # wording, is the closed permission for this narrow case.
+            # ``rbd_representation`` is the same closed class: the deterministic
+            # not-represented verdict is an observation of this turn's model
+            # universe check, so the negation sentence it supports must not be
+            # forced onto engineering bindings that do not exist for it.
             boundary_observation = any(
                 source.get("kind") == "observation"
-                and source.get("category") in {"source_relation", "query_coverage", "source_view"}
+                and source.get("category") in {
+                    "source_relation", "query_coverage", "source_view", "rbd_representation",
+                }
                 for source in sources
             )
             engineering_claims = set(claims) & ENGINEERING_CLAIMS
