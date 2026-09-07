@@ -1946,7 +1946,11 @@ def _query_fmeca_by_business_ids(
 
 
 def _query_mfl(
-    terms: Sequence[str], limit: int, errors: Optional[List[str]] = None
+    terms: Sequence[str],
+    limit: int,
+    errors: Optional[List[str]] = None,
+    *,
+    entity_terms: Sequence[str] = (),
 ) -> List[Dict[str, Any]]:
     return _query_table(
         "mfl",
@@ -1959,7 +1963,150 @@ def _query_mfl(
         terms,
         limit,
         errors,
+        # ``module_fault`` 的存储形态是“模块名：故障模式”，与 FMECA
+        # ``fault_mode``、FTA 基本事件名共用同一故障模式词表；这是文档族
+        # 之间唯一无需推断的词法身份。身份命中只提升排序，不授予事实。
+        priority_columns=("mfl_code", "module_fault"),
+        priority_terms=entity_terms,
     )
+
+
+_MFL_IDENTITY_MIN_TERM_LENGTH = 4
+_MFL_IDENTITY_MAX_TERMS = 12
+
+
+def _mfl_fault_mode_terms(rows: Sequence[Mapping[str, Any]]) -> List[str]:
+    """Fault-mode names carried by same-turn FMECA rows."""
+
+    terms: List[str] = []
+    seen: set[str] = set()
+    for row in rows[:8]:
+        value = str(row.get("fault_mode") or "").strip()
+        normalized = normalize_search_term(value)
+        if len(normalized) < _MFL_IDENTITY_MIN_TERM_LENGTH or normalized in seen:
+            continue
+        seen.add(normalized)
+        terms.append(value)
+    return terms
+
+
+def _fta_basic_event_name_terms(rows: Sequence[Mapping[str, Any]]) -> List[str]:
+    """Basic-event names extracted from same-turn FTA graph rows."""
+
+    terms: List[str] = []
+    seen: set[str] = set()
+    for row in rows[:2]:
+        graph = row.get("canonical_graph")
+        if not isinstance(graph, Mapping):
+            graph = row.get("graph")
+        if not isinstance(graph, Mapping):
+            continue
+        for event in _graph_basic_event_summaries(graph)[:12]:
+            value = str(event.get("name") or "").strip()
+            normalized = normalize_search_term(value)
+            if len(normalized) < _MFL_IDENTITY_MIN_TERM_LENGTH or normalized in seen:
+                continue
+            seen.add(normalized)
+            terms.append(value)
+    return terms
+
+
+def _anchor_fta_graph_rows(state: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    """Re-read published FTA graphs whose citation the dialogue selected.
+
+    A selected citation is a locator for a new PostgreSQL read, never a
+    reusable conclusion. Only context-grade revisions are returned; the
+    bounded anchor set keeps the read proportional to the dialogue.
+    """
+
+    anchor_ids: List[str] = []
+    seen: set[str] = set()
+    for anchor in state.get("selected_conversation_anchors") or []:
+        if not isinstance(anchor, Mapping):
+            continue
+        if str(anchor.get("doc_type") or "").strip().casefold() != "fta":
+            continue
+        record_id = str(anchor.get("record_id") or "").strip()
+        if not record_id or record_id in seen:
+            continue
+        seen.add(record_id)
+        anchor_ids.append(record_id)
+    if not anchor_ids:
+        return []
+    try:
+        revisions = diagram_repository.list_active_revisions(diagram_type="fta")
+    except Exception as exc:
+        logger.warning("FTA anchor revision read failed: %s", exc)
+        return []
+    matched: List[Dict[str, Any]] = []
+    for revision in revisions:
+        if len(matched) >= len(anchor_ids):
+            break
+        if not _is_context_graph_row(revision):
+            continue
+        graph = revision.get("canonical_graph")
+        if not isinstance(graph, Mapping):
+            continue
+        business_ids: set[str] = set()
+        for collection_name in ("vertices", "nodes"):
+            values = graph.get(collection_name) or []
+            if not isinstance(values, (list, tuple)):
+                continue
+            for node in values:
+                if not isinstance(node, Mapping):
+                    continue
+                properties = (
+                    node.get("properties")
+                    if isinstance(node.get("properties"), Mapping)
+                    else {}
+                )
+                for value in (node.get("business_id"), properties.get("business_id")):
+                    text = str(value or "").strip()
+                    if text:
+                        business_ids.add(text)
+        if business_ids & set(anchor_ids):
+            matched.append(dict(revision))
+    return matched
+
+
+def _mfl_identity_terms(
+    fmeca_rows: Sequence[Mapping[str, Any]],
+    fta_rows: Sequence[Mapping[str, Any]],
+    state: Mapping[str, Any],
+) -> Tuple[List[str], List[str]]:
+    """Bound cross-document fault-mode handoff for MFL recall ranking.
+
+    MFL rows store ``module_fault`` as “模块名：故障模式”. FMECA rows and FTA
+    basic events share that fault-mode vocabulary, so their names are the only
+    lexical join that needs no inference. Terms are bounded, deduplicated and
+    affect ordering only; evidence authorization stays with the normal gates.
+    """
+
+    sources: List[str] = []
+    terms: List[str] = []
+    seen: set[str] = set()
+
+    def add(values: Iterable[str], source: str) -> None:
+        for value in values:
+            normalized = normalize_search_term(value)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            terms.append(value)
+            if source not in sources:
+                sources.append(source)
+            if len(terms) >= _MFL_IDENTITY_MAX_TERMS:
+                return
+
+    add(_mfl_fault_mode_terms(fmeca_rows), "fmeca_fault_mode")
+    add(_fta_basic_event_name_terms(fta_rows), "fta_basic_events")
+    if not any(source.startswith("fta") for source in sources):
+        # 本轮没有 FTA 直查结果时，才回读对话选中的 FTA 引用图。
+        add(
+            _fta_basic_event_name_terms(_anchor_fta_graph_rows(state)),
+            "fta_anchor_reread",
+        )
+    return terms, sources
 
 
 _HISTORY_SEARCH_COLUMNS = (
@@ -6155,13 +6302,31 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
                 "basis": "多条 PostgreSQL FMECA 记录共享的显式产品/功能代码",
                 "terms": fmeca_rbd_identity_terms,
             }
+    mfl_identity_terms: List[str] = []
+    mfl_identity_sources: List[str] = []
     if "mfl_query" in allowed_tools:
+        # FMECA/FTA 与 MFL 共用故障模式词表：同轮直查行或对话选中的 FTA
+        # 引用图提供有界身份词，身份命中只提升 MFL 排序，不授予事实。
+        mfl_identity_terms, mfl_identity_sources = _mfl_identity_terms(
+            direct_rows["fmeca_query"], direct_rows["fta_query"], state
+        )
+        if mfl_identity_terms:
+            terms_by_tool["mfl_query"] = _prepend_query_terms(
+                terms_by_tool["mfl_query"], mfl_identity_terms
+            )
         run_direct(
             "mfl_query",
             lambda: _query_mfl(
-                terms_by_tool["mfl_query"], limit, direct_errors["mfl_query"]
+                terms_by_tool["mfl_query"], limit, direct_errors["mfl_query"],
+                entity_terms=mfl_identity_terms,
             ),
         )
+        if mfl_identity_terms and tool_calls and not anchor_selectors.get("mfl_query"):
+            tool_calls[-1]["structured_fault_mode_handoff"] = {
+                "basis": "同轮 FMECA 故障模式 / FTA 基本事件共享词表",
+                "sources": list(mfl_identity_sources),
+                "terms": list(mfl_identity_terms),
+            }
     if "fault_history_query" in allowed_tools:
         run_direct(
             "fault_history_query",
