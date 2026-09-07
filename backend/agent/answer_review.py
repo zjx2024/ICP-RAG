@@ -77,6 +77,55 @@ def _object_pairs(pairs):
     return result
 
 
+_FENCE_RE = re.compile(r"^\s*```(?:json|JSON)?\s*\n?(.*?)\n?\s*```\s*$", re.DOTALL)
+
+
+def _extract_json_payload(raw: str) -> str:
+    """Deterministically strip non-JSON wrappers from a critic response.
+
+    Local models frequently fence their JSON in ```json blocks or prepend a
+    short natural-language remark. The critique itself is often valid; a
+    bare ``json.loads`` would discard it as a protocol failure (which
+    cannot be salvaged because no unit map exists yet). Extraction here is
+    purely lexical: strip one balanced fence, or take the outermost
+    brace-balanced substring. Content is never modified, so schema and
+    semantic validation downstream still reject anything actually invalid.
+    """
+    text = raw.strip()
+    fenced = _FENCE_RE.match(text)
+    if fenced:
+        text = fenced.group(1).strip()
+    if not text:
+        return text
+    start = text.find("{")
+    if start < 0:
+        return text
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:index + 1]
+    # Unbalanced braces: return the tail so json.loads reports the real
+    # truncation rather than a misleading leading-remark error.
+    return text[start:]
+
+
 def prepare_review(draft: str, *, ledger: Mapping, conversation: Mapping,
                    observations: list[dict], task: Mapping, document_semantics: str) -> dict:
     """Assign immutable coordinates; no semantic classification or word gates."""
@@ -320,7 +369,7 @@ def validate_review(raw: str, *, prepared: Mapping, ledger: Mapping,
     """
     _require(isinstance(raw, str) and 0 < len(raw) <= 50000, "invalid response size")
     try:
-        review = json.loads(raw, object_pairs_hook=_object_pairs,
+        review = json.loads(_extract_json_payload(raw), object_pairs_hook=_object_pairs,
                             parse_constant=lambda _: (_ for _ in ()).throw(ValueError("nonfinite")))
     except (TypeError, ValueError) as exc:
         raise AnswerReviewError("invalid review JSON") from exc

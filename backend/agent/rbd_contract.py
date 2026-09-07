@@ -52,6 +52,11 @@ RBD_BLOCK_BUSINESS_ID_FIELDS = (
     "component_id",
     "function_id",
 )
+# 跨轮终态否定锚点：上轮发布的 not_represented 结论（含其核对范围指纹）
+# 随助手消息 manifest 持久化。追问轮绑定解析失败且无候选时，用当前已发布
+# RBD 全集做指纹比对：一致则确定性恢复终态，不一致则视为过期（世界已变，
+# 不能沿用旧判定），回落正常未解析处理。
+RBD_TERMINAL_NEGATION_ANCHOR_VERSION = "rbd-terminal-negation-v1"
 
 _RBD_EXPLICIT_ID_RE = re.compile(
     r"(?<![A-Za-z0-9._-])RBD-[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?",
@@ -1077,4 +1082,112 @@ def merge_rbd_query_bindings(first: Any, second: Any) -> Dict[str, Any]:
         "record_ids": [],
         "candidate_record_ids": candidates,
         "model_bindings": [],
+    }
+
+
+def published_rbd_universe_fingerprint(rows: Sequence[Mapping[str, Any]]) -> List[str]:
+    """Deterministic identity set of the currently published RBD universe."""
+
+    return sorted(
+        {
+            _candidate_identity(descriptor)
+            for row in rows
+            if isinstance(row, Mapping) and (descriptor := rbd_model_descriptor(row))
+        }
+    )
+
+
+def build_rbd_terminal_negation_anchor(
+    binding: Any,
+    *,
+    published_universe: Sequence[str],
+) -> Dict[str, Any] | None:
+    """Build the persistable anchor for a published not_represented turn.
+
+    只在绑定确实处于 not_represented 终态时可用。锚点携带上轮的完整
+    current_selection（闭合约形状）与已发布 RBD 全集指纹，供追问轮做
+    确定性复核；它不是结论文本的复用授权，恢复时必须重新指纹比对。
+    """
+
+    if not isinstance(binding, Mapping):
+        return None
+    if _text(binding.get("basis")) != RBD_NOT_REPRESENTED_BASE:
+        return None
+    selection = binding.get("current_selection")
+    if not isinstance(selection, Mapping) or _text(selection.get("status")) != "not_represented":
+        return None
+    universe = sorted({_text(value) for value in published_universe if _text(value)})
+    if not universe:
+        return None
+    return {
+        "kind": "terminal_negation_anchor",
+        "doc_type": "rbd",
+        "contract_version": RBD_TERMINAL_NEGATION_ANCHOR_VERSION,
+        "subject": "；".join(
+            _text(value)
+            for value in (binding.get("not_represented_subjects") or [])
+            if _text(value)
+        )[:400],
+        "question_basis": _text(selection.get("question_basis"))[:500],
+        "reason": _text(selection.get("reason"))[:800],
+        "verified_universe": universe,
+        "current_selection": {
+            "contract_version": _text(selection.get("contract_version")),
+            "status": "not_represented",
+            "question_basis": _text(selection.get("question_basis"))[:500],
+            "selections": [],
+            "reason": _text(selection.get("reason"))[:800],
+        },
+    }
+
+
+def reinstate_rbd_terminal_negation_anchor(
+    anchor: Any,
+    *,
+    published_universe: Sequence[str],
+) -> Dict[str, Any] | None:
+    """Deterministically reinstate a prior terminal negation for this turn.
+
+    复用条件全部满足才恢复：锚点形状合法（版本、终态选择、非空指纹），
+    且当前已发布 RBD 全集与上轮核对范围逐项一致。任何新发布/撤回/修订
+    都会使指纹失配——此时世界已变，旧判定不能沿用，返回 None 走正常
+    未解析路径。恢复的绑定带 anchor_provenance 供合同注明"复核一致"。
+    """
+
+    if not isinstance(anchor, Mapping):
+        return None
+    if _text(anchor.get("kind")) != "terminal_negation_anchor":
+        return None
+    if _text(anchor.get("doc_type")) != "rbd":
+        return None
+    if _text(anchor.get("contract_version")) != RBD_TERMINAL_NEGATION_ANCHOR_VERSION:
+        return None
+    selection = anchor.get("current_selection")
+    if not isinstance(selection, Mapping) or _text(selection.get("status")) != "not_represented":
+        return None
+    verified = sorted({_text(value) for value in anchor.get("verified_universe") or [] if _text(value)})
+    current = sorted({_text(value) for value in published_universe if _text(value)})
+    if not verified or verified != current:
+        return None
+    return {
+        "contract_version": RBD_AUTHORITY_CONTRACT_VERSION,
+        "required": True,
+        "bound": False,
+        "ambiguous": False,
+        "basis": RBD_NOT_REPRESENTED_BASE,
+        "record_ids": [],
+        "candidate_record_ids": list(current),
+        "model_bindings": [],
+        "current_selection": dict(selection),
+        "not_represented_subjects": [
+            _text(value)
+            for value in ([anchor.get("subject")] if _text(anchor.get("subject")) else [])
+        ],
+        # 恢复轮同样携带全集指纹，使锚点可以跨多轮追问连续再持久化。
+        "published_universe_fingerprint": list(current),
+        "anchor_provenance": {
+            "kind": "prior_turn_terminal_negation",
+            "question_basis": _text(anchor.get("question_basis"))[:500],
+            "reverified_universe": list(current),
+        },
     }

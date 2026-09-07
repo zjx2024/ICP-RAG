@@ -59,10 +59,13 @@ from backend.agent.query_understanding import (
 from backend.agent.rbd_contract import (
     RBD_AUTHORITY_CONTRACT_VERSION,
     RBD_BLOCK_BUSINESS_ID_FIELDS,
+    RBD_NOT_REPRESENTED_BASE,
     bind_rbd_models,
     extract_explicit_rbd_ids,
     literal_identity_in_query,
+    published_rbd_universe_fingerprint,
     rbd_block_business_ids,
+    reinstate_rbd_terminal_negation_anchor,
 )
 from backend.agent.tool_policy import (
     DOC_TYPE_BY_TOOL,
@@ -2973,6 +2976,53 @@ def _bind_requested_rbd_rows(
         allow_multiple=allow_multiple,
         current_selection=current_selection,
     )
+
+
+def _current_published_rbd_universe() -> List[str]:
+    """Deterministically re-read the published RBD universe from PostgreSQL.
+
+    锚点复核的唯一权威输入：不经过检索词、不经过向量，直接读全部已发布
+    的 active RBD 修订。读取失败时返回空列表——空指纹无法通过比对，锚点
+    不会因数据库故障被错误恢复。
+    """
+
+    try:
+        rows = diagram_repository.list_active_revisions(diagram_type="rbd")
+        return published_rbd_universe_fingerprint(rows)
+    except Exception as exc:
+        logger.warning("Published RBD universe re-read failed: %s", exc)
+        try:
+            postgres_client.conn.rollback()
+        except Exception:
+            pass
+        return []
+
+
+def _prior_rbd_terminal_negation_anchor(state: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Read the most recent persisted RBD terminal-negation anchor, if any.
+
+    只扫描助手消息的 answer_delivery_manifest（答案发布边界持久化的
+    锚点条目），取最近一条；用户其后主动点名其他 RBD 对象时，本轮绑定
+    通常会有自己的候选/选择路径，不会进入恢复分支。
+    """
+
+    messages = state.get("messages")
+    if not isinstance(messages, list):
+        return None
+    for message in reversed(messages):
+        if not isinstance(message, Mapping) or str(message.get("role") or "") != "assistant":
+            continue
+        manifest = message.get("answer_delivery_manifest")
+        if not isinstance(manifest, list):
+            continue
+        for entry in reversed(manifest):
+            if (
+                isinstance(entry, Mapping)
+                and str(entry.get("kind") or "") == "terminal_negation_anchor"
+                and str(entry.get("doc_type") or "") == "rbd"
+            ):
+                return entry
+    return None
 
 
 def _filter_requested_rbd_rows(
@@ -7182,6 +7232,28 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
             "removed_count": before_count - len(direct_rows["rbd_query"]),
             "binding": dict(rbd_query_binding),
         }
+        # 跨轮终态否定锚点：本轮判定为 not_represented 时，把当前已发布
+        # RBD 全集指纹记入绑定，答案发布时随 manifest 持久化；追问轮检索
+        # 落空、绑定无候选时，用同一指纹做确定性复核后恢复终态（世界未变
+        # 才恢复；任何新发布/撤回都使锚点过期）。
+        if str(rbd_query_binding.get("basis") or "") == RBD_NOT_REPRESENTED_BASE:
+            rbd_query_binding["published_universe_fingerprint"] = (
+                _current_published_rbd_universe()
+            )
+        elif (
+            rbd_query_binding.get("bound") is not True
+            and not (rbd_query_binding.get("candidate_record_ids") or [])
+            and not direct_rows["rbd_query"]
+        ):
+            reinstated = reinstate_rbd_terminal_negation_anchor(
+                _prior_rbd_terminal_negation_anchor(state),
+                published_universe=_current_published_rbd_universe(),
+            )
+            if reinstated:
+                rbd_query_binding = reinstated
+                filter_note["basis"] = rbd_query_binding["basis"]
+                filter_note["binding"] = dict(rbd_query_binding)
+                filter_note["anchor_reinstated"] = True
         for call in tool_calls:
             if call.get("tool") != "rbd_query":
                 continue

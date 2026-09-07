@@ -352,3 +352,122 @@ def _closed_collection_obligation_active(
     frame = state.get("query_frame") if isinstance(state.get("query_frame"), Mapping) else {}
     del answer, manifest
     return str(frame.get("coverage_scope") or "") == "complete_collection"
+
+
+_CLARIFICATION_SLOT_LABELS = {
+    "identity_slot": "对象身份",
+    "calculation_parameter": "计算参数",
+    "applicability_scope": "适用范围",
+}
+
+_CLARIFICATION_REASON_LABELS = {
+    "insufficient_evidence": "证据不足",
+    "ambiguous_identity": "对象身份不唯一",
+    "unresolved_identity": "对象身份未解析",
+    "unresolved_relation": "跨资料关联未确认",
+    "scope_conflict": "范围条件冲突",
+    "authoritative_source_unavailable": "权威资料暂不可用",
+    "authoritative_record_not_found": "权威记录未命中",
+    "unvalidated_graph": "工程图未通过验证",
+    "incomplete_calculation": "计算参数不完整",
+}
+
+
+def _describe_clarification_identity(identity: Mapping[str, Any]) -> str:
+    parts: List[str] = []
+    doc_type = str(identity.get("doc_type") or "").strip()
+    if doc_type:
+        parts.append(doc_type)
+    for record_id in (identity.get("record_ids") or [])[:6]:
+        value = str(record_id or "").strip()
+        if value:
+            parts.append(value)
+    fields = identity.get("fields") if isinstance(identity.get("fields"), Mapping) else {}
+    for key, value in list(fields.items())[:6]:
+        text = str(value or "").strip()
+        if text:
+            parts.append(f"{key}={text}")
+    return "、".join(parts)
+
+
+def render_clarification_only_answer(state: Mapping[str, Any]) -> str:
+    """Deterministically render a clarification-list answer from slot contracts.
+
+    最后防线专用：当修订循环失败且 salvage 零存活、而本轮确实存在已校验的
+    澄清缺口合同时，发布由缺口确定性渲染的澄清清单，而不是空答案错误。
+    内容只来自 missing_input_requirements / unresolved_identity_slots /
+    clarification_reasons 的闭合字段，不经过模型，不含工程结论，因此不需要
+    引用；没有可用缺口时返回空串，调用方继续走原拒发路径（不得发明澄清）。
+    """
+
+    from backend.agent.clarification_contract import (
+        normalize_clarification_reasons,
+        normalize_missing_input_requirements,
+    )
+
+    decision = (
+        state.get("safety_decision")
+        if isinstance(state.get("safety_decision"), Mapping)
+        else {}
+    )
+
+    def value(name: str) -> Any:
+        return decision.get(name) if name in decision else state.get(name)
+
+    missing = normalize_missing_input_requirements(value("missing_input_requirements"))
+    unresolved = normalize_missing_input_requirements(
+        value("unresolved_identity_slots")
+    )
+    reasons = normalize_clarification_reasons(value("clarification_reasons"))
+    if not (missing or unresolved or reasons):
+        return ""
+
+    lines: List[str] = [
+        "本轮未能发布经过核验的完整回答。为继续查询，还需要补充以下信息："
+    ]
+    seen: set = set()
+    for item in missing + unresolved:
+        slot = str(item.get("slot") or "").strip()
+        kind = str(item.get("kind") or "").strip()
+        identity = (
+            item.get("identity")
+            if isinstance(item.get("identity"), Mapping)
+            else {}
+        )
+        label = _CLARIFICATION_SLOT_LABELS.get(kind, kind or "信息")
+        described = _describe_clarification_identity(identity)
+        basis = str(item.get("basis") or "").strip()
+        parts = [f"{label}：{slot}" if slot else label]
+        if described:
+            parts.append(f"（涉及：{described}）")
+        if basis:
+            parts.append(f"——{basis}")
+        line = "".join(parts)
+        if line not in seen:
+            seen.add(line)
+            lines.append(f"- {line}")
+    for item in reasons:
+        kind = str(item.get("kind") or "").strip()
+        identity = (
+            item.get("identity")
+            if isinstance(item.get("identity"), Mapping)
+            else {}
+        )
+        label = _CLARIFICATION_REASON_LABELS.get(kind, kind or "条件")
+        blocked = [
+            str(value or "").strip()
+            for value in (item.get("blocked_claims") or [])[:4]
+            if str(value or "").strip()
+        ]
+        described = _describe_clarification_identity(identity)
+        parts = [f"{label}"]
+        if described:
+            parts.append(f"（涉及：{described}）")
+        if blocked:
+            parts.append("；在其确认前不能给出：" + "、".join(blocked))
+        line = "".join(parts)
+        if line not in seen:
+            seen.add(line)
+            lines.append(f"- {line}")
+    lines.append("补充以上信息后，可以基于权威资料重新检索并给出有来源的回答。")
+    return "\n".join(lines)

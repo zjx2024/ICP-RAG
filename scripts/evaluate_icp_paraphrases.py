@@ -2026,14 +2026,29 @@ def _evaluate_semantic_criteria(
     try:
         if judge is None:
             raise ApiError("语义 Judge 未配置")
-        decisions = judge.evaluate(
-            question=question,
-            prior_turns=prior_turns,
-            answer=answer,
-            criteria=criteria,
-            **({"reference_context": reference_context} if reference_context else {}),
-            **({"answer_citations": answer_citations} if answer_citations else {}),
-        )
+        try:
+            decisions = judge.evaluate(
+                question=question,
+                prior_turns=prior_turns,
+                answer=answer,
+                criteria=criteria,
+                **({"reference_context": reference_context} if reference_context else {}),
+                **({"answer_citations": answer_citations} if answer_citations else {}),
+            )
+        except Exception as exc:
+            # 裁判传输超时是评测基础设施噪声，不是答案缺陷：同一次评测中
+            # 答案本体完好却因 Judge 超时判 FAIL 会污染通过率。仅对超时类
+            # 错误重试一次；协议/校验类失败原样上抛。
+            if "timed out" not in str(exc) and "timeout" not in str(exc).lower():
+                raise
+            decisions = judge.evaluate(
+                question=question,
+                prior_turns=prior_turns,
+                answer=answer,
+                criteria=criteria,
+                **({"reference_context": reference_context} if reference_context else {}),
+                **({"answer_citations": answer_citations} if answer_citations else {}),
+            )
         decisions = _validate_semantic_judgement(
             {"criteria": decisions}, criteria
         )

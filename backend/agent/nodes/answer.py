@@ -14,6 +14,7 @@ from backend.agent.nodes.answer_request import (
     _answer_task_context,
     _answer_query_text,
     _clarification_questions,
+    render_clarification_only_answer,
 )
 
 import asyncio
@@ -185,6 +186,13 @@ def _answer_task_instruction(state: Mapping[str, Any]) -> str:
                 "但须说明对应关系是推导的，尚不能确认该码在MFL的显式登记"
             ),
         }
+        # 指引句随字段注入：只在推导关联真实存在时进入合同，
+        # 其余轮次的合同与无此修复时逐字节一致（隔离共享模板面）。
+        contract["derived_source_relation_guidance"] = (
+            "该关联由结构化身份推导：内容可正常引用，但表述须保留推导性质"
+            "（如“与该报码所属模块和故障模式一致的MFL记录”），"
+            "不得写成报码级显式登记或断言不存在相似报码干扰。"
+        )
     rbd_binding = state.get("rbd_query_binding") or {}
     if (
         isinstance(rbd_binding, Mapping)
@@ -194,13 +202,22 @@ def _answer_task_instruction(state: Mapping[str, Any]) -> str:
         # 这是可发布的确定性否定，不是检索失败：候选图中存在模块级模型
         # （如 ICU 所在的供电链）不能替代该部件的直接成功路径。
         selection = rbd_binding.get("current_selection") or {}
+        reinstated = isinstance(rbd_binding.get("anchor_provenance"), Mapping)
         contract["rbd_not_represented"] = {
             "reason": selection.get("reason") if isinstance(selection, Mapping) else "",
             "statement": (
-                "本轮已核对全部已发布 RBD 模型：所问部件未被独立建为功能块或"
-                "成功路径节点。其所属模块可能出现在模块级建模中，但模块级建模"
-                "不等于该部件的直接成功路径，不能用其他 RBD 模型替代。"
-                "这是已核对的终态结论，直接给出否定与边界即可，不再索要图号或标识来进一步确认。"
+                (
+                    "上一轮已核对全部已发布 RBD 模型并给出该否定结论；本轮对"
+                    "同一已发布全集做了确定性复核，范围一致，结论仍然成立。"
+                    if reinstated
+                    else "本轮已核对全部已发布 RBD 模型："
+                )
+                + (
+                    "所问部件未被独立建为功能块或"
+                    "成功路径节点。其所属模块可能出现在模块级建模中，但模块级建模"
+                    "不等于该部件的直接成功路径，不能用其他 RBD 模型替代。"
+                    "这是已核对的终态结论，直接给出否定与边界即可，不再索要图号或标识来进一步确认。"
+                )
             ),
         }
     return (
@@ -218,9 +235,6 @@ def _answer_task_instruction(state: Mapping[str, Any]) -> str:
         "资料中的局部影响不能无依据扩大为全系统失效或任务/放行结论。"
         "未确认跨资料关联不等于另一资料没有功能、接口或处理办法；"
         "明确说明未确认的对应关系，保留原资料名称，不得把HMC动作称为MFL已确认动作。"
-        "合同中出现 derived_source_relation 时，它表示由结构化身份推导的跨资料关联："
-        "内容可正常引用，但表述须保留推导性质（如“与该报码所属模块和故障模式一致的MFL记录”），"
-        "不得写成报码级显式登记或断言不存在相似报码干扰。"
     )
 
 
@@ -624,6 +638,45 @@ def _clarification_text(state: Dict[str, Any]) -> str:
         "不要向用户展示 JSON、内部字段名或内部来源名。\n"
         + json.dumps(contract, ensure_ascii=False, sort_keys=True, default=str)
     )
+
+
+# 终态否定锚点的最低相关性词表：发布的答案至少谈及 RBD 主题，锚点才有
+# 资格持久化。模型完全跑题时不应把终态判定当成"已交付结论"留存。
+_RBD_ANSWER_RELEVANCE_MARKERS = ("RBD", "框图", "成功路径", "可靠")
+
+
+def _manifest_with_terminal_negation_anchor(
+    manifest: Any, state: Mapping[str, Any], final_answer: str
+) -> List[Any]:
+    """Persist the RBD terminal-negation anchor on the assistant message.
+
+    绑定处于 not_represented 终态且答案成功发布时，把终态判定连同已发布
+    RBD 全集指纹写入 manifest（随助手消息落库）。追问轮检索落空时由此
+    做确定性复核恢复，避免"上轮已核对、本轮重推成无法确认"的矛盾。
+    指纹缺失（如旧会话状态）或答案与 RBD 主题无关时不持久化。
+    """
+
+    entries = list(manifest or [])
+    binding = state.get("rbd_query_binding")
+    if not isinstance(binding, Mapping):
+        return entries
+    if str(binding.get("basis") or "") != "current_model_selection_not_represented":
+        return entries
+    if not any(marker in str(final_answer or "") for marker in _RBD_ANSWER_RELEVANCE_MARKERS):
+        return entries
+    from backend.agent.rbd_contract import build_rbd_terminal_negation_anchor
+
+    anchor = build_rbd_terminal_negation_anchor(
+        binding,
+        published_universe=(
+            binding.get("published_universe_fingerprint")
+            or binding.get("candidate_record_ids")
+            or []
+        ),
+    )
+    if anchor:
+        entries.append(anchor)
+    return entries
 
 
 def _prepare_answer_model(model):
@@ -1075,6 +1128,38 @@ async def answer_node(state, config=None) -> Dict:
         if not isinstance(exc, AnswerReviewError):
             record_answer_review(attempt=attempt, outcome="error", code=code)
         observe_answer_stage("review_failed", str(exc)[:500])
+        # 澄清轮最后防线：修订循环失败且 salvage 零存活（语义拒绝）时，若
+        # 本轮确实存在已校验的澄清缺口合同，则由缺口确定性渲染澄清清单发布
+        # （partial，无引用——清单不是工程结论）。缺口不存在时仍拒发：不得
+        # 发明澄清。协议失败（invalid_review_json 等）与传输/超时不走此路径：
+        # 前者是基础设施缺陷应显式暴露，后者模型可能只是没跑完。
+        if isinstance(exc, AnswerReviewError) and exc.code == "review_rejected":
+            clarification_only = render_clarification_only_answer(state)
+            if clarification_only:
+                observe_answer_stage("clarification_only_released", clarification_only)
+                if stream_queue is not None:
+                    await stream_queue.put({
+                        "type": "answer_delta", "content": clarification_only,
+                    })
+                return {
+                    "final_answer": clarification_only,
+                    "citations": [],
+                    "evidence_catalog": [],
+                    "used_evidence_ids": [],
+                    "answer_completion_status": "partial",
+                    "answer_unconfirmed_fields": [],
+                    "answer_backstop": None,
+                    "delivered_answer_fields": [],
+                    "answer_delivery_manifest": [
+                        {
+                            "kind": "goal_delivery",
+                            "goal": {},
+                            "status": "partial",
+                            "evidence_ids": [],
+                            "evidence_scope": "clarification_only",
+                        }
+                    ],
+                }
         raise AnswerGenerationError(
             "回答综合审核未完成或来源校验未通过，本次未发布未经核验的答案，请重试。"
         ) from exc
@@ -1117,5 +1202,7 @@ async def answer_node(state, config=None) -> Dict:
         # Legacy field labels are not semantic proof of delivery. Natural goals
         # with actual evidence identities replace the answer-side field checklist.
         "delivered_answer_fields": [],
-        "answer_delivery_manifest": reviewed["manifest"],
+        "answer_delivery_manifest": _manifest_with_terminal_negation_anchor(
+            reviewed["manifest"], state, final_answer
+        ),
     }
