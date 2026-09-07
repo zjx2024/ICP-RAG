@@ -2177,6 +2177,64 @@ def _canonical_complete_hmc_code(value: Any) -> str:
     return str(parsed.get("hmc_code") or "").strip().casefold()
 
 
+def _hmc_structured_component_identity(
+    hmc_rows: Sequence[Mapping[str, Any]],
+) -> Dict[str, str]:
+    """Resolve the module identity shared by exact HMC rows via components.
+
+    HMC ``fault_desc`` 的权威存储形态是“缩写 故障模式”（如 ``ICU 输入过压
+    钳位失效``），``icp_components`` 把缩写映射到模块名（ICU ↔ 输入调理模块），
+    MFL ``module_fault`` 是“模块名：故障模式”。三者都是权威字段；按
+    “缩写解析出的模块名”+“故障模式段逐字相等”建立的绑定是结构化身份链，
+    不是短语相似度。查库失败时返回空映射并保持 fail-closed。
+    """
+
+    abbreviations: set[str] = set()
+    for row in hmc_rows:
+        if str(row.get("match_type") or "") not in _STRUCTURED_HMC_MATCH_TYPES:
+            continue
+        desc = str(row.get("fault_desc") or row.get("fault_description") or "").strip()
+        parts = desc.split(None, 1)
+        if len(parts) == 2 and parts[0].strip():
+            abbreviations.add(parts[0].strip().upper())
+    if not abbreviations:
+        return {}
+    try:
+        with postgres_client.conn.cursor() as cur:
+            cur.execute(
+                "SELECT abbreviation, name FROM icp_components "
+                "WHERE abbreviation = ANY(%s) AND COALESCE(abbreviation, '') <> ''",
+                (sorted(abbreviations),),
+            )
+            return {str(abbrev).strip(): str(name).strip() for abbrev, name in cur.fetchall()}
+    except Exception as exc:
+        logger.warning("HMC component identity resolution failed: %s", exc)
+        try:
+            postgres_client.conn.rollback()
+        except Exception:
+            pass
+        return {}
+
+
+def _mfl_module_fault_segments(module_fault: Any) -> Tuple[str, str]:
+    """Split ``module_name：fault_mode`` into its two authoritative segments."""
+
+    text = str(module_fault or "").strip()
+    if not text:
+        return "", ""
+    for separator in ("：", ":"):
+        if separator in text:
+            module_name, _, fault_mode = text.rpartition(separator)
+            return module_name.strip(), fault_mode.strip()
+    return "", text
+
+
+def _hmc_fault_mode_segment(row: Mapping[str, Any]) -> str:
+    desc = str(row.get("fault_desc") or row.get("fault_description") or "").strip()
+    parts = desc.split(None, 1)
+    return parts[1].strip() if len(parts) == 2 else ""
+
+
 def _explicit_mfl_hmc_references(row: Mapping[str, Any]) -> set[str]:
     """Return only HMC IDs explicitly stored on an authoritative MFL row.
 
@@ -2263,6 +2321,23 @@ def _bind_mfl_rows_to_hmc(
 
     matched_codes: List[str] = []
     excluded_codes: List[str] = []
+    # 结构化身份链：HMC 行的缩写经 icp_components 解析为模块名，与 MFL
+    # ``module_fault`` 的模块名段相等、且故障模式段逐字相等时，两行指向
+    # 同一权威对象。这是跨表的结构化绑定（与 P2 的故障模式词 handoff 同一
+    # 机制），不是把短语相似当作关系；仅有显式 HMC 引用字段的旧路径保持
+    # 不变，解析失败时整链失效并回落 fail-closed。
+    component_names = set(
+        _hmc_structured_component_identity(hmc_rows).values()
+    )
+    hmc_fault_modes = {
+        mode
+        for mode in (
+            _hmc_fault_mode_segment(row)
+            for row in hmc_rows
+            if str(row.get("match_type") or "") in _STRUCTURED_HMC_MATCH_TYPES
+        )
+        if mode
+    }
     for row in copied:
         mfl_code = str(row.get("mfl_code") or row.get("record_code") or "").strip()
         explicit_refs = _explicit_mfl_hmc_references(row)
@@ -2274,6 +2349,26 @@ def _bind_mfl_rows_to_hmc(
             if mfl_code:
                 matched_codes.append(mfl_code)
             continue
+        if component_names and hmc_fault_modes:
+            module_name, fault_mode = _mfl_module_fault_segments(
+                row.get("module_fault")
+            )
+            if (
+                module_name in component_names
+                and fault_mode
+                and fault_mode in hmc_fault_modes
+            ):
+                row["hmc_relation_match"] = {
+                    "basis": "structured_component_identity",
+                    "module_names": sorted(
+                        name
+                        for name in component_names
+                        if name
+                    ),
+                }
+                if mfl_code:
+                    matched_codes.append(mfl_code)
+                continue
         row["query_binding_excluded"] = True
         row["hmc_relation_unverified"] = True
         if mfl_code:
@@ -2285,7 +2380,17 @@ def _bind_mfl_rows_to_hmc(
             "basis": (
                 "explicit_authoritative_reference"
                 if matched_codes
-                else "no_explicit_authoritative_relation"
+                and all(
+                    row.get("hmc_relation_match", {}).get("basis")
+                    == "explicit_authoritative_reference"
+                    for row in copied
+                    if row.get("hmc_relation_match")
+                )
+                else (
+                    "structured_component_identity"
+                    if matched_codes
+                    else "no_explicit_authoritative_relation"
+                )
             ),
             "mfl_codes": matched_codes,
             "excluded_mfl_codes": excluded_codes,
@@ -7268,6 +7373,41 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
         clarification_reasons.append(
             make_clarification_reason(
                 kind="ambiguous_identity",
+                source_kind="tool_result",
+                source_name="hmc_query",
+                identity=identity,
+                blocked_claims=["exact_hmc_fact"],
+            )
+        )
+    elif supplied_hmc and not hmc_rows:
+        # 权威结构化查询未命中任何记录：除了补齐身份槽（HAMC/完整报码），
+        # HMC 手册查询的工程惯例还要求适用构型与手册版本——不同构型/版本
+        # 的报码表不同，缺这两项时后续复核无法限定范围。这两个槽与身份槽
+        # 一样来自查询协议，不是模型臆测。
+        identity = make_clarification_identity(
+            doc_type="hmc",
+            fields={
+                "lcn": supplied_hmc.get("lcn") or "",
+                "hsc": supplied_hmc.get("hsc") or "",
+            },
+        )
+        for slot in ("hamc", "configuration", "document_version"):
+            unresolved = make_missing_input_requirement(
+                kind="identity_slot",
+                slot=slot,
+                source_kind="tool_result",
+                source_name="hmc_query",
+                identity=identity,
+            )
+            missing_input_requirements = unique_contract_items(
+                missing_input_requirements, [unresolved]
+            )
+            unresolved_identity_slots = unique_contract_items(
+                unresolved_identity_slots, [unresolved]
+            )
+        clarification_reasons.append(
+            make_clarification_reason(
+                kind="unresolved_identity",
                 source_kind="tool_result",
                 source_name="hmc_query",
                 identity=identity,

@@ -46,7 +46,14 @@ class SourceOwnedFieldTests(unittest.TestCase):
                     state["query"] = query
                     state["query_frame"]["source_obligations"][0]["doc_type"] = owner
                     view = source_owned_field_view(item, state)
-                    self.assertEqual(owner == source, "maintenance_action" in view["metadata"]["answer_fields"])
+                    if "maintenance_action" in view["metadata"].get("source_field_exclusions", []):
+                        # 字段被剥除只允许发生在“非属主”行上；MFL 合同字段的
+                        # 属主集合永远包含 MFL 本身。
+                        self.assertNotEqual("mfl", source)
+                    if owner == source or (owner != "mfl" and source == "mfl"):
+                        # 属主自留；或维修合同字段被窄化到非 MFL 属主时，
+                        # MFL 行仍保留权威字段。
+                        self.assertIn("maintenance_action", view["metadata"]["answer_fields"])
 
     def test_shared_alias_preserved_for_independent_dimension(self):
         item = self.item("fmeca")

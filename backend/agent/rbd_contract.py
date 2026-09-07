@@ -16,6 +16,7 @@ from collections import defaultdict
 from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 
 from backend.icp.diagram_validation import FORMAL_VALIDATION_STATUSES
+from backend.agent.current_model_selection import CONTRACT_VERSION as SELECTION_CONTRACT_VERSION
 from backend.agent.current_model_selection import selection_matches_model
 
 
@@ -29,7 +30,14 @@ RBD_SELECTOR_BASES = frozenset(
         "current_model_selection",
     }
 )
-RBD_BINDING_BASES = frozenset({*RBD_SELECTOR_BASES, "explicit_model_set"})
+# 语义模型选择服务的 ``not_represented`` 终态：用户点名的部件/失效路径在
+# 本轮候选图中未被独立建模。它与“未解析”不同——这是模型对候选集合的明确
+# 判定，允许发布确定性的否定回答（未找到该部件的直接成功路径），而不是
+# 落回“无法确认+要求图号”的澄清式空发布。
+RBD_NOT_REPRESENTED_BASE = "current_model_selection_not_represented"
+RBD_BINDING_BASES = frozenset(
+    {*RBD_SELECTOR_BASES, "explicit_model_set", RBD_NOT_REPRESENTED_BASE}
+)
 RBD_STABLE_ID_FIELDS = (
     "revision_id",
     "diagram_id",
@@ -433,6 +441,25 @@ def bind_rbd_models(
         ]
     elif current_selection:
         selector_basis = "current_model_selection"
+        if (
+            current_selection.get("contract_version") == SELECTION_CONTRACT_VERSION
+            and current_selection.get("status") == "not_represented"
+        ):
+            # 语义选择服务明确判定：用户点名的部件/失效路径在本轮候选图中
+            # 未被独立建模。这与“未解析”不同——这是可发布的确定性否定
+            # （不能把上级模块的框图当成该部件的直接模型），不是模糊匹配
+            # 失败。绑定记录 not_represented 终态，消费方据此输出否定回答
+            # 并保留候选图的审计目录，而不是要求用户提供图号。
+            base["basis"] = RBD_NOT_REPRESENTED_BASE
+            base["current_selection"] = dict(current_selection)
+            base["not_represented_subjects"] = sorted(
+                {
+                    _text(value)
+                    for value in (current_selection.get("selections") or [])
+                    if isinstance(value, Mapping) and _text(value.get("matched_title"))
+                }
+            )
+            return [], base
         selected_descriptors = [
             descriptor for _, descriptor in described
             if selection_matches_model(current_selection, descriptor, query=str(raw_user_query))
@@ -558,6 +585,22 @@ def validate_rbd_binding_contract(binding: Any) -> Dict[str, Any]:
         return {"valid": False, "reason": "unknown_contract_version", "revision_ids": []}
     if binding.get("required") is not True:
         return {"valid": False, "reason": "binding_not_required", "revision_ids": []}
+    if _text(binding.get("basis")) == RBD_NOT_REPRESENTED_BASE:
+        # ``not_represented`` 是无模型的确定性终态：语义选择服务对“该部件
+        # 未被独立建模”的明确判定。它没有可绑定的 revision，验证只检查
+        # 终态字段自洽；消费方据此发布否定回答而非拓扑结论。
+        if binding.get("ambiguous") is True:
+            return {"valid": False, "reason": "not_represented_cannot_be_ambiguous", "revision_ids": []}
+        selection = binding.get("current_selection")
+        if not isinstance(selection, Mapping) or selection.get("status") != "not_represented":
+            return {"valid": False, "reason": "not_represented_selection_missing", "revision_ids": []}
+        return {
+            "valid": True,
+            "reason": "",
+            "revision_ids": [],
+            "not_represented": True,
+            "model_bindings": [],
+        }
     if binding.get("bound") is not True or binding.get("ambiguous") is True:
         return {"valid": False, "reason": "binding_not_unique", "revision_ids": []}
     basis = _text(binding.get("basis"))

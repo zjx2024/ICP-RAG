@@ -4,6 +4,7 @@ Dependencies flow toward source views and pure rules, never answer.py.
 """
 from __future__ import annotations
 
+from backend.agent.answer_contract import MFL_CONTRACT_FIELDS
 from backend.agent.answer_contract import required_answer_fields
 from backend.agent.contracts import match_type_is_exact
 from backend.agent.nodes.answer_collections import _closed_collection_groups
@@ -15,6 +16,8 @@ from backend.agent.nodes.answer_payload import _evidence_answer_fields
 from backend.agent.nodes.answer_payload import _explicit_function_ids
 from backend.agent.nodes.answer_payload import _selected_anchor_record_ids
 from backend.agent.nodes.answer_presence import normalize_presence_text
+from backend.agent.nodes.answer_text import _compact_semantic_text
+from backend.agent.tools.icp_diagnosis import _mfl_module_fault_segments
 from backend.agent.query_understanding import extract_business_codes
 from typing import Any
 from typing import Dict
@@ -367,6 +370,49 @@ def _narrow_semantic_table_families(
             and business_record_id(item) in exact_history_references["mfl"]
         )
     )
+    # MFL 合同维度在本轮被点名时，MFL 行是这些维度的权威属主。已获门禁批准、
+    # 且与保留 FMECA 行共享同一故障模式词的 MFL 行不按“语义表族”丢弃：
+    # ``module_fault`` 的权威存储形态是“模块名：故障模式”，其故障模式段与
+    # FMECA ``failure_mode`` 逐字相等是两表共用的显式词法身份（与
+    # ``_mfl_identity_terms`` 同一机制），不是相似度合并。无此保留时，一个
+    # 强 FMECA 锚点会把整族 MFL 行从答案上下文剔除，维修合同只能靠 FMECA
+    # 的补偿措施字面凑数。
+    if MFL_CONTRACT_FIELDS & set(required_answer_fields(state)):
+        approved_ids = {
+            str(value)
+            for value in (
+                (state.get("safety_decision") or {}).get(
+                    "approved_evidence_ids"
+                )
+                or []
+            )
+            if str(value)
+        }
+        kept_failure_modes = {
+            mode
+            for item in kept_rows
+            if (
+                mode := _compact_semantic_text(
+                    _evidence_answer_fields(item).get("failure_mode")
+                )
+            )
+        }
+        if kept_failure_modes:
+            for item in all_mfl_rows:
+                evidence_id = str(item.get("evidence_id") or "")
+                if (
+                    evidence_id in matching_mfl_ids
+                    or evidence_id not in approved_ids
+                ):
+                    continue
+                # 分段必须用原始文本：_compact_semantic_text 会剥离全角冒号，
+                # compact 之后再分段会把模块名并进故障模式段。
+                module_name, fault_mode = _mfl_module_fault_segments(
+                    _evidence_answer_fields(item).get("module_failure")
+                )
+                compact_mode = _compact_semantic_text(fault_mode)
+                if compact_mode and compact_mode in kept_failure_modes:
+                    matching_mfl_ids.add(evidence_id)
 
     narrowed: List[Dict[str, Any]] = []
     for item in evidence:

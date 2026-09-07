@@ -1833,6 +1833,11 @@ class PostgresClient:
             else:
                 cur.execute("SELECT COUNT(*) FROM document_chunks WHERE section = %s", (t["doc_type"],))
                 t["record_count"] = cur.fetchone()[0]
+        # 只读统计也必须立即结束事务：共享连接上的悬挂事务会持有
+        # document_fault_trees 等表的 ACCESS SHARE 锁，阻塞其他进程
+        # import 时 _create_tables 的 ALTER TABLE（ACCESS EXCLUSIVE），
+        # 表现为整条链路无输出挂起。
+        self.conn.commit()
         return types
 
     def get_document_type(self, doc_type):

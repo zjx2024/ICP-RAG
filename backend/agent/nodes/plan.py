@@ -296,6 +296,7 @@ TARGET_PROMPT = """你只负责识别用户这一轮明确询问的信息目标�
 18. 用户把多个当前对象放在同一个问题中（例如 A、B 两路供电/两个通道/多个模块）时，subjects 必须逐个保留用户已命名的对象；不得为了简短把它们收缩成一个旧会话中的单对象，也不得凭空补造新的业务 ID。后续会分别用已有权威身份查询并合并结果。
 19. 用户问多个已命名的路、通道或模块为何共同不可用、哪些上游条件让它们一起失效时，属于 cause_analysis；required_answer_fields 包含 structural_cause_chain，并生成带当前原话 basis 的 relation_expansion 合同。只有另外问剩余路径能否继续承担任务时，才增加 reliability_query。
 20. typed_record_fields 只做当前原话到结构化表字段的类型标注：值必须是用户本轮完整写出的连续原文，不得改写、补全或从历史答案猜测。subject_bindings 同样必须给出当前原话 basis；指代追问通过 selected_anchor_ids 延续，不得为“它/这个”补造绑定值。
+21. 用户描述当前异常现象并询问判断方向、优先怀疑、如何检查或处置时，问题同时要求原因判断和可执行的维修依据；cause_analysis 类目标必须保留 maintenance_action（现象稳定复现下再加 maintenance_api），不得把维修维度从 required_answer_fields 中删去。这是读取维度的合同，不是回答范围扩张。
 
 示例：
 - “高负载连续运行时机箱过热，采样值偶发越限，优先怀疑哪里” → cause_analysis

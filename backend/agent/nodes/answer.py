@@ -123,6 +123,7 @@ ANSWER_PROMPT = """你是 ICP 工程知识与辅助诊断助手。用中文自�
 
 回答要求：
 1. 第一段直接回应当前原问题，然后解释本轮所问的理由、条件、比较或先后关系。追问不等于首轮重答；是否需要重列取决于当前问题，而非证据中字段、成员或记录的数量。
+1.1 追问轮保持紧凑：先判断本轮实际新增的分问数量，回答篇幅与新增分问成正比。单点核对、计数或二选一追问通常两三段以内；除非本轮明确要求完整重述或并列展开多个对象，不要复述上一轮已交付的清单、边界说明和免责声明，需要时引用结论即可。
 2. 不采用按意图选择的固定栏目。身份、原因、影响、维修、历史和结构字段只是可引用的材料；只展开与本轮分问相关的内容，不能把逐条抄录字段当成解释。
 3. 工程事实只能依据本轮获准证据，并在相应事实句后标注 [^编号]。会话只能支持对先前表述的核对；同一句若还断言工程事实，仍须本轮证据。不要用工程文档引用证明“刚才说过”。
 4. 精确代码（含前导零、通配符）、记录身份、故障模式、案例、方向、阶段、父子层级及构型/版本必须保持一致。相似描述不能证明记录相同或跨文档关联；相似案例只作有条件参考，不能确认当前根因。
@@ -162,6 +163,22 @@ def _answer_task_instruction(state: Mapping[str, Any]) -> str:
             "to_doc_type": "mfl",
             "record_ids": list(relation.get("hmc_codes") or []),
             "reason": "没有取得权威显式编码关联；不能据此认定MFL没有记录或没有API",
+        }
+    rbd_binding = state.get("rbd_query_binding") or {}
+    if (
+        isinstance(rbd_binding, Mapping)
+        and str(rbd_binding.get("basis") or "") == "current_model_selection_not_represented"
+    ):
+        # 语义模型选择已明确判定本轮点名的部件/失效路径未被独立建模。
+        # 这是可发布的确定性否定，不是检索失败：候选图中存在模块级模型
+        # （如 ICU 所在的供电链）不能替代该部件的直接成功路径。
+        selection = rbd_binding.get("current_selection") or {}
+        contract["rbd_not_represented"] = {
+            "reason": selection.get("reason") if isinstance(selection, Mapping) else "",
+            "statement": (
+                "本轮已核对全部已发布 RBD 模型，未找到所问部件对应的直接成功路径；"
+                "模块级模型不等于该部件的直接路径，不能用其他 RBD 模型替代。"
+            ),
         }
     return (
         "【本轮任务与来源边界（内部材料，不得原样输出）】\n"
@@ -768,6 +785,23 @@ def _answer_review_material(state):
                 "meaning": "仅说明本轮是否取得权威关联，不证明原文是否有记录或接口",
             }
         ]
+    rbd_binding = state.get("rbd_query_binding")
+    if (
+        isinstance(rbd_binding, Mapping)
+        and str(rbd_binding.get("basis") or "") == "current_model_selection_not_represented"
+    ):
+        # 语义模型选择的 not_represented 终态是本轮观察：候选模型集合已被
+        # 核对、所问部件未被独立建模。审核可据此把“未找到直接成功路径”
+        # 的否定句判为 answered；该观察不能支持任何拓扑/数值工程断言。
+        selection = rbd_binding.get("current_selection") or {}
+        contract["rbd_representation"] = [
+            {
+                "status": "not_represented",
+                "checked_models": list(rbd_binding.get("candidate_record_ids") or []),
+                "reason": str(selection.get("reason") or "") if isinstance(selection, Mapping) else "",
+                "meaning": "候选RBD模型均未独立建模所问部件；模块级模型不等于该部件直接路径",
+            }
+        ]
     # Source-read observations describe the offered projection, never infer
     # source-wide absence from the record's selected field view.
     contract["source_view"] = [
@@ -823,6 +857,7 @@ def _answer_review_material(state):
             "source_relation",
             "source_view",
             "target_binding",
+            "rbd_representation",
         ),
     )
     return ledger, conversation_review_context(state), observations
