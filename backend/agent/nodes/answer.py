@@ -827,7 +827,8 @@ def _answer_review_material(state):
     return ledger, conversation_review_context(state), observations
 
 
-async def _review_answer(draft, state, model, *, timeout=None, previous_feedback=None):
+async def _review_answer(draft, state, model, *, timeout=None, previous_feedback=None,
+                         salvage=False):
     ledger, conversation, observations = _answer_review_material(state)
     prepared = prepare_review(
         draft, ledger=ledger, conversation=conversation, observations=observations,
@@ -869,6 +870,7 @@ async def _review_answer(draft, state, model, *, timeout=None, previous_feedback
         ledger=ledger,
         safety=state.get("safety_decision") or {},
         calculation_requests=state.get("calculation_requests") or [],
+        salvage=salvage,
     )
 
 
@@ -937,11 +939,29 @@ async def answer_node(state, config=None) -> Dict:
     try:
         for attempt in range(1, MAX_ANSWER_REVIEW_ATTEMPTS + 1):
             try:
+                # Only the final attempt may salvage: attempts 1/2 keep the
+                # strict all-or-nothing contract so the revision loop stays a
+                # real convergence mechanism, not a pruning shortcut.
                 reviewed = await _review_answer(
                     draft, state, model, timeout=remaining(ANSWER_REVIEW_TIMEOUT_SECONDS),
                     previous_feedback=previous_feedback,
+                    salvage=attempt >= MAX_ANSWER_REVIEW_ATTEMPTS,
                 )
-                record_answer_review(attempt=attempt, outcome="accepted")
+                if reviewed.get("salvaged"):
+                    # The verified subset is published as a partial answer.
+                    # Keep the original rejection codes visible in traces
+                    # (codes/locations only, never drafts or feedback text).
+                    record_answer_review(
+                        attempt=attempt, outcome="salvaged", code="review_salvaged",
+                        issues=reviewed.get("salvage_issues") or [],
+                    )
+                    observe_answer_stage(
+                        "review_salvaged",
+                        json.dumps({"pruned_units": reviewed.get("pruned_units") or []},
+                                   ensure_ascii=False),
+                    )
+                else:
+                    record_answer_review(attempt=attempt, outcome="accepted")
                 break
             except AnswerReviewError as exc:
                 record_answer_review(attempt=attempt, outcome="rejected", code=exc.code,

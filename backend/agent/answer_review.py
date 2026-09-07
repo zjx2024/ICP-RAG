@@ -305,8 +305,19 @@ def _augment_exact_identity_sources(
 
 
 def validate_review(raw: str, *, prepared: Mapping, ledger: Mapping,
-                    safety: Mapping, calculation_requests: list[str]) -> dict:
-    """Validate the complete critique; publication cannot salvage unchecked text."""
+                    safety: Mapping, calculation_requests: list[str],
+                    salvage: bool = False) -> dict:
+    """Validate the complete critique.
+
+    Without ``salvage`` any issue rejects the whole draft.  With
+    ``salvage=True`` (final revision attempt only) the critic-verified units
+    may still be published as a partial answer: units the critic rejected are
+    deterministically pruned instead of publishing a blank error that also
+    poisons later turns.  Protocol failures (invalid JSON, incomplete unit
+    maps, unknown identities) still reject; so does a pruned shell with no
+    substantive surviving unit or nothing answered at all.  Pruned publication
+    is always ``partial`` with every goal listed unconfirmed.
+    """
     _require(isinstance(raw, str) and 0 < len(raw) <= 50000, "invalid response size")
     try:
         review = json.loads(raw, object_pairs_hook=_object_pairs,
@@ -333,7 +344,7 @@ def validate_review(raw: str, *, prepared: Mapping, ledger: Mapping,
     checks = indexed("units", "unit_id", units,
                      {"unit_id", "sources", "claims", "attributed_doc_types", "issue"})
     goals = indexed("goals", "goal_id", prepared["goals"], {"goal_id", "status", "issue"})
-    issues, citations_by_unit = [], {}
+    issues, citations_by_unit, kinds_by_unit = [], {}, {}
     for uid, unit in units.items():
         check = checks[uid]
         selected, claims = check["sources"], check["claims"]
@@ -376,6 +387,7 @@ def validate_review(raw: str, *, prepared: Mapping, ledger: Mapping,
             _require(bool(claims) and (bool(selected) or set(claims) == {"presentation"}), "unreviewed unit")
             sources = [prepared["sources"][sid] for sid in dict.fromkeys(selected)]
             kinds = {source["kind"] for source in sources}
+            kinds_by_unit[uid] = kinds
             required = {"conversation": "conversation", "query_status": "observation",
                         "policy": "policy"}
             _require(all(required[c] in kinds for c in set(claims) & required.keys()),
@@ -466,14 +478,47 @@ def validate_review(raw: str, *, prepared: Mapping, ledger: Mapping,
             issues.append({"code": "unanswered_goal", "location": gid, "detail": goal["issue"]})
         if goal["status"] != "answered":
             missing.append(prepared["goals"][gid])
+    pruned_units: set[str] = set()
     if issues:
-        raise AnswerReviewError("review rejected", feedback=issues)
+        if not salvage:
+            raise AnswerReviewError("review rejected", feedback=issues)
+        # Final-attempt salvage: the revision loop could not converge, but the
+        # critic-verified units still carry publishable value.  Drop exactly
+        # the units the critic rejected instead of returning a blank error
+        # that also fails every later turn (prior_turn_incomplete).  Protocol
+        # failures never reach here (they raise earlier), and the structural
+        # protections below keep pruning from becoming a loophole.
+        pruned_units = {
+            item["location"] for item in issues
+            if isinstance(item.get("location"), str) and re.fullmatch(r"u\d+", item["location"])
+        }
+        surviving = [u for u in prepared["units"] if u["unit_id"] not in pruned_units]
+        # A surviving shell of headings/policy lines, or an answer where no
+        # goal reached answered/partial, is not a partial answer: reject.
+        substantive = any(
+            citations_by_unit.get(u["unit_id"])
+            or (kinds_by_unit.get(u["unit_id"], set()) - {"policy"})
+            for u in surviving
+        )
+        answered_any = any(g["status"] in {"answered", "partial"} for g in goals.values())
+        if not surviving or not substantive or not answered_any:
+            raise AnswerReviewError("review rejected", feedback=issues)
+        if pruned_units:
+            # The critic judged the complete draft; after pruning, no goal may
+            # keep an "answered" claim.  Demote everything and list each goal
+            # as unconfirmed for the partial release.
+            missing = list(prepared["goals"].values())
 
     # There is one owner of final support: the verified source selections.
     # Provisional writer numbering must not become a second binding contract.
     # Preserve every non-citation character; the critic cannot delete prose.
     text = prepared["draft"]
     for unit in reversed(prepared["units"]):
+        if unit["unit_id"] in pruned_units:
+            # Deterministic pruning: the rejected unit's text (including any
+            # stale citation markers inside it) leaves the published draft.
+            text = text[:unit["start"]] + text[unit["end"]:]
+            continue
         citations = "".join(f"[^{n}]" for n in citations_by_unit[unit["unit_id"]])
         first = True
         def replace(_match):
@@ -485,10 +530,22 @@ def validate_review(raw: str, *, prepared: Mapping, ledger: Mapping,
         if first:
             rendered += citations
         text = text[:unit["start"]] + rendered + text[unit["end"]:]
+    if pruned_units:
+        # Removing line units can leave runs of blank lines; collapse them so
+        # the pruned answer reads as normal paragraphs.
+        text = re.sub(r"\n{3,}", "\n\n", text).strip("\r\n")
     eids = list(dict.fromkeys(str(ledger[n].get("evidence_id") or "")
                              for ns in citations_by_unit.values() for n in ns))
-    return {"text": text, "status": "partial" if missing else "full", "unconfirmed_goals": missing,
+    return {"text": text, "status": "partial" if (missing or issues) else "full",
+            "unconfirmed_goals": missing,
             # These are answer-level sources, not a fabricated per-field delivery map.
             "manifest": [{"kind": "goal_delivery", "goal": prepared["goals"][gid],
-                          "status": goal["status"], "evidence_ids": [e for e in eids if e],
-                          "evidence_scope": "answer"} for gid, goal in goals.items()]}
+                          "status": ("partial" if goal["status"] == "answered" else goal["status"])
+                          if pruned_units else goal["status"],
+                          "evidence_ids": [e for e in eids if e],
+                          "evidence_scope": "answer"} for gid, goal in goals.items()],
+            "salvaged": bool(issues), "pruned_units": sorted(pruned_units),
+            "salvage_issues": [{"location": item["location"], "code": item["code"]}
+                               for item in issues
+                               if isinstance(item, dict) and isinstance(item.get("location"), str)
+                               and isinstance(item.get("code"), str)]}

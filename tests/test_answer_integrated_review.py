@@ -446,11 +446,20 @@ class AnswerEntryTests(unittest.TestCase):
                      config={"configurable": {"stream_queue": queue}})
         self.assertTrue(queue.empty())
 
-    def test_unsafe_unit_cannot_be_silently_removed_to_publish_rest(self):
+    def test_unsafe_unit_pruned_with_explicit_partial_not_silent_drop(self):
         value = response(check(), check(unit_id="u2", issue="结论无依据。"))
-        with self.assertRaises(answer.AnswerGenerationError):
-            node_run(review=value, draft=TEXT + "\n其他结论。", revision=TEXT + "\n其他结论。", second_review=value,
-                     third_revision=TEXT + "\n其他结论。", third_review=value)
+        draft = TEXT + "\n其他结论。"
+        result, calls, capture = node_run(review=value, draft=draft, revision=draft,
+                                          second_review=value, third_revision=draft,
+                                          third_review=value)
+        # The critic-verified unit publishes; the rejected unit is
+        # deterministically pruned.  The release is partial with every goal
+        # unconfirmed, so the removal is visible — never a silent drop and
+        # never a full-answer pass-through of unchecked text.
+        self.assertEqual("partial", result["answer_completion_status"])
+        self.assertIn(TEXT, result["final_answer"])
+        self.assertNotIn("其他结论", result["final_answer"])
+        self.assertTrue(result["answer_unconfirmed_fields"])
 
     def test_transport_timeout_not_retried_without_actionable_feedback(self):
         with patch.object(answer, "_review_answer", new=AsyncMock(side_effect=asyncio.TimeoutError)) as review:
