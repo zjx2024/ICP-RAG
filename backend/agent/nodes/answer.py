@@ -164,6 +164,27 @@ def _answer_task_instruction(state: Mapping[str, Any]) -> str:
             "record_ids": list(relation.get("hmc_codes") or []),
             "reason": "没有取得权威显式编码关联；不能据此认定MFL没有记录或没有API",
         }
+    elif (
+        isinstance(relation, Mapping)
+        and relation.get("required") is True
+        and relation.get("bound") is True
+        and str(relation.get("basis") or "") == "structured_component_identity"
+    ):
+        # 结构化身份链绑定成立，但它仍是推导关联：MFL 行不存储 HMC 报码，
+        # 关联由 icp_components 模块身份与故障模式段一致推导而来。引用其中
+        # 内容时须保留这一边界，不能表述成报码级显式登记（“专门针对该
+        # 报码”“已证实属于该码”“不存在相似报码干扰”均属过度声称）。
+        contract["derived_source_relation"] = {
+            "from_doc_type": "hmc",
+            "to_doc_type": "mfl",
+            "record_ids": list(relation.get("hmc_codes") or []),
+            "basis": "structured_component_identity",
+            "meaning": (
+                "MFL记录与该报码的关联由模块身份与故障模式一致推导，"
+                "不是MFL表中显式登记的报码对应；维修与API内容可正常引用，"
+                "但须说明对应关系是推导的，尚不能确认该码在MFL的显式登记"
+            ),
+        }
     rbd_binding = state.get("rbd_query_binding") or {}
     if (
         isinstance(rbd_binding, Mapping)
@@ -176,8 +197,10 @@ def _answer_task_instruction(state: Mapping[str, Any]) -> str:
         contract["rbd_not_represented"] = {
             "reason": selection.get("reason") if isinstance(selection, Mapping) else "",
             "statement": (
-                "本轮已核对全部已发布 RBD 模型，未找到所问部件对应的直接成功路径；"
-                "模块级模型不等于该部件的直接路径，不能用其他 RBD 模型替代。"
+                "本轮已核对全部已发布 RBD 模型：所问部件未被独立建为功能块或"
+                "成功路径节点。其所属模块可能出现在模块级建模中，但模块级建模"
+                "不等于该部件的直接成功路径，不能用其他 RBD 模型替代。"
+                "这是已核对的终态结论，直接给出否定与边界即可，不再索要图号或标识来进一步确认。"
             ),
         }
     return (
@@ -195,6 +218,9 @@ def _answer_task_instruction(state: Mapping[str, Any]) -> str:
         "资料中的局部影响不能无依据扩大为全系统失效或任务/放行结论。"
         "未确认跨资料关联不等于另一资料没有功能、接口或处理办法；"
         "明确说明未确认的对应关系，保留原资料名称，不得把HMC动作称为MFL已确认动作。"
+        "合同中出现 derived_source_relation 时，它表示由结构化身份推导的跨资料关联："
+        "内容可正常引用，但表述须保留推导性质（如“与该报码所属模块和故障模式一致的MFL记录”），"
+        "不得写成报码级显式登记或断言不存在相似报码干扰。"
     )
 
 
@@ -776,13 +802,23 @@ def _answer_review_material(state):
     )
     relation = state.get("hmc_mfl_binding")
     if isinstance(relation, Mapping) and relation.get("required") is True:
+        # basis 让审核方核对答案是否把推导关联表述成报码级显式登记：
+        # structured_component_identity 是模块身份+故障模式推导，
+        # 不是 MFL 表存储的报码对应。
         contract["source_relation"] = [
             {
                 "from_doc_type": "hmc",
                 "to_doc_type": "mfl",
                 "bound": relation.get("bound") is True,
+                "basis": str(relation.get("basis") or ""),
                 "hmc_codes": list(relation.get("hmc_codes") or []),
-                "meaning": "仅说明本轮是否取得权威关联，不证明原文是否有记录或接口",
+                "meaning": (
+                    "bound=true且basis=structured_component_identity时，关联是"
+                    "模块身份与故障模式一致的推导结果，不是MFL显式登记的报码对应；"
+                    "答案不得声称该MFL记录已被证明属于当前报码"
+                    if relation.get("bound") is True
+                    else "仅说明本轮是否取得权威关联，不证明原文是否有记录或接口"
+                ),
             }
         ]
     rbd_binding = state.get("rbd_query_binding")

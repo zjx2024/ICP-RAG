@@ -2235,6 +2235,22 @@ def _hmc_fault_mode_segment(row: Mapping[str, Any]) -> str:
     return parts[1].strip() if len(parts) == 2 else ""
 
 
+def _rbd_binding_needs_identity_clarification(binding: Mapping[str, Any]) -> bool:
+    """Whether an RBD binding should surface an unresolved-identity slot.
+
+    ``not_represented`` 是已核对的终态否定（所问部件未被独立建模），
+    不是待消解的身份缺口：再生成 ``rbd_model_identity`` 未解析槽会与
+    确定性否定结论互相矛盾，诱导答案索要图号来“进一步确认”。
+    真正的 unresolved/ambiguous 绑定仍需要该槽。
+    """
+
+    if not isinstance(binding, Mapping):
+        return False
+    if binding.get("required") is not True or binding.get("bound") is True:
+        return False
+    return str(binding.get("basis") or "") != "current_model_selection_not_represented"
+
+
 def _explicit_mfl_hmc_references(row: Mapping[str, Any]) -> set[str]:
     """Return only HMC IDs explicitly stored on an authoritative MFL row.
 
@@ -7415,11 +7431,7 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
             )
         )
 
-    if (
-        isinstance(rbd_query_binding, Mapping)
-        and rbd_query_binding.get("required") is True
-        and rbd_query_binding.get("bound") is not True
-    ):
+    if _rbd_binding_needs_identity_clarification(rbd_query_binding):
         identity = make_clarification_identity(
             doc_type="rbd",
             record_ids=(
