@@ -755,7 +755,7 @@
               "mfl",
               "fault_history"
             ],
-            "max_answer_chars": 450,
+            "max_answer_chars": 500,
             "semantic_criteria": [
               {
                 "id": "current_turn",
