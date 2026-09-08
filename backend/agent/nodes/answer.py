@@ -217,6 +217,20 @@ def _answer_task_instruction(state: Mapping[str, Any]) -> str:
     rbd_binding = state.get("rbd_query_binding") or {}
     if (
         isinstance(rbd_binding, Mapping)
+        and rbd_binding.get("bound") is True
+        and str(rbd_binding.get("basis") or "") in {"selected_rbd_identity", "current_model_selection"}
+        and str(frame.get("question_semantics") or "") == "explain"
+    ):
+        # 已绑定 RBD 模型且语义为 explain（“RBD 能证明什么”类能力边界）：
+        # 至多一条模型引用佐证范围即可，结构表达式等细节按当前分问裁剪。
+        # 正常内容轮（describe/verify 等）不注入，保持合同共享面隔离。
+        contract["rbd_answer_compactness"] = (
+            "能力边界回答保持紧凑（目标 400 字内）：先按资料类别说明"
+            "能证明与不能证明的范围，至多引用一条当前绑定模型作范围佐证，"
+            "不展开结构表达式成员、成功判据原文或逐模块枚举。"
+        )
+    if (
+        isinstance(rbd_binding, Mapping)
         and str(rbd_binding.get("basis") or "") == "current_model_selection_not_represented"
     ):
         # 语义模型选择已明确判定本轮点名的部件/失效路径未被独立建模。
