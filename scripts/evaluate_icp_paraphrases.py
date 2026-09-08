@@ -1366,7 +1366,11 @@ class SemanticJudge:
                     decision = json.loads(content)
                 except ValueError as exc:
                     raise ApiError("语义 Judge content 不是严格 JSON") from exc
-                return _validate_grounded_semantic_judgement(decision, criteria, evaluation_input["final_answer"])
+                return _validate_grounded_semantic_judgement(
+                    decision, criteria,
+                    evaluation_input["final_answer"],
+                    evaluation_question=str(evaluation_input.get("current_question") or ""),
+                )
             except ApiError as exc:
                 # Retry only an invalid protocol, never a valid FAIL/PASS.
                 # It shares the original deadline and cannot fish for a pass.
@@ -1378,6 +1382,9 @@ class SemanticJudge:
                     {"role": "user", "content": (
                         "Your previous response violated the output protocol: " + str(exc)
                         + ". Return the complete corrected JSON. Copy short exact quotes from final_answer only. "
+                        "Quotes must be copied from the final_answer field, never from current_question, "
+                        "previous_turns or source excerpts; a phrase that appears only in the question is not "
+                        "an answer quote. "
                         "If required information is absent, mark that positive check false instead of inventing a quote. "
                         "For absent prohibited claims use prohibition and an empty quotes array. "
                         "Do not change the criteria, improve the answer, or relax any judgement to obtain a pass."
@@ -1420,6 +1427,7 @@ def _judge_quote_supported(quote: str, answer: str) -> bool:
 
 def _validate_grounded_semantic_judgement(
     value: Any, criteria: Sequence[Mapping[str, str]], answer: str,
+    evaluation_question: str = "",
 ) -> List[Dict[str, Any]]:
     """Require literal answer support for each model-evaluated dimension.
 
@@ -1448,9 +1456,16 @@ def _validate_grounded_semantic_judgement(
                         "请复制待核对的完整声明及其引用，不能只摘脚注编号"
                     )
                 if not _judge_quote_supported(quote, answer):
+                    origin_hint = ""
+                    if _judge_quote_supported(quote, evaluation_question):
+                        # The phrase exists verbatim in the question but not in
+                        # the answer: a classic source confusion the correction
+                        # round must name explicitly.
+                        origin_hint = "；该原话来自当前问题而非最终答案"
                     raise ApiError(
                         f"语义 Judge {result['id']}/{check['aspect']} 引用了最终答案不存在的原话：{quote!r}；"
                         "请从最终答案复制连续原文，不要拼接或改写"
+                        + origin_hint
                     )
             if check["passed"] and not quotes and check["requirement_kind"] == "positive":
                 raise ApiError(f"语义 Judge {result['id']}/{check['aspect']} 通过维度缺少答案原话支持")
