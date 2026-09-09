@@ -683,6 +683,13 @@ ANSWER_REVIEW_TIMEOUT_SECONDS = TURN_TIMEOUT_SECONDS
 # One initial review, at most one writer revision and its complete review.
 MAX_ANSWER_REVIEW_ATTEMPTS = 2
 
+# Ollama counts thinking tokens against the output budget, so the shared
+# 4096 writer cap made whole-answer reviews intermittently die at
+# finish_reason=length and fail closed with an empty answer (observed twice
+# in eight replay turns).  The review verdict is a bounded JSON object plus
+# reasoning; the ledger experiment measured ~4687 tokens for a first review.
+ANSWER_REVIEW_OUTPUT_TOKENS = 8192
+
 
 def _prepare_answer_review_model(model):
     prepared = dict(model or {})
@@ -691,6 +698,11 @@ def _prepare_answer_review_model(model):
         # Semantic review needs reasoning, not just JSON formatting. Fixed-input
         # controls improved false rejection without weakening known negatives.
         prepared.update(format=review_schema(), reasoning=True)
+    try:
+        configured = int(prepared.get("max_tokens") or 0)
+    except (TypeError, ValueError):
+        configured = 0
+    prepared["max_tokens"] = max(configured, ANSWER_REVIEW_OUTPUT_TOKENS)
     return bounded_model_transport(prepared, ANSWER_REVIEW_TIMEOUT_SECONDS)
 
 

@@ -342,9 +342,11 @@ class AnswerEntryTests(unittest.TestCase):
         result, calls, _ = node_run()
         self.assertEqual(2, len(calls))
         self.assertEqual(DRAFT, result["final_answer"])
-        for call in calls:
-            self.assertEqual(4096, call.args[1]["max_tokens"])
-            self.assertEqual(4096, call.args[1]["num_predict"])
+        # Writer keeps the configured budget; the review gets its own floor.
+        self.assertEqual(4096, calls[0].args[1]["max_tokens"])
+        self.assertEqual(4096, calls[0].args[1]["num_predict"])
+        self.assertEqual(8192, calls[1].args[1]["max_tokens"])
+        self.assertEqual(8192, calls[1].args[1]["num_predict"])
         self.assertEqual([5], calls[1].args[1]["format"]["properties"]["version"]["enum"])
 
     def test_one_revision_is_fully_rechecked_and_private_replayable(self):
