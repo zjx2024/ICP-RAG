@@ -308,7 +308,7 @@ class AnswerEntryTests(unittest.TestCase):
         self.assertEqual([False, True, False, True], [call.args[1]['reasoning'] for call in calls])
         self.assertEqual(DRAFT, result['final_answer'])
 
-    def test_only_review_enables_thinking_without_changing_output_budget(self):
+    def test_only_review_enables_thinking_with_independent_output_budget(self):
         from backend.core.llm_service import _ollama_runtime_payload
         model = {"provider": "ollama", "model_name": "thinking-capable-fixture",
                  "max_tokens": 4096, "num_ctx": 32768, "temperature": 0.2}
@@ -316,12 +316,18 @@ class AnswerEntryTests(unittest.TestCase):
         reviewed = answer._prepare_answer_review_model(model)
         self.assertTrue(reviewed["reasoning"])
         self.assertFalse(answer._prepare_answer_model(model)["reasoning"])
-        self.assertEqual(4096, reviewed["max_tokens"])
+        # Thinking tokens count against the Ollama output budget; the review
+        # floor keeps a whole-answer verdict from dying at finish_reason=length.
+        self.assertEqual(8192, reviewed["max_tokens"])
         self.assertEqual(model, original)
         payload = _ollama_runtime_payload([{"role": "user", "content": "fixed review"}], reviewed, stream=False)
         self.assertTrue(payload["think"])
-        self.assertEqual(4096, payload["options"]["num_predict"])
+        self.assertEqual(8192, payload["options"]["num_predict"])
         self.assertEqual(protocol.review_schema(), payload["format"])
+        # A larger configured writer budget is never shrunk by the review floor.
+        roomy = answer._prepare_answer_review_model(
+            {"provider": "ollama", "model_name": "fixture", "max_tokens": 12000})
+        self.assertEqual(12000, roomy["max_tokens"])
 
     def test_one_revision_receives_both_checks_and_rechecks_new_citation_errors(self):
         bad = 'OTHER-918 必然停止。[^1]'
