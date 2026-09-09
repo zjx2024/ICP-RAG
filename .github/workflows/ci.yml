@@ -40,15 +40,15 @@ jobs:
       - name: Run deterministic ICP tests
         run: python -m unittest discover -s tests -p 'test_*.py' -v
 
-      - name: Verify Dify compatibility route is retained
+      - name: Verify ICP routers are mounted
         run: |
           python - <<'PY'
           from pathlib import Path
           api_init = Path('backend/api/__init__.py').read_text(encoding='utf-8')
-          dify = Path('backend/api/routers/dify.py')
-          assert dify.exists(), 'Dify router was removed'
-          assert 'dify_router' in api_init and 'include_router(dify_router' in api_init, 'Dify router is not mounted'
-          print('Dify compatibility route retained')
+          for name in ('types_router', 'icp_domain_router', 'documents_router'):
+              assert name in api_init, f'ICP router not mounted: {name}'
+          assert not Path('backend/api/routers/dify.py').exists(), 'retired Dify router must stay removed'
+          print('ICP routers mounted; generic/Dify legacy routes remain retired')
           PY
 
   frontend:

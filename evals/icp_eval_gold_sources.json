@@ -5,7 +5,7 @@
     "PRODUCT_SCOPE": [
       {
         "path": "AGENTS.md",
-        "sha256": "1eb862fc09943d42739ea616035b38d77a04cb28403e6aed673de176835c32c4",
+        "sha256": "322b0cf50da6b29840ba9985dd42f5356da3d4e18b4843db1f41c155ab73e6ee",
         "locators": [
           {"kind": "lines", "start": 9, "end": 31},
           {"kind": "lines", "start": 445, "end": 457}

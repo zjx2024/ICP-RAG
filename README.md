@@ -100,22 +100,9 @@ FTA 最小割集只依赖完整逻辑结构，不依赖事件概率。当前确�
 
 独立“图片画廊”和旧通用知识库页面已从产品入口移除。图片抽取与静态服务仍保留，用于 FTA、RBD、系统架构原图及证据查看。
 
-## 6. Dify 外部知识库兼容
+## 6. 通用知识库与 Dify 链路（已退役）
 
-Dify 接口保持不变：
-
-```text
-GET  /api/v1/dify/server-info
-POST /api/v1/dify/retrieval
-```
-
-Dify 中的外部知识库地址填写：
-
-```text
-http://<host>:19999/api/v1/dify
-```
-
-当前 Dify 接口继续兼容原有 `knowledge_bases` 检索链路，七类 ICP 文档链路独立演进，避免破坏已有外部调用。
+2026-09-09 起项目只保留 ICP 七类文档诊断链路。通用知识库检索、`/api/v1/dify/*` 外部知识库接口、GraphRAG 通用抽取与旧通用 Agent 路径均已删除，不再对外提供。所有检索与诊断统一走七类 ICP 文档链路与 `/api/v1/document-types/*`、诊断工作台接口。
 
 ## 7. 启动方式
 
@@ -198,14 +185,14 @@ npm ci
 npm run build
 ```
 
-GitHub Actions 会执行以上检查，并额外确认 Dify 路由仍被挂载。
+GitHub Actions 会执行以上检查，并额外确认 ICP 路由已挂载且已退役的通用/Dify 路由未被恢复。
 
 ## 9. 主要目录
 
 ```text
 backend/
   agent/                 LangGraph、会话和 ICP 专用工具
-  api/routers/           文档、模型、Dify、ICP 领域 API
+  api/routers/           文档、模型、ICP 领域 API
   core/parsers/          七类文档解析器
   icp/                   领域仓储、图像解析和可靠性算法
   storage/               PostgreSQL、OpenSearch、ArtifactStore、HugeGraph 客户端

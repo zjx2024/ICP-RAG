@@ -144,23 +144,21 @@ Gallery 页面
 
 > 删除“图片集中浏览产品”，保留“工程图解析与证据链能力”。
 
-### 3.4 Dify 接口必须保留
+### 3.4 通用知识库与 Dify 链路已退役
 
-不得删除或修改现有接口路径：
-
-```text
-GET  /api/v1/dify/server-info
-POST /api/v1/dify/retrieval
-```
-
-关键文件：
+2026-09-09 经用户确认：项目只保留 ICP 七类文档诊断链路，通用知识库遗留与 Dify 外部知识库接口一并删除，不再受保护：
 
 ```text
-backend/api/routers/dify.py
-backend/api/__init__.py
+已删除：/api/v1/dify/*、backend/api/routers/dify.py、retrieval.py、
+backend/core/retrieval.py 的 KG/社区报告/RAG 融合段、
+backend/graphrag/、kg_service 通用抽取段、
+旧通用 Agent 路径（reflect / vector_search / kg_search / sql_query）、
+backend/models/、unified_parser、deletion_service 等通用遗留。
 ```
 
-当前 Dify 仍兼容旧 `knowledge_bases` 检索链路。因此，即使通用知识库前端已删除，不能在未完成迁移和兼容验证前粗暴删除所有通用后端文档/检索代码。
+`documents.py` 只保留任务监控与解析/图谱日志端点（ICP 前端复用，`kb_id` 槽位实际传 doc_type）。旧 `knowledge_bases`、`documents`、`document_chunks`、`community_reports` 表数据暂留库中，未再被写入路径引用。
+
+不要再为兼容通用平台或 Dify 恢复上述任何代码。
 
 ### 3.5 PostgreSQL 是权威事实来源
 
@@ -484,15 +482,9 @@ backend/agent/icp_defaults.py
 
 默认关闭长期记忆，避免旧诊断判断污染新会话。
 
-### 5.3 Dify
+### 5.3 （已删除）Dify 兼容链路
 
-```text
-Dify
-→ /api/v1/dify/retrieval
-→ 旧 knowledge_bases 检索兼容链路
-```
-
-在完成专门迁移前，不要让七类 ICP 改造破坏该链路。
+见 3.4：Dify 与通用检索链路已于 2026-09-09 退役删除，本节不再适用。
 
 ---
 
@@ -551,7 +543,7 @@ backend/
   api/routers/
     types.py                       七类文档上传、解析、查看、图谱接口
     icp_domain.py                  Function/历史结构查看和 FTA/RBD计算接口
-    dify.py                        Dify 兼容接口，必须保留
+    documents.py                   ICP 复用的任务监控与解析/图谱日志端点
     models.py                      模型管理
   core/parsers/
     registry.py                    七类解析器注册表
@@ -568,7 +560,6 @@ backend/
     postgres_client.py             现有大型 PG 客户端与兼容逻辑
     opensearch_client.py           OpenSearch 索引与检索
     artifact_store.py              原始文件和证据图片的存储抽象与 LocalFS 实现
-    minio_client.py                旧 import 兼容层，不再连接 MinIO 服务
     hugegraph_client.py            图谱投影
 
 frontend/src/
@@ -703,7 +694,7 @@ git diff --check
 1. TypeScript 生产构建通过；
 2. Python compileall 通过；
 3. FTA/RBD 单元测试通过；
-4. Dify 路由仍挂载；
+4. 没有恢复已退役的通用知识库/Dify 代码；
 5. 首页统一上传可选七类类型；
 6. 上传后对应卡片文档数刷新；
 7. 类型页上传复用 `UnifiedUploadModal` 并锁定当前类型，没有独立上传页面或第二套实现；
@@ -814,15 +805,6 @@ backend/agent/nodes/answer.py
 frontend/src/pages/Diagnosis.tsx
 ```
 
-### 修改 Dify
-
-```text
-backend/api/routers/dify.py
-backend/api/__init__.py
-```
-
-任何修改都必须保持原接口路径兼容，并增加回归测试。
-
 ---
 
 ## 13. 当前已知边界和后续重点
@@ -834,9 +816,8 @@ backend/api/__init__.py
 3. 跨 HMC、FMECA、FTA、MFL、历史文档的统一实体 ID 尚需继续增强；
 4. 不同机型、构型、软件版本和文档版本的隔离需要更完整的数据模型；
 5. PostgreSQL 与 OpenSearch 的一致性、失败重试和重建流程仍需完善；
-6. Dify 当前继续走旧知识库兼容链路，尚未完全切换到七类 ICP 专用检索；
-7. 检索效果必须通过真实问题集评估，不能只凭对话观感判断；
-8. 工程图自动解析结果只有在确定性来源和类型约束共同通过、状态为 `auto_validated` 时才能用于正式可靠性计算；`provisional` 永远不能用于正式数值结论。
+6. 检索效果必须通过真实问题集评估，不能只凭对话观感判断；
+7. 工程图自动解析结果只有在确定性来源和类型约束共同通过、状态为 `auto_validated` 时才能用于正式可靠性计算；`provisional` 永远不能用于正式数值结论。
 
 ---
 
@@ -844,7 +825,7 @@ backend/api/__init__.py
 
 处理任何新任务时按以下顺序：
 
-1. 先复述任务边界，确认是否影响七类文档、统一上传、Dify、图片证据或诊断安全；
+1. 先复述任务边界，确认是否影响七类文档、统一上传、图片证据或诊断安全；
 2. 搜索相关路由、组件、API、数据库方法和测试，不只看单一文件；
 3. 找到最小可行修改面；
 4. 修改代码；
@@ -874,7 +855,7 @@ docs: ...
 - 它是否让七类文档更容易正确入库、检索和追溯？
 - 它是否有助于用户从模糊现象逐步定位，而不是制造一个看似确定的答案？
 - 它是否保留了 PostgreSQL 权威事实、原始文档和工程图证据？
-- 它是否没有破坏 Dify？
+- 它是否没有恢复已退役的通用知识库或 Dify 代码？
 - 它是否没有恢复图片画廊、通用知识库搭建器或每类独立上传页面/实现？
 - 它是否经过可重复的构建和测试验证？
 
