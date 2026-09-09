@@ -539,7 +539,7 @@ backend/
     graph.py                       LangGraph 编排
     icp_defaults.py                默认 ICP Agent 配置
     nodes/                         plan / answer 等节点
-    tools/                         ICP 诊断、FTA/RBD计算和兼容工具
+    tools/                         ICP 诊断与 FTA/RBD 确定性计算
   api/routers/
     types.py                       七类文档上传、解析、查看、图谱接口
     icp_domain.py                  Function/历史结构查看和 FTA/RBD计算接口
@@ -721,7 +721,7 @@ git diff --check
 ### 11.2 后端
 
 - 新 ICP 领域 SQL 优先放在 `backend/icp/repository.py`；
-- 不要继续无边界扩张 `postgres_client.py`，除非是兼容现有通用接口所必需；
+- 不要继续无边界扩张 `postgres_client.py`；
 - 查询必须使用参数绑定，不拼接用户输入；
 - OpenSearch 中只保存检索副本和 metadata，最终权威详情优先回 PostgreSQL；
 - FTA/RBD 算法保持纯函数或可测试函数，避免把计算隐藏在 prompt 中；
