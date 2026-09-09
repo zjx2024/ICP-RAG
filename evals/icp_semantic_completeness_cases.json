@@ -1,0 +1,71 @@
+{
+  "version": "2026-09-09-semantic-completeness-v1",
+  "purpose": "通用任务完整性边界：按事实含义而非字段名核对；保留明确分问、原因、下游后果和适用条件的必要性。合成开发用例，不是适航事实。",
+  "generation_captures": [".artifacts/evals/selection-budget-20260908.uu8tiX/capture-arch-review-exact/capture-0001.json"],
+  "samples": [
+    {
+      "id": "semantic-fields/valid", "expected_release": true,
+      "basis": "外部端点收不到转发的数据已经回答直接功能影响，不要求源字段名是impact。",
+      "question": "What changes for external users when the forwarding function is unavailable?",
+      "history": {"messages": []}, "observations": [], "calculation_requests": [], "safety": {"can_claim_unique": false},
+      "ledger": {"3": {"evidence_id": "fixture:forwarding", "doc_id": "manual-c", "record_id": "MOD-N71", "doc_type": "function_locator", "authority": "authoritative_record", "metadata": {"answer_fields": {"description": "Forwards internal messages to an external endpoint.", "failure_symptoms": "The external endpoint receives no forwarded data. The link indicator turns red."}}}},
+      "draft": "The external endpoint no longer receives forwarded data.[^3]"
+    },
+    {
+      "id": "semantic-fields/invalid", "expected_release": false,
+      "basis": "指示灯颜色虽有来源，但没有说明用户明确询问的外部用户所受功能影响。",
+      "question": "What changes for external users when the forwarding function is unavailable?",
+      "history": {"messages": []}, "observations": [], "calculation_requests": [], "safety": {"can_claim_unique": false},
+      "ledger": {"3": {"evidence_id": "fixture:forwarding", "doc_id": "manual-c", "record_id": "MOD-N71", "doc_type": "function_locator", "authority": "authoritative_record", "metadata": {"answer_fields": {"description": "Forwards internal messages to an external endpoint.", "failure_symptoms": "The external endpoint receives no forwarded data. The link indicator turns red."}}}},
+      "draft": "The link indicator turns red.[^3]"
+    },
+    {
+      "id": "explicit-downstream/valid", "expected_release": true,
+      "basis": "本轮明确追问下游启动影响，不能只重复上轮的局部读取异常。",
+      "question": "读取失败我已经知道了。它对冷启动的任务初始化具体有什么后果？",
+      "history": {"messages": [{"role": "assistant", "content": "配置读取失败。"}]}, "observations": [], "calculation_requests": [], "safety": {"can_claim_unique": false},
+      "ledger": {"2": {"evidence_id": "fixture:startup", "doc_id": "manual-d", "record_id": "FUNC-Z81", "doc_type": "fmeca", "authority": "authoritative_record", "metadata": {"answer_fields": {"failure_mode": "配置读取失败", "mission_phase": "冷启动", "description": "冷启动时任务初始化暂停，等待有效配置；已初始化后的运行使用缓存，不在该故障后果的适用范围内。"}}}},
+      "draft": "冷启动时，任务初始化会暂停，等待有效配置；这条后果针对冷启动，不应扩大到已初始化后使用缓存的运行阶段。[^2]"
+    },
+    {
+      "id": "explicit-downstream/invalid", "expected_release": false,
+      "basis": "只重复读取失败，未回答本轮明确要求的任务初始化后果。",
+      "question": "读取失败我已经知道了。它对冷启动的任务初始化具体有什么后果？",
+      "history": {"messages": [{"role": "assistant", "content": "配置读取失败。"}]}, "observations": [], "calculation_requests": [], "safety": {"can_claim_unique": false},
+      "ledger": {"2": {"evidence_id": "fixture:startup", "doc_id": "manual-d", "record_id": "FUNC-Z81", "doc_type": "fmeca", "authority": "authoritative_record", "metadata": {"answer_fields": {"failure_mode": "配置读取失败", "mission_phase": "冷启动", "description": "冷启动时任务初始化暂停，等待有效配置；已初始化后的运行使用缓存，不在该故障后果的适用范围内。"}}}},
+      "draft": "故障的表现是配置读取失败。[^2]"
+    },
+    {
+      "id": "required-cause/valid", "expected_release": true,
+      "basis": "明确问原因时，回答实际记载的时钟原因；不能用失效表现冒充原因。",
+      "question": "为什么会出现接口收不到数据？",
+      "history": {"messages": []}, "observations": [], "calculation_requests": [], "safety": {"can_claim_unique": false},
+      "ledger": {"4": {"evidence_id": "fixture:clock", "doc_id": "manual-e", "record_id": "FAULT-K63", "doc_type": "fmeca", "authority": "authoritative_record", "metadata": {"answer_fields": {"fault_symptom": "接口收不到数据", "failure_cause": "接收时钟失锁导致数据采样无效"}}}},
+      "draft": "资料给出的一个原因是接收时钟失锁，使数据采样无效；这是待核查的可能原因，不代表已经确认现场根因。[^4]"
+    },
+    {
+      "id": "required-cause/invalid", "expected_release": false,
+      "basis": "没有解释为什么，且已有原因字段可答；不是合理来源不足。",
+      "question": "为什么会出现接口收不到数据？",
+      "history": {"messages": []}, "observations": [], "calculation_requests": [], "safety": {"can_claim_unique": false},
+      "ledger": {"4": {"evidence_id": "fixture:clock", "doc_id": "manual-e", "record_id": "FAULT-K63", "doc_type": "fmeca", "authority": "authoritative_record", "metadata": {"answer_fields": {"fault_symptom": "接口收不到数据", "failure_cause": "接收时钟失锁导致数据采样无效"}}}},
+      "draft": "这个故障就是接口收不到数据。[^4]"
+    },
+    {
+      "id": "material-condition/valid", "expected_release": true,
+      "basis": "保留影响适用阶段，回答可说明条件，不要求虚构所有阶段的后果。",
+      "question": "配置读不出来，会影响系统运行吗？",
+      "history": {"messages": []}, "observations": [], "calculation_requests": [], "safety": {"can_claim_unique": false},
+      "ledger": {"5": {"evidence_id": "fixture:phase", "doc_id": "manual-f", "record_id": "FAULT-P53", "doc_type": "fmeca", "authority": "authoritative_record", "metadata": {"answer_fields": {"description": "冷启动配置读取失败时，初始化等待。正常运行已加载配置且缓存有效时，此读取故障不阻断当前计算。"}}}},
+      "draft": "需区分阶段：冷启动时会使初始化等待；正常运行中，若已加载配置且缓存有效，这项读取故障不阻断当前计算。[^5]"
+    },
+    {
+      "id": "material-condition/invalid", "expected_release": false,
+      "basis": "删除阶段与缓存条件，变成无条件停机，与来源矛盾，不能作为可选完善放行。",
+      "question": "配置读不出来，会影响系统运行吗？",
+      "history": {"messages": []}, "observations": [], "calculation_requests": [], "safety": {"can_claim_unique": false},
+      "ledger": {"5": {"evidence_id": "fixture:phase", "doc_id": "manual-f", "record_id": "FAULT-P53", "doc_type": "fmeca", "authority": "authoritative_record", "metadata": {"answer_fields": {"description": "冷启动配置读取失败时，初始化等待。正常运行已加载配置且缓存有效时，此读取故障不阻断当前计算。"}}}},
+      "draft": "会。配置读取失败会让系统在任何阶段都停止计算。[^5]"
+    }
+  ]
+}

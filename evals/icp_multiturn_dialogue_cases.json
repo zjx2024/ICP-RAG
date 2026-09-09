@@ -1,6 +1,6 @@
 {
   "name": "ICP 智能体多轮对话回归集",
-  "version": "2026-09-05-semantic-v3",
+  "version": "2026-09-09-semantic-v5-calibrated-core",
   "description": "基于 test-docs 中的合成资料编写。每组 turns 必须在同一会话依次发送，用于检验指代消解、问题意图、资料路由、跨文档补全、来源边界和数值计算授权；不可作为真实维修依据。所有问法均为重新措辞，不直接复用样例文档原句。 本轮与100例统一为源摘录+逐轮语义/数值校验，保留19例40轮原问句；旧关键词分数不能直接横比。",
   "defaults": {
     "assertions": {
@@ -207,7 +207,6 @@
               "SUB-DSP"
             ],
             "min_citations": 1,
-            "max_answer_chars": 400,
             "semantic_criteria": [
               {
                 "id": "current_turn",
@@ -520,10 +519,6 @@
             "required_scope_routes": [
               "knowledge_base"
             ],
-            "required_used_doc_types": [
-              "fta",
-              "fmeca"
-            ],
             "min_citations": 1,
             "semantic_criteria": [
               {
@@ -538,6 +533,10 @@
                 "id": "expected_dimension",
                 "criterion": "依 FTA003 按总线、NGW、PCU 等可能断点解释，不只列模块、不唯一诊断。"
               }
+            ],
+            "any_used_doc_types": [
+              "fta",
+              "fmeca"
             ]
           },
           "metadata": {
@@ -717,10 +716,6 @@
             "forbidden_tools": [
               "rbd_calculator"
             ],
-            "required_used_doc_types": [
-              "fmeca",
-              "rbd"
-            ],
             "min_citations": 1,
             "semantic_criteria": [
               {
@@ -735,6 +730,10 @@
                 "id": "expected_dimension",
                 "criterion": "PSU-B欠压损失备用供电，A当前带载不代表冗余完整；区分FMECA影响与RBD结构条件。"
               }
+            ],
+            "any_used_doc_types": [
+              "fmeca",
+              "rbd"
             ]
           },
           "metadata": {
@@ -748,14 +747,6 @@
             "required_scope_routes": [
               "knowledge_base"
             ],
-            "forbidden_used_doc_types": [
-              "function_locator",
-              "fmeca",
-              "hmc",
-              "mfl",
-              "fault_history"
-            ],
-            "max_answer_chars": 500,
             "semantic_criteria": [
               {
                 "id": "current_turn",
@@ -847,10 +838,6 @@
           "assertions": {
             "required_scope_routes": [
               "knowledge_base"
-            ],
-            "max_answer_chars": 450,
-            "answer_not_repeat_prior": [
-              "未找到"
             ],
             "semantic_criteria": [
               {
@@ -1454,6 +1441,8 @@
               "knowledge_base"
             ],
             "required_used_doc_types": [
+              "function_locator",
+              "fmeca",
               "fault_history"
             ],
             "required_used_record_ids": [
@@ -1569,12 +1558,12 @@
               },
               {
                 "id": "expected_dimension",
-                "criterion": "针对输出侧MFL049/050/051说明连接驱动、模式编码、接口时钟核查；按行区分有API和不可直接上报，不能只重复树。"
+                "criterion": "针对当前输出侧分支说明维修清单所载连接/驱动、模式/编码、接口时钟等相关核查，不只重复树。若说明通过API直接读取或上报，必须按对应行核对能力、名称和用法，不能给不可直接上报的记录借用邻居API。只转述原文的人工/物理核查，不因未罗列全部API字段判错；若操作依赖未确认的接口，应说明限制。"
               }
             ]
           },
           "metadata": {
-            "checks": "针对输出侧MFL049/050/051说明连接驱动、模式编码、接口时钟核查；按行区分有API和不可直接上报，不能只重复树。"
+            "checks": "针对当前输出侧分支说明维修清单所载连接/驱动、模式/编码、接口时钟等相关核查，不只重复树。若说明通过API直接读取或上报，必须按对应行核对能力、名称和用法，不能给不可直接上报的记录借用邻居API。只转述原文的人工/物理核查，不因未罗列全部API字段判错；若操作依赖未确认的接口，应说明限制。"
           }
         }
       ]
@@ -1971,14 +1960,6 @@
             "required_scope_routes": [
               "knowledge_base"
             ],
-            "required_used_doc_types": [
-              "fmeca",
-              "mfl"
-            ],
-            "required_used_record_ids": [
-              "FM-SYN-002",
-              "MFL-SYN-002"
-            ],
             "forbidden_used_record_ids": [
               "FM-SYN-059"
             ],
@@ -1996,6 +1977,14 @@
                 "id": "expected_dimension",
                 "criterion": "仍为FM002/MFL002，查输入/母线纹波、时间相关、接地连接/滤波器件，再有条件决定更换；区分检查与处置，不能答FM059。"
               }
+            ],
+            "any_used_doc_types": [
+              "fmeca",
+              "mfl"
+            ],
+            "any_used_record_ids": [
+              "FM-SYN-002",
+              "MFL-SYN-002"
             ]
           },
           "metadata": {
@@ -2085,10 +2074,6 @@
             "required_scope_routes": [
               "knowledge_base"
             ],
-            "required_used_doc_types": [
-              "fmeca",
-              "fta"
-            ],
             "min_citations": 1,
             "semantic_criteria": [
               {
@@ -2103,6 +2088,10 @@
                 "id": "expected_dimension",
                 "criterion": "帧校验对而字段语义错优先PCU/FM040映射版本/配置及转换结果；不能换成FM041帧校验错误。"
               }
+            ],
+            "any_used_doc_types": [
+              "fmeca",
+              "fta"
             ]
           },
           "metadata": {

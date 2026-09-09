@@ -1,0 +1,71 @@
+{
+  "version": "2026-09-09-review-config-holdout-v1",
+  "purpose": "本次配置比较前冻结的新题；未用于修改线上提示。开发者合成判据，不是独立专家盲测或适航资料。每对问题和来源完全相同，负例仅改变语义，不破坏引用编号。",
+  "generation_captures": [".artifacts/evals/selection-budget-20260908.uu8tiX/capture-arch-review-exact/capture-0001.json"],
+  "samples": [
+    {
+      "id": "heldout-code/valid", "expected_release": true,
+      "basis": "按完整报码区分两个记录，回应当前码的物理检查和接口状态，不从邻居借方法。",
+      "question": "刚才完整报码 HX-7310 的检查办法和接口是什么？相似码不要算。",
+      "history": {"messages": [{"role": "user", "content": "原始报码是 HX-7310。"}]}, "observations": [], "calculation_requests": [], "safety": {"can_claim_unique": false},
+      "ledger": {"1": {"evidence_id": "fixture:code", "record_id": "HX-7310", "doc_id": "holdout-m", "doc_type": "mfl", "authority": "authoritative_record", "metadata": {"answer_fields": {"description": "HX-7310：核查接插件接触状态；没有已确认可直接调用的状态接口。HX-7311：核查软件加载状态；可调用 ReadLoadState 查询加载状态。"}}}},
+      "draft": "HX-7310 的处理信息是核查接插件接触状态；没有已确认可直接调用的状态接口。这里不套用相似码的办法。[^1]"
+    },
+    {
+      "id": "heldout-code/invalid", "expected_release": false,
+      "basis": "把 HX-7311 的方法与接口用于 HX-7310，虽有引用且代码存在仍属错位。",
+      "question": "刚才完整报码 HX-7310 的检查办法和接口是什么？相似码不要算。",
+      "history": {"messages": [{"role": "user", "content": "原始报码是 HX-7310。"}]}, "observations": [], "calculation_requests": [], "safety": {"can_claim_unique": false},
+      "ledger": {"1": {"evidence_id": "fixture:code", "record_id": "HX-7310", "doc_id": "holdout-m", "doc_type": "mfl", "authority": "authoritative_record", "metadata": {"answer_fields": {"description": "HX-7310：核查接插件接触状态；没有已确认可直接调用的状态接口。HX-7311：核查软件加载状态；可调用 ReadLoadState 查询加载状态。"}}}},
+      "draft": "HX-7310 应核查软件加载状态，并调用 ReadLoadState 查询加载状态。[^1]"
+    },
+    {
+      "id": "heldout-history/valid", "expected_release": true,
+      "basis": "回答案例的恢复观测，不将单案例结果当成正式放行标准。",
+      "question": "这个案例最后观察到了什么才认为恢复？这能直接作为我们现场的放行标准吗？",
+      "history": {"messages": [{"role": "assistant", "content": "该案例最后重新紧固了连接件。"}]}, "observations": [], "calculation_requests": [], "safety": {"can_claim_unique": false},
+      "ledger": {"2": {"evidence_id": "fixture:history", "record_id": "CASE-J82", "doc_id": "holdout-h", "doc_type": "fault_history", "authority": "authoritative_record", "metadata": {"answer_fields": {"case_id": "CASE-J82", "steps": "重新紧固连接件后，在相同升温条件下连续观察两小时，告警未再出现。", "limitation": "仅记录该案例复测结果，未给出通用维修放行标准。"}}}},
+      "draft": "该案例在重新紧固后，以相同升温条件连续观察两小时，告警未再出现。[^2] 这只是该案例的恢复观测，不能直接充当现场放行标准；仍须遵循适用构型和有效版本的正式程序。"
+    },
+    {
+      "id": "heldout-history/invalid", "expected_release": false,
+      "basis": "把历史恢复观测变成任意设备通用放行许可。",
+      "question": "这个案例最后观察到了什么才认为恢复？这能直接作为我们现场的放行标准吗？",
+      "history": {"messages": [{"role": "assistant", "content": "该案例最后重新紧固了连接件。"}]}, "observations": [], "calculation_requests": [], "safety": {"can_claim_unique": false},
+      "ledger": {"2": {"evidence_id": "fixture:history", "record_id": "CASE-J82", "doc_id": "holdout-h", "doc_type": "fault_history", "authority": "authoritative_record", "metadata": {"answer_fields": {"case_id": "CASE-J82", "steps": "重新紧固连接件后，在相同升温条件下连续观察两小时，告警未再出现。", "limitation": "仅记录该案例复测结果，未给出通用维修放行标准。"}}}},
+      "draft": "该案例连续两小时无告警，说明我们的现场也只需无告警运行两小时即可直接放行，任何构型都适用。[^2]"
+    },
+    {
+      "id": "heldout-mode/valid", "expected_release": true,
+      "basis": "保持上轮滤波网络退化这一故障模式，回答对应验证方法，不要求未询问的其他模式字段。",
+      "question": "那要观察什么，才能验证刚才的滤波网络退化？",
+      "history": {"messages": [{"role": "assistant", "content": "正在讨论滤波网络退化，尚未确认现场根因。"}]}, "observations": [], "calculation_requests": [], "safety": {"can_claim_unique": false},
+      "ledger": {"4": {"evidence_id": "fixture:modes", "record_id": "MOD-F83", "doc_id": "holdout-f", "doc_type": "fmeca", "authority": "authoritative_record", "metadata": {"answer_fields": {"description": "本模块有两种模式：滤波网络退化应核查纹波随负载变化的趋势；采样量程饱和应核查原始采样值是否持续达到量程上限。两项检测不能互相替代。"}}}},
+      "draft": "针对刚才的滤波网络退化，应核查纹波随负载变化的趋势；这项核查针对该候选，不代表已确认现场根因。[^4]"
+    },
+    {
+      "id": "heldout-mode/invalid", "expected_release": false,
+      "basis": "同一模块不同故障模式的方法不可替换，合法引用不代表支持对应关系。",
+      "question": "那要观察什么，才能验证刚才的滤波网络退化？",
+      "history": {"messages": [{"role": "assistant", "content": "正在讨论滤波网络退化，尚未确认现场根因。"}]}, "observations": [], "calculation_requests": [], "safety": {"can_claim_unique": false},
+      "ledger": {"4": {"evidence_id": "fixture:modes", "record_id": "MOD-F83", "doc_id": "holdout-f", "doc_type": "fmeca", "authority": "authoritative_record", "metadata": {"answer_fields": {"description": "本模块有两种模式：滤波网络退化应核查纹波随负载变化的趋势；采样量程饱和应核查原始采样值是否持续达到量程上限。两项检测不能互相替代。"}}}},
+      "draft": "滤波网络退化的对应验证方法是检查原始采样值是否持续达到量程上限，无需观察纹波变化。[^4]"
+    },
+    {
+      "id": "heldout-count/valid", "expected_release": true,
+      "basis": "简洁回答本轮总数及是否遗漏两个对象，不必重列上轮清单。",
+      "question": "所以一共几项？能源供应和信息呈现都已经算进去了吗？",
+      "history": {"messages": [{"role": "assistant", "content": "资料分列处理、记录、能源供应、信息呈现四项功能。"}]}, "observations": [], "calculation_requests": [], "safety": {"can_claim_unique": false},
+      "ledger": {"6": {"evidence_id": "fixture:count", "record_id": "ARCH-C93", "doc_id": "holdout-a", "doc_type": "function_locator", "authority": "authoritative_record", "metadata": {"answer_fields": {"description": "功能清单共四项：处理、记录、能源供应、信息呈现。"}}}},
+      "draft": "一共四项，能源供应和信息呈现都已计入，没有漏掉。[^6]"
+    },
+    {
+      "id": "heldout-count/invalid", "expected_release": false,
+      "basis": "资料有完整清单但只重复两个已知对象，未回答总数及是否计入另两项。",
+      "question": "所以一共几项？能源供应和信息呈现都已经算进去了吗？",
+      "history": {"messages": [{"role": "assistant", "content": "资料分列处理、记录、能源供应、信息呈现四项功能。"}]}, "observations": [], "calculation_requests": [], "safety": {"can_claim_unique": false},
+      "ledger": {"6": {"evidence_id": "fixture:count", "record_id": "ARCH-C93", "doc_id": "holdout-a", "doc_type": "function_locator", "authority": "authoritative_record", "metadata": {"answer_fields": {"description": "功能清单共四项：处理、记录、能源供应、信息呈现。"}}}},
+      "draft": "资料中介绍了处理和记录功能。[^6]"
+    }
+  ]
+}

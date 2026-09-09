@@ -1,0 +1,374 @@
+{
+  "version": "2026-09-09-semantic-v5-calibrated-core",
+  "previous_version": "2026-09-08-semantic-v4-no-arbitrary-length",
+  "source_snapshot": ".artifacts/evals/gate-reduction-20260909.rPrlmY/source-before.tar.gz",
+  "assessment": "assistant_source_review_not_independent_domain_signoff",
+  "rules": {
+    "required": "原问题明确要求或省略会造成实质误导",
+    "prohibited": "事实错配、无依据结论、越权计算、违反用户条件",
+    "optional": "非必要扩展、措辞与排版偏好不构成失败",
+    "system": "协议/超时/审核未完成独立报告"
+  },
+  "turns": [
+    {
+      "case_id": "MT-ARCH-01-module-context",
+      "turn_id": "definition",
+      "question": "MOD-GPP-MSM 这个部件在系统里做什么？请说出它的中文名称、归属和主要职责。",
+      "core_requirement": "MSM 属 GPP，负责模板与任务数据存储/加载。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-ARCH-01-module-context",
+      "turn_id": "importance",
+      "question": "那它为什么重要？如果它暂时不可用，任务侧最先受影响的是什么？",
+      "core_requirement": "解释模板/数据对任务初始化、模板切换和可信使用的重要性；先受影响的是相应加载/初始化，而非无条件整机停机；不可只平铺 FMECA 局部影响。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-ARCH-02-complete-system",
+      "turn_id": "overview",
+      "question": "SYN-ICP-9000 从总体上由哪几块功能域组成？请给我完整列表，不要只挑和告警有关的部分。",
+      "core_requirement": "完整六子系统 PWR/GPP/IFC/DSP/HMS/TCS。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-ARCH-02-complete-system",
+      "turn_id": "count-check",
+      "question": "所以总数是几个？刚才有没有把供电和显示相关部分漏掉？",
+      "core_requirement": "明确总数六，核对上轮实际是否计入供电和显示：遗漏则补正，已含则说明；不能无视历史强制回答没有漏，允许必要复述。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-FAULT-01-hot-power-fallback",
+      "turn_id": "symptom",
+      "question": "设备受热且负荷偏高时，主供电支路会掉下去，另一路接住业务；温度回落后原支路又恢复。优先从哪些方向判断？",
+      "core_requirement": "热与高负荷下供电间歇退出应保留 PSU-A/FM006 的散热、焊点裂纹、连接候选，不应把 DCS 振荡作主对象，不唯一确诊。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-FAULT-01-hot-power-fallback",
+      "turn_id": "repair-and-history",
+      "question": "如果现场复现了这个现象，先怎么检查和处置？以前的相近案例在什么条件下出现、最后怎么验证恢复？",
+      "core_requirement": "给温度/负载/停机、散热连接检查及条件性处置；HIS002 为 85℃/70% 负载复现、焊点裂纹，修后三轮 -20～85℃ 热循环及 8h 满载、输出稳定无切换。必须回答历史条件和验证，不借 API 给不可直接上报的 MFL006。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-HMC-01-structured-code-followup",
+      "turn_id": "decode",
+      "question": "日志给出 LCN 91810001、HSC 0001。请按 HMC 手册解释这一组合对应的现象，并给出先做什么检查。",
+      "core_requirement": "LCN91810001+HSC0001 在当前权威源唯一对应 HAMC ** 的 ICU 输入过压钳位失效，说明采样/钳位/母线检查，不退回显示域。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-HMC-01-structured-code-followup",
+      "turn_id": "repair",
+      "question": "针对刚才这个报码，维修清单是否给了可执行的处理办法或状态接口？不要把相似报码混进来。",
+      "core_requirement": "当前源表未提供 HMC→MFL 的显式编码关联，不能因合成编号同序或现象相同声称 MFL001 已被证明属于当前码。必须保持 91810001**0001 钳位故障身份，不混滤波/欠压邻居。可依据 HMC 说明采样/钳位检查与确认后更换，并明确尚不能确认该码在 MFL 的接口对应关系；未确认关联不能说成 MFL 没有 API。若作为独立同现象记录介绍 MFL001，须明确关联未证实，其 GetICUFaultStatus 为周期1s，不得冒充该码已授权处置。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-FTA-01-causal-chain-without-jargon",
+      "turn_id": "cause",
+      "question": "内部报文已经生成，可接在外面的设备一直拿不到可用数据。不要只列模块，按可能断开的环节说明原因。",
+      "core_requirement": "依 FTA003 按总线、NGW、PCU 等可能断点解释，不只列模块、不唯一诊断。",
+      "decision": "revised",
+      "rationale": "用户要求解释断点，未指定同时引用 FTA 与 FMECA；改为相关权威来源择其适用，仍核验断点因果与不唯一诊断。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-FTA-01-causal-chain-without-jargon",
+      "turn_id": "discriminate",
+      "question": "为了把这些可能性区分开，现场应该优先看哪些指标或接口？如果资料中有维修动作也请一并给出。",
+      "core_requirement": "针对候选补区分指标、可用接口及维修条件；映射版本/原始帧、帧校验、队列深度/输入率/时延按行对应，不借邻居接口补空。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-FTA-02-explicit-calculation",
+      "turn_id": "structure",
+      "question": "运行一段时间后设备会自己反复重新起来。FTA 文档把这个结果关联到哪些下层条件？先只解释结构，不要自己算概率。",
+      "core_requirement": "只解释 FTA005 反复复位结构与门，不计算。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-FTA-02-explicit-calculation",
+      "turn_id": "calculate",
+      "question": "现在请严格按这份 FTA 的已验证结构，计算最小割集；没有可计算参数的部分请直接标出，不能补造数字。",
+      "core_requirement": "实际调用确定性最小割集分析，保留 TCM闭环失效与FAN反馈丢失的联合割集；缺参明示、不造数值或混树。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-RBD-01-redundancy-boundary",
+      "turn_id": "impact",
+      "question": "B 路稳压偏低，但 A 路目前还能承担负载。继续带着这个状态工作，冗余能力和任务连续性会怎样？",
+      "core_requirement": "PSU-B欠压损失备用供电，A当前带载不代表冗余完整；区分FMECA影响与RBD结构条件。",
+      "decision": "revised",
+      "rationale": "问题要求冗余与连续性，不强制双文档引用；结构/影响断言仍必须由适当来源支持，不能以可用推导放行。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-RBD-01-redundancy-boundary",
+      "turn_id": "boundary",
+      "question": "请明确说一下可靠性框图能证明什么、不能替代什么。它能直接给出根因或维修结论吗？",
+      "core_requirement": "说明RBD仅支持既定模型参数/假设下成功结构、冗余及可计算概率，不能直接给根因、维修或放行；不能转去列网络/时钟模块职责。",
+      "decision": "revised",
+      "rationale": "资料能力边界不应按引用类型一刀切；保留禁止无关职责清单与RBD不能替代诊断的语义要求。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-RBD-02-explicit-source-miss",
+      "turn_id": "ask-rbd",
+      "question": "请明确查 RBD 可靠性框图：输入端滤波器变差时，现有框图有没有直接写出它所在的成功路径？",
+      "core_requirement": "当前RBD有模块级ICU，但没有把输入端滤波器退化独立建成功路径；明确模块相关结构不等于该部件直接路径，不用不相关图补齐。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-RBD-02-explicit-source-miss",
+      "turn_id": "fallback-boundary",
+      "question": "那就只根据已经查到的资料回答：哪些结论能说，哪些不能说？不要用不相干的框图来补足。",
+      "core_requirement": "保留上述边界，区分已有模型条件可说与精确部件拓扑/数值/根因/维修不能据此断言；不悄悄换模型。",
+      "decision": "revised",
+      "rationale": "去掉固定词未找到的重复限制；是否重放与是否回答边界由原问题及历史判断。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-RBD-03-explicit-calculation",
+      "turn_id": "no-calculation",
+      "question": "在可靠性框图中，供电、核心运算、外部信息交换和显示通路分别依赖哪些串联或备份环节？先不要计算。",
+      "core_requirement": "分别说明四条模型的串/并联成功条件，不算数值，不漏显示。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-RBD-03-explicit-calculation",
+      "turn_id": "ten-hour-calculation",
+      "question": "按文档给的失效率，以十小时任务期重新算四条通路的成功概率，并告诉我最低的一条；只使用已经验证的参数。",
+      "core_requirement": "10h 实算四模型：电源.99951007、核心.99929014、外通.99910032、显示.99888052，显示最低；模型和数值不能交换。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-MFL-01-api-maintenance",
+      "turn_id": "maintenance",
+      "question": "内部画面源没有停，但外接显示端持续空白，端子和终端已经替换过。下一步该查看哪个模块，能通过什么状态调用确认？",
+      "core_requirement": "优先OIM输出链/MFL049/GetOIMFaultStatus，核查测试图/时钟/物理输出和连接驱动，不无条件换件。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-MFL-01-api-maintenance",
+      "turn_id": "history",
+      "question": "历史上同样的外接显示问题最后确认在哪，处理后怎样证明链路恢复？",
+      "core_requirement": "HIS017 是OIM驱动器损坏，更换线缆终端无效、供电正常而差分幅值近零；更换模块后主备锁定、4h无中断、测试图完整。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-HISTORY-01-line-versus-board",
+      "turn_id": "history-query",
+      "question": "有没有遇到过 A 通道完全收不到、B 通道仍能收的情况？最后是换接口板，还是处理连接与接地？",
+      "core_requirement": "HIS011 是连接器终端针脚未锁止，重新压接固定后恢复，非更换BCA板；不能编造接地动作。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-HISTORY-01-line-versus-board",
+      "turn_id": "verification-detail",
+      "question": "这个案例用什么结果排除了板卡本身？请把复测标准说清楚。",
+      "core_requirement": "解释修复连接立即恢复支持排除板卡；复测为连续2h无丢帧、A/B计数一致和物理层幅值合限，属于该案例结果不是通用正式标准。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-MODULE-01-fault-completeness",
+      "turn_id": "identify",
+      "question": "FUNC-530 的模块名称是什么，主要负责保存哪类信息？",
+      "core_requirement": "FUNC530 对应 FLS，保存故障时间、快照及复现信息。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-MODULE-01-fault-completeness",
+      "turn_id": "all-failure-modes",
+      "question": "这个模块所有已记录的失效表现有哪些？请按资料完整列出，不要因为我没有说具体报码就只给一条。",
+      "core_requirement": "完整区分FM061写入失败/FM062索引损坏/FM063空间满未回收，不能仅Top1。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-MODULE-01-fault-completeness",
+      "turn_id": "repair-path",
+      "question": "其中“新快照写不进去”这一类，资料建议怎么处理？有可用的状态接口吗？",
+      "core_requirement": "当前新快照写不进为MFL061：导出旧记录、看返回码/空间/介质健康，确认后更换，GetFLSFaultStatus；不拿索引修复行替代。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-CROSS-01-public-clock",
+      "turn_id": "common-cause",
+      "question": "多块业务板几乎同时失去统一节拍，通信和画面一起停。像这种共因问题应优先落在哪个公共功能上？",
+      "core_requirement": "优先CGM/FUNC610公共时基候选，检查供电/主输出/锁定，不因共同现象唯一确诊。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-CROSS-01-public-clock",
+      "turn_id": "cross-document-evidence",
+      "question": "把这个判断分别用架构、故障模式和历史案例来交叉说明；历史上最终怎么处理并验证？",
+      "core_requirement": "分别用架构统一时基、FM064、HIS022交叉说明；历史为晶振稳压器件故障，备用时基/更换CGM后主备锁相、24h漂移和时间戳一致验证。",
+      "decision": "revised",
+      "rationale": "用户明确分别要求架构、故障模式、历史三方面，补齐三类来源检查，防止只答历史。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-SOURCE-01-explicit-fta-followup",
+      "turn_id": "explicit-fta",
+      "question": "请直接查询 FTA 故障树，不要只看相似文本：外部显示无画面这一结果在树里有哪些分支？",
+      "core_requirement": "依FTA004已验证树回答八个显示不可用基本事件，不额外造边。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-SOURCE-01-explicit-fta-followup",
+      "turn_id": "mfl-after-fta",
+      "question": "针对树中和输出侧有关的分支，维修清单给了哪些可执行核查？",
+      "core_requirement": "针对当前输出侧分支说明维修清单所载连接/驱动、模式/编码、接口时钟等相关核查，不只重复树。若说明通过API直接读取或上报，必须按对应行核对能力、名称和用法，不能给不可直接上报的记录借用邻居API。只转述原文的人工/物理核查，不因未罗列全部API字段判错；若操作依赖未确认的接口，应说明限制。",
+      "decision": "revised",
+      "rationale": "API限制仅在用户明确询问或已给操作依赖该能力时为必答；不强制未问的完整API清单，不允许说错能力。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-UNRESOLVED-01-no-silent-substitution",
+      "turn_id": "unknown-code",
+      "question": "LCN 99999999、HSC 1234 代表什么故障？请只以 HMC 手册为准。",
+      "core_requirement": "99999999/1234 未在HMC命中，不得套用邻居报码或猜故障。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-UNRESOLVED-01-no-silent-substitution",
+      "turn_id": "ask-next-input",
+      "question": "那为了继续查，最少还需要我提供什么原始信息？",
+      "core_requirement": "承接已知LCN/HSC，优先要求原始完整报码/HAMC或截图、适用构型和手册版本；不重复索要已有片段或保证补HAMC必命中。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-ROUTER-01-capability-and-scope",
+      "turn_id": "capability",
+      "question": "你能帮我处理哪些类型的 ICP 问题，什么时候会去查故障历史或可靠性资料？",
+      "core_requirement": "说明专用七类资料、查历史/可靠性资料条件及人工复核边界。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-ROUTER-01-capability-and-scope",
+      "turn_id": "outside-scope",
+      "question": "那你顺便根据今天的天气替我安排上海一日游。",
+      "core_requirement": "天气旅游安排在范围外，不做旅游天气任务。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-ROUTER-02-ambiguous-followup",
+      "turn_id": "ambiguous",
+      "question": "它又不正常了。",
+      "core_requirement": "首轮无对象代词应澄清，不能继承另一会话或猜对象。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-ROUTER-02-ambiguous-followup",
+      "turn_id": "supply-context",
+      "question": "是网络网关：流量一大外部数据就断续，负荷低时又恢复。",
+      "core_requirement": "补充NGW高流量丢包后，恢复对FM038队列/端口/配置的检索，不继续机械拒答。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-ROUTER-02-ambiguous-followup",
+      "turn_id": "pronoun-followup",
+      "question": "它的处理动作和可复核指标分别是什么？",
+      "core_requirement": "围绕MFL038给限流/队列配置、确认后处理和端口统计/占用/丢包时间分布，GetNGWFaultStatus；不混MFL039链路抖动。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-FMECA-01-component-impact",
+      "turn_id": "effect",
+      "question": "输入侧的滤波电容开始衰减，为什么现场可能表现成多个功能偶发不稳，而不是只坏一个模块？",
+      "core_requirement": "FM002滤波退化原因→纹波/传导干扰→多子系统相关间歇异常，原因与影响均展开，不混SAM饱和。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-FMECA-01-component-impact",
+      "turn_id": "action",
+      "question": "这种情况下如何验证，再决定是否更换？请把资料中的检查与处置分开说。",
+      "core_requirement": "仍为FM002/MFL002，查输入/母线纹波、时间相关、接地连接/滤波器件，再有条件决定更换；区分检查与处置，不能答FM059。",
+      "decision": "revised",
+      "rationale": "用户要求资料中的检查/处置，不强制同一答案同时引用FMECA/MFL；保留当前故障身份与禁止借用其他故障模式。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-ARCH-03-data-flow-followup",
+      "turn_id": "flow",
+      "question": "外部总线送进来的内容先由谁接收，在哪一步变成系统内部能用的格式，随后交到哪里做业务处理？",
+      "core_requirement": "BCA/BCB接收，PCU转内部格式，再交GPP业务处理，职责不要混。",
+      "decision": "retained",
+      "rationale": "要求对应本轮明示分问及已消解对象；身份/数值断言以合成源为核对依据，来源/计算路径仅在回答或产品授权确有需要时保留。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    },
+    {
+      "case_id": "MT-ARCH-03-data-flow-followup",
+      "turn_id": "format-failure",
+      "question": "如果帧校验通过，但字段解释全错，刚才那条链路里应重点看哪一段？",
+      "core_requirement": "帧校验对而字段语义错优先PCU/FM040映射版本/配置及转换结果；不能换成FM041帧校验错误。",
+      "decision": "revised",
+      "rationale": "已给条件应定位格式转换环节；不强制同时引用FMECA与FTA。",
+      "optional": "不强制额外背景、固定措辞或完整字段表；明确要求完整清单的例外仍须完整回答。"
+    }
+  ]
+}

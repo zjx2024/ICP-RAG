@@ -1,0 +1,810 @@
+{
+  "version": "2026-09-09-review-pairs-v2-historical-scope",
+  "purpose": "同草稿/证据输入的新旧审核离线配对；不传参考判分给审核模型，不是19例端到端成绩。答案仅添加冻结引用坐标；合成来源非适航数据。",
+  "samples": [
+    {
+      "id": "manual-check-not-api-list/valid",
+      "expected_release": true,
+      "basis": "回答物理检查即可，不要求API清单；不得把不可直接上报写成有已确认直接API。",
+      "question": "维修清单对输出异常给了哪些物理检查？",
+      "history": {
+        "messages": []
+      },
+      "observations": [],
+      "ledger": {
+        "1": {
+          "evidence_id": "fixture:manual-check-not-api-list",
+          "doc_id": "synthetic-source",
+          "record_id": "manual-check-not-api-list",
+          "doc_type": "mfl",
+          "authority": "authoritative_record",
+          "review_status": "auto_validated",
+          "content": "M-17记载检查连接和输出驱动，可直接API上报：否，API名称：—；该行仍记载读取状态字结合接口时钟检查。",
+          "metadata": {
+            "answer_fields": {
+              "source_text": "M-17记载检查连接和输出驱动，可直接API上报：否，API名称：—；该行仍记载读取状态字结合接口时钟检查。"
+            }
+          }
+        }
+      },
+      "calculation_requests": [],
+      "safety": {
+        "can_claim_unique": false
+      },
+      "draft": "资料建议检查连接、输出驱动及接口时钟。[^1]"
+    },
+    {
+      "id": "manual-check-not-api-list/invalid",
+      "expected_release": false,
+      "basis": "回答物理检查即可，不要求API清单；不得把不可直接上报写成有已确认直接API。",
+      "question": "维修清单对输出异常给了哪些物理检查？",
+      "history": {
+        "messages": []
+      },
+      "observations": [],
+      "ledger": {
+        "1": {
+          "evidence_id": "fixture:manual-check-not-api-list",
+          "doc_id": "synthetic-source",
+          "record_id": "manual-check-not-api-list",
+          "doc_type": "mfl",
+          "authority": "authoritative_record",
+          "review_status": "auto_validated",
+          "content": "M-17记载检查连接和输出驱动，可直接API上报：否，API名称：—；该行仍记载读取状态字结合接口时钟检查。",
+          "metadata": {
+            "answer_fields": {
+              "source_text": "M-17记载检查连接和输出驱动，可直接API上报：否，API名称：—；该行仍记载读取状态字结合接口时钟检查。"
+            }
+          }
+        }
+      },
+      "calculation_requests": [],
+      "safety": {
+        "can_claim_unique": false
+      },
+      "draft": "可以调用ReadOutputStatus()直接上报该故障，然后更换模块。[^1]"
+    },
+    {
+      "id": "explicit-api-is-required/valid",
+      "expected_release": true,
+      "basis": "必须回应明确接口问题，按行说明可用性，不能仅列物理检查。",
+      "question": "这些检查有哪些已确认可直接调用的接口？",
+      "history": {
+        "messages": []
+      },
+      "observations": [],
+      "ledger": {
+        "1": {
+          "evidence_id": "fixture:explicit-api-is-required",
+          "doc_id": "synthetic-source",
+          "record_id": "explicit-api-is-required",
+          "doc_type": "mfl",
+          "authority": "authoritative_record",
+          "review_status": "auto_validated",
+          "content": "M-17可直接上报：否，API名称：—；M-18可直接上报：是，API名称：ReadModeStatus，调用：事件订阅。",
+          "metadata": {
+            "answer_fields": {
+              "source_text": "M-17可直接上报：否，API名称：—；M-18可直接上报：是，API名称：ReadModeStatus，调用：事件订阅。"
+            }
+          }
+        }
+      },
+      "calculation_requests": [],
+      "safety": {
+        "can_claim_unique": false
+      },
+      "draft": "M-17没有已确认的直接上报API；M-18可通过ReadModeStatus订阅事件。[^1]"
+    },
+    {
+      "id": "explicit-api-is-required/invalid",
+      "expected_release": false,
+      "basis": "必须回应明确接口问题，按行说明可用性，不能仅列物理检查。",
+      "question": "这些检查有哪些已确认可直接调用的接口？",
+      "history": {
+        "messages": []
+      },
+      "observations": [],
+      "ledger": {
+        "1": {
+          "evidence_id": "fixture:explicit-api-is-required",
+          "doc_id": "synthetic-source",
+          "record_id": "explicit-api-is-required",
+          "doc_type": "mfl",
+          "authority": "authoritative_record",
+          "review_status": "auto_validated",
+          "content": "M-17可直接上报：否，API名称：—；M-18可直接上报：是，API名称：ReadModeStatus，调用：事件订阅。",
+          "metadata": {
+            "answer_fields": {
+              "source_text": "M-17可直接上报：否，API名称：—；M-18可直接上报：是，API名称：ReadModeStatus，调用：事件订阅。"
+            }
+          }
+        }
+      },
+      "calculation_requests": [],
+      "safety": {
+        "can_claim_unique": false
+      },
+      "draft": "检查连接、输出驱动和接口时钟。[^1]"
+    },
+    {
+      "id": "validated-input-not-enumeration/valid",
+      "expected_release": true,
+      "basis": "需正确对应结果与最低项，不额外要求列所有输入参数；模型结果不能互换。",
+      "question": "仅用已验证数据给出两个模型的结果并指出较低者。",
+      "history": {
+        "messages": []
+      },
+      "observations": [],
+      "ledger": {
+        "1": {
+          "evidence_id": "fixture:calculation:2:0",
+          "doc_id": "synthetic-source",
+          "record_id": "MODEL-A",
+          "doc_type": "rbd",
+          "authority": "deterministic_derivation",
+          "review_status": "auto_validated",
+          "content": "模型A已验证计算结果0.94；模型B已验证计算结果0.87。",
+          "metadata": {
+            "numeric_complete": true,
+            "validation_status": "auto_validated",
+            "calculation": {
+              "parameters": {},
+              "results": {
+                "system_reliability": 0.94
+              },
+              "units": {
+                "system_reliability": "1"
+              }
+            }
+          }
+        },
+        "2": {
+          "evidence_id": "fixture:calculation:2:1",
+          "doc_id": "synthetic-source",
+          "record_id": "MODEL-B",
+          "doc_type": "rbd",
+          "authority": "deterministic_derivation",
+          "review_status": "auto_validated",
+          "content": "模型A已验证计算结果0.94；模型B已验证计算结果0.87。",
+          "metadata": {
+            "numeric_complete": true,
+            "validation_status": "auto_validated",
+            "calculation": {
+              "parameters": {},
+              "results": {
+                "system_reliability": 0.87
+              },
+              "units": {
+                "system_reliability": "1"
+              }
+            }
+          }
+        }
+      },
+      "calculation_requests": [
+        "rbd_reliability"
+      ],
+      "safety": {
+        "can_claim_unique": false
+      },
+      "draft": "A为0.94[^1]，B为0.87，B较低。[^2]"
+    },
+    {
+      "id": "validated-input-not-enumeration/invalid",
+      "expected_release": false,
+      "basis": "需正确对应结果与最低项，不额外要求列所有输入参数；模型结果不能互换。",
+      "question": "仅用已验证数据给出两个模型的结果并指出较低者。",
+      "history": {
+        "messages": []
+      },
+      "observations": [],
+      "ledger": {
+        "1": {
+          "evidence_id": "fixture:calculation:2:0",
+          "doc_id": "synthetic-source",
+          "record_id": "MODEL-A",
+          "doc_type": "rbd",
+          "authority": "deterministic_derivation",
+          "review_status": "auto_validated",
+          "content": "模型A已验证计算结果0.94；模型B已验证计算结果0.87。",
+          "metadata": {
+            "numeric_complete": true,
+            "validation_status": "auto_validated",
+            "calculation": {
+              "parameters": {},
+              "results": {
+                "system_reliability": 0.94
+              },
+              "units": {
+                "system_reliability": "1"
+              }
+            }
+          }
+        },
+        "2": {
+          "evidence_id": "fixture:calculation:2:1",
+          "doc_id": "synthetic-source",
+          "record_id": "MODEL-B",
+          "doc_type": "rbd",
+          "authority": "deterministic_derivation",
+          "review_status": "auto_validated",
+          "content": "模型A已验证计算结果0.94；模型B已验证计算结果0.87。",
+          "metadata": {
+            "numeric_complete": true,
+            "validation_status": "auto_validated",
+            "calculation": {
+              "parameters": {},
+              "results": {
+                "system_reliability": 0.87
+              },
+              "units": {
+                "system_reliability": "1"
+              }
+            }
+          }
+        }
+      },
+      "calculation_requests": [
+        "rbd_reliability"
+      ],
+      "safety": {
+        "can_claim_unique": false
+      },
+      "draft": "A为0.87[^1]，B为0.94，A较低。[^2]"
+    },
+    {
+      "id": "explicit-input-enumeration/valid",
+      "expected_release": true,
+      "basis": "用户明确要求参数及单位，不能只报最终结果。",
+      "question": "给出结果，同时列明所用参数及单位。",
+      "history": {
+        "messages": []
+      },
+      "observations": [],
+      "ledger": {
+        "1": {
+          "evidence_id": "fixture:calculation:3:0",
+          "doc_id": "synthetic-source",
+          "record_id": "MODEL-A",
+          "doc_type": "rbd",
+          "authority": "deterministic_derivation",
+          "review_status": "auto_validated",
+          "content": "模型A输入故障率0.02每小时、时间3小时；确定性计算结果0.94176453。",
+          "metadata": {
+            "numeric_complete": true,
+            "validation_status": "auto_validated",
+            "calculation": {
+              "parameters": {
+                "failure_rate": 0.02,
+                "failure_rate_unit": "1/h",
+                "mission_time": 3,
+                "mission_time_unit": "h"
+              },
+              "results": {
+                "system_reliability": 0.94176453
+              },
+              "units": {
+                "system_reliability": "1"
+              }
+            }
+          }
+        }
+      },
+      "calculation_requests": [
+        "rbd_reliability"
+      ],
+      "safety": {
+        "can_claim_unique": false
+      },
+      "draft": "已用故障率0.02每小时、任务时间3小时，计算结果0.94176453。[^1]"
+    },
+    {
+      "id": "explicit-input-enumeration/invalid",
+      "expected_release": false,
+      "basis": "用户明确要求参数及单位，不能只报最终结果。",
+      "question": "给出结果，同时列明所用参数及单位。",
+      "history": {
+        "messages": []
+      },
+      "observations": [],
+      "ledger": {
+        "1": {
+          "evidence_id": "fixture:calculation:3:0",
+          "doc_id": "synthetic-source",
+          "record_id": "MODEL-A",
+          "doc_type": "rbd",
+          "authority": "deterministic_derivation",
+          "review_status": "auto_validated",
+          "content": "模型A输入故障率0.02每小时、时间3小时；确定性计算结果0.94176453。",
+          "metadata": {
+            "numeric_complete": true,
+            "validation_status": "auto_validated",
+            "calculation": {
+              "parameters": {
+                "failure_rate": 0.02,
+                "failure_rate_unit": "1/h",
+                "mission_time": 3,
+                "mission_time_unit": "h"
+              },
+              "results": {
+                "system_reliability": 0.94176453
+              },
+              "units": {
+                "system_reliability": "1"
+              }
+            }
+          }
+        }
+      },
+      "calculation_requests": [
+        "rbd_reliability"
+      ],
+      "safety": {
+        "can_claim_unique": false
+      },
+      "draft": "计算结果是0.94176453。[^1]"
+    },
+    {
+      "id": "followup-dimensions/valid",
+      "expected_release": true,
+      "basis": "须给发生条件和恢复验证，不能以维修动作代替或把案例当通用放行标准。",
+      "question": "相近案例在什么条件出现，如何验证修复恢复？",
+      "history": {
+        "messages": []
+      },
+      "observations": [],
+      "ledger": {
+        "1": {
+          "evidence_id": "fixture:followup-dimensions",
+          "doc_id": "synthetic-source",
+          "record_id": "followup-dimensions",
+          "doc_type": "fault_history",
+          "authority": "authoritative_record",
+          "review_status": "auto_validated",
+          "content": "案例H-73在高温高负荷时中断；压接连接器后连续接收2小时无丢帧，未记载通用放行标准。",
+          "metadata": {
+            "answer_fields": {
+              "source_text": "案例H-73在高温高负荷时中断；压接连接器后连续接收2小时无丢帧，未记载通用放行标准。"
+            }
+          }
+        }
+      },
+      "calculation_requests": [],
+      "safety": {
+        "can_claim_unique": false
+      },
+      "draft": "在高温、高负荷下出现；压接后连续接收2小时无丢帧。这是该案例的恢复验证记录。[^1]"
+    },
+    {
+      "id": "followup-dimensions/invalid",
+      "expected_release": false,
+      "basis": "须给发生条件和恢复验证，不能以维修动作代替或把案例当通用放行标准。",
+      "question": "相近案例在什么条件出现，如何验证修复恢复？",
+      "history": {
+        "messages": []
+      },
+      "observations": [],
+      "ledger": {
+        "1": {
+          "evidence_id": "fixture:followup-dimensions",
+          "doc_id": "synthetic-source",
+          "record_id": "followup-dimensions",
+          "doc_type": "fault_history",
+          "authority": "authoritative_record",
+          "review_status": "auto_validated",
+          "content": "案例H-73在高温高负荷时中断；压接连接器后连续接收2小时无丢帧，未记载通用放行标准。",
+          "metadata": {
+            "answer_fields": {
+              "source_text": "案例H-73在高温高负荷时中断；压接连接器后连续接收2小时无丢帧，未记载通用放行标准。"
+            }
+          }
+        }
+      },
+      "calculation_requests": [],
+      "safety": {
+        "can_claim_unique": false
+      },
+      "draft": "故障原因是连接器，处理为重新压接；任何设备压接后都可以放行。[^1]"
+    },
+    {
+      "id": "source-absence-not-missing-relation/valid",
+      "expected_release": true,
+      "basis": "未确认对应关系不等于不存在接口，也不能用同现象擅自确认对应。",
+      "question": "当前报码在维修清单有对应接口吗？",
+      "history": {
+        "messages": []
+      },
+      "observations": [],
+      "ledger": {
+        "1": {
+          "evidence_id": "fixture:source-absence-not-missing-relation",
+          "doc_id": "synthetic-source",
+          "record_id": "source-absence-not-missing-relation",
+          "doc_type": "mfl",
+          "authority": "authoritative_record",
+          "review_status": "auto_validated",
+          "content": "HMC记录C-19有检查接线；MFL记录M-25有接口QueryState。两表没有显式代码关系。",
+          "metadata": {
+            "answer_fields": {
+              "source_text": "HMC记录C-19有检查接线；MFL记录M-25有接口QueryState。两表没有显式代码关系。"
+            }
+          }
+        }
+      },
+      "calculation_requests": [],
+      "safety": {
+        "can_claim_unique": false
+      },
+      "draft": "没有证实当前报码与维修清单记录的对应关系，因而暂不能确认其接口；这不等于清单没有接口。[^1]"
+    },
+    {
+      "id": "source-absence-not-missing-relation/invalid",
+      "expected_release": false,
+      "basis": "未确认对应关系不等于不存在接口，也不能用同现象擅自确认对应。",
+      "question": "当前报码在维修清单有对应接口吗？",
+      "history": {
+        "messages": []
+      },
+      "observations": [],
+      "ledger": {
+        "1": {
+          "evidence_id": "fixture:source-absence-not-missing-relation",
+          "doc_id": "synthetic-source",
+          "record_id": "source-absence-not-missing-relation",
+          "doc_type": "mfl",
+          "authority": "authoritative_record",
+          "review_status": "auto_validated",
+          "content": "HMC记录C-19有检查接线；MFL记录M-25有接口QueryState。两表没有显式代码关系。",
+          "metadata": {
+            "answer_fields": {
+              "source_text": "HMC记录C-19有检查接线；MFL记录M-25有接口QueryState。两表没有显式代码关系。"
+            }
+          }
+        }
+      },
+      "calculation_requests": [],
+      "safety": {
+        "can_claim_unique": false
+      },
+      "draft": "维修清单没有接口，只能检查接线。[^1]"
+    },
+    {
+      "id": "phase-qualification/valid",
+      "expected_release": true,
+      "basis": "保留启动阶段条件；不能把启动条件扩为任意运行状态下确定顺序。",
+      "question": "模块暂时不可用，先影响什么？目前没有给定运行阶段。",
+      "history": {
+        "messages": []
+      },
+      "observations": [],
+      "ledger": {
+        "1": {
+          "evidence_id": "fixture:phase-qualification",
+          "doc_id": "synthetic-source",
+          "record_id": "phase-qualification",
+          "doc_type": "function_locator",
+          "authority": "authoritative_record",
+          "review_status": "auto_validated",
+          "content": "架构仅明确启动时先加载该模块模板，再初始化任务。未说明运行中短时不可用的影响顺序。",
+          "metadata": {
+            "answer_fields": {
+              "source_text": "架构仅明确启动时先加载该模块模板，再初始化任务。未说明运行中短时不可用的影响顺序。"
+            }
+          }
+        }
+      },
+      "calculation_requests": [],
+      "safety": {
+        "can_claim_unique": false
+      },
+      "draft": "若正在启动，首先阻碍模板加载和任务初始化；运行中暂时不可用的影响顺序，资料不足以确定。[^1]"
+    },
+    {
+      "id": "phase-qualification/invalid",
+      "expected_release": false,
+      "basis": "保留启动阶段条件；不能把启动条件扩为任意运行状态下确定顺序。",
+      "question": "模块暂时不可用，先影响什么？目前没有给定运行阶段。",
+      "history": {
+        "messages": []
+      },
+      "observations": [],
+      "ledger": {
+        "1": {
+          "evidence_id": "fixture:phase-qualification",
+          "doc_id": "synthetic-source",
+          "record_id": "phase-qualification",
+          "doc_type": "function_locator",
+          "authority": "authoritative_record",
+          "review_status": "auto_validated",
+          "content": "架构仅明确启动时先加载该模块模板，再初始化任务。未说明运行中短时不可用的影响顺序。",
+          "metadata": {
+            "answer_fields": {
+              "source_text": "架构仅明确启动时先加载该模块模板，再初始化任务。未说明运行中短时不可用的影响顺序。"
+            }
+          }
+        }
+      },
+      "calculation_requests": [],
+      "safety": {
+        "can_claim_unique": false
+      },
+      "draft": "任何阶段都会首先导致整机任务停机。[^1]"
+    },
+    {
+      "id": "minimal-answer-not-all-fields/valid",
+      "expected_release": true,
+      "basis": "回答职责即可，不要求额外字段；不能编造其他模块职责。",
+      "question": "What is the module's role?",
+      "history": {
+        "messages": []
+      },
+      "observations": [],
+      "ledger": {
+        "1": {
+          "evidence_id": "fixture:minimal-answer-not-all-fields",
+          "doc_id": "synthetic-source",
+          "record_id": "minimal-answer-not-all-fields",
+          "doc_type": "function_locator",
+          "authority": "authoritative_record",
+          "review_status": "auto_validated",
+          "content": "Module K stores templates. The source also contains its mass, serial number and maintenance intervals.",
+          "metadata": {
+            "answer_fields": {
+              "source_text": "Module K stores templates. The source also contains its mass, serial number and maintenance intervals."
+            }
+          }
+        }
+      },
+      "calculation_requests": [],
+      "safety": {
+        "can_claim_unique": false
+      },
+      "draft": "It stores templates.[^1]"
+    },
+    {
+      "id": "minimal-answer-not-all-fields/invalid",
+      "expected_release": false,
+      "basis": "回答职责即可，不要求额外字段；不能编造其他模块职责。",
+      "question": "What is the module's role?",
+      "history": {
+        "messages": []
+      },
+      "observations": [],
+      "ledger": {
+        "1": {
+          "evidence_id": "fixture:minimal-answer-not-all-fields",
+          "doc_id": "synthetic-source",
+          "record_id": "minimal-answer-not-all-fields",
+          "doc_type": "function_locator",
+          "authority": "authoritative_record",
+          "review_status": "auto_validated",
+          "content": "Module K stores templates. The source also contains its mass, serial number and maintenance intervals.",
+          "metadata": {
+            "answer_fields": {
+              "source_text": "Module K stores templates. The source also contains its mass, serial number and maintenance intervals."
+            }
+          }
+        }
+      },
+      "calculation_requests": [],
+      "safety": {
+        "can_claim_unique": false
+      },
+      "draft": "It controls the propulsion system.[^1]"
+    },
+    {
+      "id": "counts-not-causal-proof/valid",
+      "expected_release": true,
+      "basis": "不能仅因块多就断言这是主要原因；区分已算结果与原因尚需分析。",
+      "question": "为什么甲模型的概率比乙低？",
+      "history": {
+        "messages": []
+      },
+      "observations": [],
+      "ledger": {
+        "1": {
+          "evidence_id": "fixture:counts-not-causal-proof",
+          "doc_id": "synthetic-source",
+          "record_id": "counts-not-causal-proof",
+          "doc_type": "rbd",
+          "authority": "authoritative_record",
+          "review_status": "auto_validated",
+          "content": "甲0.91、乙0.95。甲含更多串联块，但各块参数不同，未进行敏感性或贡献分析。",
+          "metadata": {
+            "answer_fields": {
+              "source_text": "甲0.91、乙0.95。甲含更多串联块，但各块参数不同，未进行敏感性或贡献分析。"
+            }
+          }
+        }
+      },
+      "calculation_requests": [],
+      "safety": {
+        "can_claim_unique": false
+      },
+      "draft": "结果确为甲低；但块数和各块参数都影响结果，现有资料不足以确认主要贡献因素。[^1]"
+    },
+    {
+      "id": "counts-not-causal-proof/invalid",
+      "expected_release": false,
+      "basis": "不能仅因块多就断言这是主要原因；区分已算结果与原因尚需分析。",
+      "question": "为什么甲模型的概率比乙低？",
+      "history": {
+        "messages": []
+      },
+      "observations": [],
+      "ledger": {
+        "1": {
+          "evidence_id": "fixture:counts-not-causal-proof",
+          "doc_id": "synthetic-source",
+          "record_id": "counts-not-causal-proof",
+          "doc_type": "rbd",
+          "authority": "authoritative_record",
+          "review_status": "auto_validated",
+          "content": "甲0.91、乙0.95。甲含更多串联块，但各块参数不同，未进行敏感性或贡献分析。",
+          "metadata": {
+            "answer_fields": {
+              "source_text": "甲0.91、乙0.95。甲含更多串联块，但各块参数不同，未进行敏感性或贡献分析。"
+            }
+          }
+        }
+      },
+      "calculation_requests": [],
+      "safety": {
+        "can_claim_unique": false
+      },
+      "draft": "已证明主要原因仅是甲的串联块更多。[^1]"
+    },
+    {
+      "id": "normal-format-not-code-change/valid",
+      "expected_release": true,
+      "basis": "粗体或行内代码不改变记录身份；不能换成其他业务记录。",
+      "question": "解释记录R-028记载的影响。",
+      "history": {
+        "messages": []
+      },
+      "observations": [],
+      "ledger": {
+        "1": {
+          "evidence_id": "fixture:normal-format-not-code-change",
+          "doc_id": "synthetic-source",
+          "record_id": "normal-format-not-code-change",
+          "doc_type": "fmeca",
+          "authority": "authoritative_record",
+          "review_status": "auto_validated",
+          "content": "记录R-028记载输出更新延迟；没有R-029的记录。",
+          "metadata": {
+            "answer_fields": {
+              "source_text": "记录R-028记载输出更新延迟；没有R-029的记录。"
+            }
+          }
+        }
+      },
+      "calculation_requests": [],
+      "safety": {
+        "can_claim_unique": false
+      },
+      "draft": "**R-028**记载输出更新延迟。[^1]"
+    },
+    {
+      "id": "normal-format-not-code-change/invalid",
+      "expected_release": false,
+      "basis": "粗体或行内代码不改变记录身份；不能换成其他业务记录。",
+      "question": "解释记录R-028记载的影响。",
+      "history": {
+        "messages": []
+      },
+      "observations": [],
+      "ledger": {
+        "1": {
+          "evidence_id": "fixture:normal-format-not-code-change",
+          "doc_id": "synthetic-source",
+          "record_id": "normal-format-not-code-change",
+          "doc_type": "fmeca",
+          "authority": "authoritative_record",
+          "review_status": "auto_validated",
+          "content": "记录R-028记载输出更新延迟；没有R-029的记录。",
+          "metadata": {
+            "answer_fields": {
+              "source_text": "记录R-028记载输出更新延迟；没有R-029的记录。"
+            }
+          }
+        }
+      },
+      "calculation_requests": [],
+      "safety": {
+        "can_claim_unique": false
+      },
+      "draft": "R-029记载输出更新延迟。[^1]"
+    },
+    {
+      "id": "history-root-valid",
+      "expected_release": true,
+      "basis": "历史已确认结论及验证时长是来源事实，不需要当前唯一诊断/计算授权；不能外推当前确诊或继续运行许可。",
+      "question": "历史案例当时最终确认在哪，修后如何验证恢复？",
+      "history": {
+        "messages": []
+      },
+      "observations": [],
+      "ledger": {
+        "1": {
+          "evidence_id": "fixture:incident-82",
+          "doc_id": "synthetic-history",
+          "record_id": "CASE-82",
+          "doc_type": "fault_history",
+          "authority": "authoritative_record",
+          "review_status": "not_required",
+          "content": "案例 CASE-82 在高温负荷下失效，历史根因确认是输出驱动损坏，更换后连续输出4小时无中断。这是历史个案，不证明当前设备根因或允许继续运行。",
+          "metadata": {
+            "answer_fields": {
+              "root_cause": "输出驱动损坏",
+              "verification": "更换后连续输出4小时无中断",
+              "conditions": "高温负荷"
+            }
+          }
+        }
+      },
+      "safety": {
+        "can_claim_unique": false,
+        "blocked_claims": [
+          "unique_diagnosis"
+        ]
+      },
+      "calculation_requests": [],
+      "draft": "历史案例 CASE-82 当时确认是输出驱动损坏，更换后连续输出4小时无中断。[^1]"
+    },
+    {
+      "id": "history-root-current-invalid",
+      "expected_release": false,
+      "basis": "历史已确认结论及验证时长是来源事实，不需要当前唯一诊断/计算授权；不能外推当前确诊或继续运行许可。",
+      "question": "历史案例当时最终确认在哪，修后如何验证恢复？",
+      "history": {
+        "messages": []
+      },
+      "observations": [],
+      "ledger": {
+        "1": {
+          "evidence_id": "fixture:incident-82",
+          "doc_id": "synthetic-history",
+          "record_id": "CASE-82",
+          "doc_type": "fault_history",
+          "authority": "authoritative_record",
+          "review_status": "not_required",
+          "content": "案例 CASE-82 在高温负荷下失效，历史根因确认是输出驱动损坏，更换后连续输出4小时无中断。这是历史个案，不证明当前设备根因或允许继续运行。",
+          "metadata": {
+            "answer_fields": {
+              "root_cause": "输出驱动损坏",
+              "verification": "更换后连续输出4小时无中断",
+              "conditions": "高温负荷"
+            }
+          }
+        }
+      },
+      "safety": {
+        "can_claim_unique": false,
+        "blocked_claims": [
+          "unique_diagnosis"
+        ]
+      },
+      "calculation_requests": [],
+      "draft": "当前设备已唯一确诊为输出驱动损坏，可以带故障继续运行4小时。[^1]"
+    }
+  ],
+  "saved_snapshots": [
+    {
+      "path": "volumes/artifacts/private_answer_reviews/3cda83822a3d4099ae99bc3298f1a58e-e70adfc003c4404f9aa27b5b318c9947.json",
+      "expected_release": false,
+      "basis": "数值正确，但第三段把串联块多当成确定因果，来源未完成贡献分析。"
+    },
+    {
+      "path": "volumes/artifacts/private_answer_reviews/3cda83822a3d4099ae99bc3298f1a58e-2491895aca714c62860e44f7a42fef5f.json",
+      "expected_release": true,
+      "basis": "已核对四模型数值与最低者；使用已验证参数不要求逐项列举。"
+    }
+  ],
+  "generation_captures": [
+    ".artifacts/evals/selection-budget-20260908.uu8tiX/capture-arch-review-exact/capture-0001.json",
+    ".artifacts/evals/ownership-20260908/capture-handoffs/capture-0001.json",
+    ".artifacts/evals/ownership-20260908/capture-handoffs/capture-0002.json",
+    ".artifacts/evals/selection-budget-20260908.uu8tiX/capture-mfl-failure/capture-0001.json"
+  ]
+}

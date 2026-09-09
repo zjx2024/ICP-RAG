@@ -1,0 +1,67 @@
+{
+  "version": "2026-09-09-identity-feedback-v1",
+  "purpose": "固定正反例审核：已有显式部件ID、联合引用、条件分析与无依据必然因果；合成开发资料，不是适航事实或盲测。",
+  "generation_captures": [".artifacts/evals/selection-budget-20260908.uu8tiX/capture-arch-review-exact/capture-0001.json"],
+  "samples": [
+    {
+      "id": "explicit-component/valid", "expected_release": true,
+      "basis": "功能记录已有明确所属部件编号，正文可引用该记录说明该部件功能。",
+      "question": "MOD-019 的数据保存功能异常时，会直接影响什么？",
+      "history": {"messages": []}, "observations": [], "calculation_requests": [], "safety": {"can_claim_unique": false},
+      "ledger": {"7": {"evidence_id": "fixture:function8", "doc_id": "manual-a", "record_id": "FUNC-8X", "doc_type": "function_locator", "authority": "authoritative_record", "claim_type": "function_fact", "metadata": {"answer_fields": {"function_id": "FUNC-8X", "module_id": "MOD-019", "module_name": "数据模块", "function_name": "配置数据保存", "failure_symptoms": "配置数据无法读取"}}}},
+      "draft": "MOD-019 对应的直接失效表现是配置数据无法读取。[^7]"
+    },
+    {
+      "id": "explicit-component/invalid", "expected_release": false,
+      "basis": "同名邻居不是当前部件，功能记录明确属于另一个部件编号。",
+      "question": "MOD-020 的数据保存功能异常时，会直接影响什么？",
+      "history": {"messages": []}, "observations": [], "calculation_requests": [], "safety": {"can_claim_unique": false},
+      "ledger": {"7": {"evidence_id": "fixture:function8", "doc_id": "manual-a", "record_id": "FUNC-8X", "doc_type": "function_locator", "authority": "authoritative_record", "claim_type": "function_fact", "metadata": {"answer_fields": {"function_id": "FUNC-8X", "module_id": "MOD-019", "module_name": "数据模块", "function_name": "配置数据保存", "failure_symptoms": "配置数据无法读取"}}}},
+      "draft": "MOD-020 对应的直接失效表现是配置数据无法读取。[^7]"
+    },
+    {
+      "id": "joint-sources/valid", "expected_release": true,
+      "basis": "共同引用的组件与功能记录通过相同module_id明确对应，同构型同版本。",
+      "question": "MOD-019 是什么，关联的配置读取功能异常时有什么表现？",
+      "history": {"messages": []}, "observations": [], "calculation_requests": [], "safety": {"can_claim_unique": false},
+      "ledger": {
+        "1": {"evidence_id": "fixture:component", "doc_id": "manual-a", "record_id": "MOD-019", "doc_type": "function_locator", "authority": "authoritative_record", "claim_type": "component_fact", "scope": {"configuration": "A", "document_version": "1"}, "metadata": {"answer_fields": {"component_id": "MOD-019", "component_name": "数据模块"}}},
+        "2": {"evidence_id": "fixture:function", "doc_id": "manual-a", "record_id": "FUNC-8X", "doc_type": "function_locator", "authority": "authoritative_record", "claim_type": "function_fact", "scope": {"configuration": "A", "document_version": "1"}, "metadata": {"answer_fields": {"module_id": "MOD-019", "module_name": "数据模块", "function_name": "配置读取", "failure_symptoms": "读取失败"}}}
+      },
+      "draft": "MOD-019 是数据模块，其关联的配置读取功能异常时表现为读取失败。[^1][^2]"
+    },
+    {
+      "id": "joint-sources/invalid", "expected_release": false,
+      "basis": "把两个引用摆在一起不能让另一部件的功能变成当前部件的功能；部件中文名相同也不能关联。",
+      "question": "MOD-019 是什么，关联的配置读取功能异常时有什么表现？",
+      "history": {"messages": []}, "observations": [], "calculation_requests": [], "safety": {"can_claim_unique": false},
+      "ledger": {
+        "1": {"evidence_id": "fixture:component", "doc_id": "manual-a", "record_id": "MOD-019", "doc_type": "function_locator", "authority": "authoritative_record", "claim_type": "component_fact", "scope": {"configuration": "A", "document_version": "1"}, "metadata": {"answer_fields": {"component_id": "MOD-019", "component_name": "数据模块"}}},
+        "2": {"evidence_id": "fixture:function", "doc_id": "manual-a", "record_id": "FUNC-8X", "doc_type": "function_locator", "authority": "authoritative_record", "claim_type": "function_fact", "scope": {"configuration": "A", "document_version": "1"}, "metadata": {"answer_fields": {"module_id": "MOD-020", "module_name": "数据模块", "function_name": "配置读取", "failure_symptoms": "读取失败"}}}
+      },
+      "draft": "MOD-019 是数据模块，其关联的配置读取功能异常时表现为读取失败。[^1][^2]"
+    },
+    {
+      "id": "causal-condition/valid", "expected_release": true,
+      "basis": "直接事实与显式假设分开，说明资料未证明具体依赖；不把假设冒充已知关系。",
+      "question": "存储模块 MOD-31 暂时不可用会怎样？计算模块 MOD-42 一定会停吗？",
+      "history": {"messages": []}, "observations": [], "calculation_requests": [], "safety": {"can_claim_unique": false},
+      "ledger": {
+        "1": {"evidence_id": "fixture:store", "doc_id": "manual-b", "record_id": "MOD-31", "doc_type": "function_locator", "authority": "authoritative_record", "metadata": {"answer_fields": {"component_id": "MOD-31", "description": "保存任务配置并供读取", "failure_symptoms": "配置无法读取"}}},
+        "2": {"evidence_id": "fixture:compute", "doc_id": "manual-b", "record_id": "MOD-42", "doc_type": "function_locator", "authority": "authoritative_record", "metadata": {"answer_fields": {"component_id": "MOD-42", "description": "执行任务计算", "dependency_details": "未记录输入配置来源及备用机制"}}}
+      },
+      "draft": "MOD-31 不可用首先影响其配置读取能力。[^1] 不能确定 MOD-42 一定会停。若它实际依赖这份配置且没有其他可用来源，计算可能受影响；但这里的依赖和备用条件是假设，资料并未给出两者之间的具体数据依赖，不能当作已确认的停机结论。[^1][^2]"
+    },
+    {
+      "id": "causal-condition/invalid", "expected_release": false,
+      "basis": "两条独立职责不证明直接数据依赖，更不证明任何阶段都无备用而全任务停止。",
+      "question": "存储模块 MOD-31 暂时不可用会怎样？计算模块 MOD-42 一定会停吗？",
+      "history": {"messages": []}, "observations": [], "calculation_requests": [], "safety": {"can_claim_unique": false},
+      "ledger": {
+        "1": {"evidence_id": "fixture:store", "doc_id": "manual-b", "record_id": "MOD-31", "doc_type": "function_locator", "authority": "authoritative_record", "metadata": {"answer_fields": {"component_id": "MOD-31", "description": "保存任务配置并供读取", "failure_symptoms": "配置无法读取"}}},
+        "2": {"evidence_id": "fixture:compute", "doc_id": "manual-b", "record_id": "MOD-42", "doc_type": "function_locator", "authority": "authoritative_record", "metadata": {"answer_fields": {"component_id": "MOD-42", "description": "执行任务计算", "dependency_details": "未记录输入配置来源及备用机制"}}}
+      },
+      "draft": "MOD-31 不可用会使 MOD-42 立即停机，因为计算模块直接依赖它的配置，所有任务在任何运行阶段都会必然中断。[^1][^2]"
+    }
+  ]
+}
