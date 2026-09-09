@@ -45,6 +45,7 @@ from backend.agent.history_focus import (
     select_history_parent_cases,
 )
 from backend.agent.model_selection_service import select_current_models
+from backend.agent.current_model_selection import model_content_evidence
 from backend.agent.diagram_query_scope import bind_current_diagrams, diagram_in_scope
 from backend.agent.query_understanding import (
     bind_structured_function_entity,
@@ -59,13 +60,10 @@ from backend.agent.query_understanding import (
 from backend.agent.rbd_contract import (
     RBD_AUTHORITY_CONTRACT_VERSION,
     RBD_BLOCK_BUSINESS_ID_FIELDS,
-    RBD_NOT_REPRESENTED_BASE,
     bind_rbd_models,
     extract_explicit_rbd_ids,
     literal_identity_in_query,
-    published_rbd_universe_fingerprint,
     rbd_block_business_ids,
-    reinstate_rbd_terminal_negation_anchor,
 )
 from backend.agent.tool_policy import (
     DOC_TYPE_BY_TOOL,
@@ -128,18 +126,6 @@ _TOOL_CALL_PREVIEW_SNIPPET_LIMIT = 260
 _TOOL_CALL_PREVIEW_SOURCE_LIMIT = 320
 _GRAPH_SEED_LIMIT = 20
 _MAX_RECORD_HYDRATION_PER_TYPE = 16
-# A natural-language symptom may cover several independent branches (for
-# example an A/B supply pair) even when the user does not know their stored
-# identifiers.  Semantic recall may discover those rows, but PostgreSQL must
-# re-read two distinct top locators so a second directly relevant branch is
-# not lost, while a third weak semantic neighbour cannot enter the diagnosis
-# merely to fill the answer. These are per-family hard caps, not an unbounded
-# table scan; history remains deliberately conservative.
-_DIAGNOSTIC_RECORD_HYDRATION_LIMITS = {
-    "hmc": 2,
-    "fmeca": 2,
-    "mfl": 2,
-}
 _STRUCTURED_HMC_MATCH_TYPES = {
     "exact_code", "exact_components", "exact_conversation_reference",
 }
@@ -1594,7 +1580,7 @@ def _typed_fmeca_record_fields(state: Mapping[str, Any]) -> Dict[str, str]:
     result: Dict[str, str] = {}
     for raw_field, raw_value in raw_fields.items():
         field = str(raw_field or "").strip()
-        value = " ".join(str(raw_value or "").split())[:500]
+        value = " ".join(str(raw_value or "").split())
         if field in allowed and normalize_search_term(value):
             result[field] = value
     return result
@@ -2180,78 +2166,8 @@ def _canonical_complete_hmc_code(value: Any) -> str:
     return str(parsed.get("hmc_code") or "").strip().casefold()
 
 
-def _hmc_structured_component_identity(
-    hmc_rows: Sequence[Mapping[str, Any]],
-) -> Dict[str, str]:
-    """Resolve the module identity shared by exact HMC rows via components.
-
-    HMC ``fault_desc`` 的权威存储形态是“缩写 故障模式”（如 ``ICU 输入过压
-    钳位失效``），``icp_components`` 把缩写映射到模块名（ICU ↔ 输入调理模块），
-    MFL ``module_fault`` 是“模块名：故障模式”。三者都是权威字段；按
-    “缩写解析出的模块名”+“故障模式段逐字相等”建立的绑定是结构化身份链，
-    不是短语相似度。查库失败时返回空映射并保持 fail-closed。
-    """
-
-    abbreviations: set[str] = set()
-    for row in hmc_rows:
-        if str(row.get("match_type") or "") not in _STRUCTURED_HMC_MATCH_TYPES:
-            continue
-        desc = str(row.get("fault_desc") or row.get("fault_description") or "").strip()
-        parts = desc.split(None, 1)
-        if len(parts) == 2 and parts[0].strip():
-            abbreviations.add(parts[0].strip().upper())
-    if not abbreviations:
-        return {}
-    try:
-        with postgres_client.conn.cursor() as cur:
-            cur.execute(
-                "SELECT abbreviation, name FROM icp_components "
-                "WHERE abbreviation = ANY(%s) AND COALESCE(abbreviation, '') <> ''",
-                (sorted(abbreviations),),
-            )
-            return {str(abbrev).strip(): str(name).strip() for abbrev, name in cur.fetchall()}
-    except Exception as exc:
-        logger.warning("HMC component identity resolution failed: %s", exc)
-        try:
-            postgres_client.conn.rollback()
-        except Exception:
-            pass
-        return {}
 
 
-def _mfl_module_fault_segments(module_fault: Any) -> Tuple[str, str]:
-    """Split ``module_name：fault_mode`` into its two authoritative segments."""
-
-    text = str(module_fault or "").strip()
-    if not text:
-        return "", ""
-    for separator in ("：", ":"):
-        if separator in text:
-            module_name, _, fault_mode = text.rpartition(separator)
-            return module_name.strip(), fault_mode.strip()
-    return "", text
-
-
-def _hmc_fault_mode_segment(row: Mapping[str, Any]) -> str:
-    desc = str(row.get("fault_desc") or row.get("fault_description") or "").strip()
-    parts = desc.split(None, 1)
-    return parts[1].strip() if len(parts) == 2 else ""
-
-
-def _rbd_binding_needs_identity_clarification(binding: Mapping[str, Any]) -> bool:
-    """Whether an RBD binding should surface an unresolved-identity slot.
-
-    ``not_represented`` 是已核对的终态否定（所问部件未被独立建模），
-    不是待消解的身份缺口：再生成 ``rbd_model_identity`` 未解析槽会与
-    确定性否定结论互相矛盾，诱导答案索要图号来“进一步确认”。
-    真正的 unresolved/ambiguous 绑定仍需要该槽。
-    """
-
-    if not isinstance(binding, Mapping):
-        return False
-    if binding.get("required") is not True or binding.get("bound") is True:
-        return False
-    return str(binding.get("basis") or "") != "current_model_selection_not_represented"
 
 
 def _explicit_mfl_hmc_references(row: Mapping[str, Any]) -> set[str]:
@@ -2316,6 +2232,7 @@ def _bind_mfl_rows_to_hmc(
     for row in copied:
         row.pop("query_binding_excluded", None)
         row.pop("hmc_relation_unverified", None)
+        row.pop("hmc_relation_match", None)
 
     requested = dict(requested_components or {})
     target_codes = {
@@ -2340,23 +2257,6 @@ def _bind_mfl_rows_to_hmc(
 
     matched_codes: List[str] = []
     excluded_codes: List[str] = []
-    # 结构化身份链：HMC 行的缩写经 icp_components 解析为模块名，与 MFL
-    # ``module_fault`` 的模块名段相等、且故障模式段逐字相等时，两行指向
-    # 同一权威对象。这是跨表的结构化绑定（与 P2 的故障模式词 handoff 同一
-    # 机制），不是把短语相似当作关系；仅有显式 HMC 引用字段的旧路径保持
-    # 不变，解析失败时整链失效并回落 fail-closed。
-    component_names = set(
-        _hmc_structured_component_identity(hmc_rows).values()
-    )
-    hmc_fault_modes = {
-        mode
-        for mode in (
-            _hmc_fault_mode_segment(row)
-            for row in hmc_rows
-            if str(row.get("match_type") or "") in _STRUCTURED_HMC_MATCH_TYPES
-        )
-        if mode
-    }
     for row in copied:
         mfl_code = str(row.get("mfl_code") or row.get("record_code") or "").strip()
         explicit_refs = _explicit_mfl_hmc_references(row)
@@ -2368,26 +2268,6 @@ def _bind_mfl_rows_to_hmc(
             if mfl_code:
                 matched_codes.append(mfl_code)
             continue
-        if component_names and hmc_fault_modes:
-            module_name, fault_mode = _mfl_module_fault_segments(
-                row.get("module_fault")
-            )
-            if (
-                module_name in component_names
-                and fault_mode
-                and fault_mode in hmc_fault_modes
-            ):
-                row["hmc_relation_match"] = {
-                    "basis": "structured_component_identity",
-                    "module_names": sorted(
-                        name
-                        for name in component_names
-                        if name
-                    ),
-                }
-                if mfl_code:
-                    matched_codes.append(mfl_code)
-                continue
         row["query_binding_excluded"] = True
         row["hmc_relation_unverified"] = True
         if mfl_code:
@@ -2399,17 +2279,7 @@ def _bind_mfl_rows_to_hmc(
             "basis": (
                 "explicit_authoritative_reference"
                 if matched_codes
-                and all(
-                    row.get("hmc_relation_match", {}).get("basis")
-                    == "explicit_authoritative_reference"
-                    for row in copied
-                    if row.get("hmc_relation_match")
-                )
-                else (
-                    "structured_component_identity"
-                    if matched_codes
-                    else "no_explicit_authoritative_relation"
-                )
+                else "no_explicit_authoritative_relation"
             ),
             "mfl_codes": matched_codes,
             "excluded_mfl_codes": excluded_codes,
@@ -2978,51 +2848,6 @@ def _bind_requested_rbd_rows(
     )
 
 
-def _current_published_rbd_universe() -> List[str]:
-    """Deterministically re-read the published RBD universe from PostgreSQL.
-
-    锚点复核的唯一权威输入：不经过检索词、不经过向量，直接读全部已发布
-    的 active RBD 修订。读取失败时返回空列表——空指纹无法通过比对，锚点
-    不会因数据库故障被错误恢复。
-    """
-
-    try:
-        rows = diagram_repository.list_active_revisions(diagram_type="rbd")
-        return published_rbd_universe_fingerprint(rows)
-    except Exception as exc:
-        logger.warning("Published RBD universe re-read failed: %s", exc)
-        try:
-            postgres_client.conn.rollback()
-        except Exception:
-            pass
-        return []
-
-
-def _prior_rbd_terminal_negation_anchor(state: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    """Read the most recent persisted RBD terminal-negation anchor, if any.
-
-    只扫描助手消息的 answer_delivery_manifest（答案发布边界持久化的
-    锚点条目），取最近一条；用户其后主动点名其他 RBD 对象时，本轮绑定
-    通常会有自己的候选/选择路径，不会进入恢复分支。
-    """
-
-    messages = state.get("messages")
-    if not isinstance(messages, list):
-        return None
-    for message in reversed(messages):
-        if not isinstance(message, Mapping) or str(message.get("role") or "") != "assistant":
-            continue
-        manifest = message.get("answer_delivery_manifest")
-        if not isinstance(manifest, list):
-            continue
-        for entry in reversed(manifest):
-            if (
-                isinstance(entry, Mapping)
-                and str(entry.get("kind") or "") == "terminal_negation_anchor"
-                and str(entry.get("doc_type") or "") == "rbd"
-            ):
-                return entry
-    return None
 
 
 def _filter_requested_rbd_rows(
@@ -3622,6 +3447,7 @@ def _hydrate_record_search_hits(
         return min(max(value, 0), _MAX_RECORD_HYDRATION_PER_TYPE)
 
     grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    seen_locators: set[tuple[str, str, str, str]] = set()
     for raw in rows:
         if not isinstance(raw, Mapping) or _is_graph_locator_hit(dict(raw)):
             continue
@@ -3643,6 +3469,11 @@ def _hydrate_record_search_hits(
             raw.get("pg_id_kwd") or raw.get("pg_id")
         ):
             continue
+        identity = (doc_type, str(raw.get("content_type") or ""),
+                    str(raw["doc_id"]), str(raw.get("pg_id_kwd") or raw.get("pg_id")))
+        if identity in seen_locators:
+            continue
+        seen_locators.add(identity)
         grouped[doc_type].append(dict(raw))
 
     result: Dict[str, List[Dict[str, Any]]] = {
@@ -4430,6 +4261,10 @@ def _direct_evidence(tool: str, rows: Sequence[Dict[str, Any]]) -> List[Dict[str
                 claim_type = "function_fact"
                 direct_metadata["answer_fields"] = _answer_fields(
                     function_id=row.get("function_id"),
+                    # Carry the stored component/function bridge, never infer
+                    # it from a shared display name in the answer layer.
+                    module_id=row.get("module_id"),
+                    parent_function_id=row.get("parent_function_id"),
                     system_name=row.get("system_name"),
                     subsystem_name=row.get("subsystem_name"),
                     module_name=row.get("module_name"),
@@ -6678,15 +6513,12 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
             )
             break
 
-    # The strongest bounded row hits in each structured family are re-read by
-    # the exact PostgreSQL storage identity carried by the index.  Paired
-    # HMC/FMECA/MFL modes are retained for explicit comparisons; history stays
-    # at one row.  This validates semantic recall without fuzzy entity merging
-    # or trusting indexed payload text.
+    # Hydrate the already bounded locator window in full. A second, smaller
+    # rank cutoff here would make relevant candidates uncitable before the
+    # semantic comparison has even seen their authoritative fields.
     hydrated_records = _hydrate_record_search_hits(
         locator_handoffs,
-        limit_per_type=1,
-        limits_by_type=_DIAGNOSTIC_RECORD_HYDRATION_LIMITS,
+        limit_per_type=locator_limit_per_type,
         errors=direct_errors,
     )
     hydrated_record_counts: Dict[str, int] = {}
@@ -7212,6 +7044,8 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
             current_rbd_selection = await select_current_models(
                 state, direct_rows["rbd_query"], doc_type="rbd"
             )
+            if current_rbd_selection.get("status") == "not_represented":
+                evidence.extend(model_content_evidence(direct_rows["rbd_query"], "rbd"))
         direct_rows["rbd_query"], rbd_query_binding = _bind_requested_rbd_rows(
             direct_rows["rbd_query"],
             requested=True,
@@ -7232,28 +7066,6 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
             "removed_count": before_count - len(direct_rows["rbd_query"]),
             "binding": dict(rbd_query_binding),
         }
-        # 跨轮终态否定锚点：本轮判定为 not_represented 时，把当前已发布
-        # RBD 全集指纹记入绑定，答案发布时随 manifest 持久化；追问轮检索
-        # 落空、绑定无候选时，用同一指纹做确定性复核后恢复终态（世界未变
-        # 才恢复；任何新发布/撤回都使锚点过期）。
-        if str(rbd_query_binding.get("basis") or "") == RBD_NOT_REPRESENTED_BASE:
-            rbd_query_binding["published_universe_fingerprint"] = (
-                _current_published_rbd_universe()
-            )
-        elif (
-            rbd_query_binding.get("bound") is not True
-            and not (rbd_query_binding.get("candidate_record_ids") or [])
-            and not direct_rows["rbd_query"]
-        ):
-            reinstated = reinstate_rbd_terminal_negation_anchor(
-                _prior_rbd_terminal_negation_anchor(state),
-                published_universe=_current_published_rbd_universe(),
-            )
-            if reinstated:
-                rbd_query_binding = reinstated
-                filter_note["basis"] = rbd_query_binding["basis"]
-                filter_note["binding"] = dict(rbd_query_binding)
-                filter_note["anchor_reinstated"] = True
         for call in tool_calls:
             if call.get("tool") != "rbd_query":
                 continue
@@ -7503,42 +7315,6 @@ async def icp_diagnosis_node(state) -> Dict[str, Any]:
             )
         )
 
-    if _rbd_binding_needs_identity_clarification(rbd_query_binding):
-        identity = make_clarification_identity(
-            doc_type="rbd",
-            record_ids=(
-                rbd_query_binding.get("candidate_record_ids")
-                or rbd_query_binding.get("record_ids")
-                or []
-            ),
-            fields={"binding_basis": rbd_query_binding.get("basis") or ""},
-        )
-        unresolved = make_missing_input_requirement(
-            kind="identity_slot",
-            slot="rbd_model_identity",
-            source_kind="binding",
-            source_name="rbd_query_binding",
-            identity=identity,
-        )
-        missing_input_requirements = unique_contract_items(
-            missing_input_requirements, [unresolved]
-        )
-        unresolved_identity_slots = unique_contract_items(
-            unresolved_identity_slots, [unresolved]
-        )
-        clarification_reasons.append(
-            make_clarification_reason(
-                kind=(
-                    "ambiguous_identity"
-                    if rbd_query_binding.get("ambiguous") is True
-                    else "unresolved_identity"
-                ),
-                source_kind="binding",
-                source_name="rbd_query_binding",
-                identity=identity,
-                blocked_claims=["rbd_model_identity", "formal_calculation"],
-            )
-        )
 
     # Candidate counts and retrieval scores may restrict claim strength, but
     # cannot select a domain-specific follow-up dimension.  When there is no

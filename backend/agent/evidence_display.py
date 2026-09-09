@@ -347,6 +347,8 @@ def summarize_fta_calculation(
         label = "完整列表" if count <= len(cut_summaries) else "前 12 个"
         cut_text += f"（{label}：{enumerated}{'；…' if count > len(cut_summaries) else ''}）"
     parts.append(cut_text)
+    if "top_event_probability" not in result:
+        return "；".join(parts) + "。"
     probability = _number(result.get("top_event_probability"))
     if probability:
         parts.append(f"顶事件概率：{probability}")

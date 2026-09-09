@@ -9,6 +9,7 @@ import unicodedata
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from backend.agent.answer_contract import (
+    ANSWER_FIELD_SPECS,
     ensure_intent_answer_fields,
     normalize_diagnostic_closure,
     normalize_answer_fields,
@@ -24,7 +25,7 @@ from backend.agent.clarification_contract import (
     unique_contract_items,
 )
 from backend.agent.user_context_binding import offered_user_inputs, validate_user_context_bindings
-from backend.agent.model_runtime_policy import bounded_model_transport
+from backend.agent.model_runtime_policy import bounded_model_transport, remaining_seconds, TURN_TIMEOUT_SECONDS
 from backend.core.llm_service import llm_service
 from backend.agent.document_semantics import document_semantics_prompt
 from backend.agent.model_role_service import agent_model_role_service
@@ -38,6 +39,7 @@ from backend.agent.tool_policy import (
     QUERY_TOOL_NAMES,
     extract_hmc_components,
     normalize_calculation_authorizations,
+    normalize_requested_sources as _parse_requested_sources,
     normalize_relation_expansion_contract,
     resolve_tool_policy,
 )
@@ -53,20 +55,16 @@ def _positive_env_float(name: str, default: float) -> float:
         return default
 
 
-PLAN_LLM_TIMEOUT_SECONDS = _positive_env_float("ICP_AGENT_PLAN_TIMEOUT_SECONDS", 75.0)
-TARGET_LLM_TIMEOUT_SECONDS = _positive_env_float("ICP_AGENT_TARGET_TIMEOUT_SECONDS", 20.0)
+PLAN_LLM_TIMEOUT_SECONDS = TURN_TIMEOUT_SECONDS
+TARGET_LLM_TIMEOUT_SECONDS = TURN_TIMEOUT_SECONDS
 # The planner returns a nested JSON object (targets, query frame and per-tool
 # queries). 768 tokens regularly truncated otherwise valid Ollama JSON in the
 # middle of the object, which silently forced every request onto broad recall.
 # Keep this well below the answer budget, but large enough to finish the
 # structured contract.
-PLAN_MAX_PREDICTION_TOKENS = 2048
 # The target now emits the whole turn contract, not a tiny intent label.
 # A 512-token cap truncated JSON before context/anchor fields on every turn
 # of a real 40-turn run, silently dropping all semantic safeguards.
-TARGET_MAX_PREDICTION_TOKENS = min(8192, max(512, int(
-    _positive_env_float("ICP_AGENT_TARGET_MAX_TOKENS", 2048)
-)))
 
 _TARGET_INTENTS = {
     "exact_code",
@@ -205,12 +203,6 @@ _ICP_DOCUMENT_TYPES = frozenset({
 _TOOL_BY_DOC_TYPE = {
     doc_type: tool for tool, doc_type in DOC_TYPE_BY_TOOL.items()
 }
-_SOURCE_QUESTION_ROLES = frozenset({
-    "evidence",
-    "capability",
-    "limitation",
-    "comparison",
-})
 _COVERAGE_SCOPES = frozenset({
     "complete_collection",
     "focused_detail",
@@ -267,7 +259,7 @@ TARGET_PROMPT = """你只负责识别用户这一轮明确询问的信息目标�
 - response_focus 是本轮必须直接回应的语义维度，可多选：importance、immediate_impact、count、completeness_check、first_action、maintenance_action、status_interface、history_conditions、recovery_verification、exclusion_basis、verification_criteria、history_root_cause、history_solution、source_capability、source_limitation、exact_identity、cause。它们是含义标签，不是要求答案照抄的标题或词汇。
 - response_scope：只表示用户本轮要求的重述范围，必须附 response_scope_basis 逐字摘录当前原话。独立问题为 standalone；明确只补充新维度为 incremental；明确要求从头完整重述为 full_restatement；无法从当前原话判断时为 unknown 且 basis 留空。不得因 context_used=true 自动设为 incremental。
 - calculation_authorizations 只表达本轮对 FTA/RBD 操作的语义方式，不填写算法参数。operation 只能是 fta_cut_sets、fta_probability、rbd_reliability；mode 只能是 calculate、explain、read_document；target 分别必须是 fta、fta、rbd；basis 必须逐字摘录当前用户问题中的一段连续原话。只有 mode=calculate 表示请求执行确定性算法，解释算法或读取资料已有数值分别使用 explain、read_document。
-- requested_sources 表达用户明确要求回查的资料族。doc_type 只能是 function_locator、hmc、fta、rbd、fmeca、mfl、fault_history；question_role 只能是 evidence、capability、limitation、comparison；requested_fields 记录用户要求向该资料核实的规范字段，即使该资料通常不提供此字段，也必须保留问题，交给后续查询确认并解释边界。basis 必须逐字摘录当前用户问题中指向该资料的连续原话。业务对象属于哪类资料，与本轮要求向哪类资料求证是两件事；不能用当前对象、上轮来源或候选工具代替本轮指定的来源。用户只是询问业务对象而未要求指定资料时不要生成。
+- requested_sources 表达用户明确要求回查的资料族。doc_type 只能是 function_locator、hmc、fta、rbd、fmeca、mfl、fault_history；question_role 只能是 evidence、capability、limitation、comparison；requested_fields 记录用户要求向该资料核实的规范字段，即使该资料通常不提供此字段，也必须保留问题，交给后续查询确认并解释边界。basis 必须逐字摘录当前用户问题中指向该资料的连续原话。业务对象属于哪类资料，与本轮要求向哪类资料求证是两件事；不能用当前对象、上轮来源或候选工具代替本轮指定的来源。用户只是询问业务对象而未要求指定资料时不要生成。 scope 默认 reference，表示必须参考而非排他；只有用户明确禁止其他资料时标 exclusive，并用 scope_basis 摘录排他要求。询问某资料本身能否证明某事用 capability/limitation，不等同于要求获取该事实。不得把“资料中”“刚才”误当成指定某一资料族。
 - coverage_request 是独立的集合覆盖请求。scope 只能是 complete_collection、focused_detail、relation_path；member_kind 使用受控成员类型；reference_mode=current_query 时 subject 和 basis 都必须逐字来自当前问题，selected_anchor 时只能引用系统给出的 anchor_id。不要填写父ID、成员ID、权威计数等资料事实。
 - 对真实组成、全部数量或组成是否完整的核对，需要 complete_collection 与 closed_collection_members，即使本轮是省略主体的短追问；这与仅统计上轮列了几项不同。追问主体由已选锚点消解时使用 selected_anchor，basis 仍取本轮原话。按所问层级选择成员类型，不把顶层功能域一律当成 module；无法确定层级时保留歧义，不把局部 Top-K 记录当成总体清单。
 - architecture_roles 用于把用户当前明确命名的架构对象标成 source、receiver、converter、processor、validator、upstream、downstream、destination 或 responsible_component；subject 和 basis 都必须是当前问题中的连续原话。comparison_subjects 用于列出本轮需要并列比较的对象，kind 只能是 failure_mode、component、module、path、record，value 和 basis 都必须是当前问题中的连续原话。
@@ -278,7 +270,7 @@ TARGET_PROMPT = """你只负责识别用户这一轮明确询问的信息目标�
 约束：
 1. 只有用户同一句话明确提出多个目标时才能多选。
 2. “哪里出了问题/可能是什么问题”属于 cause_analysis，不是 maintenance_query。
-3. 禁止以“用户隐含需要”“可能还需要”“更全面”为由增加目标。
+3. 禁止以“用户隐含需要”“可能还需要”“更全面”为由增加目标。约束和交付目标要区分：用户限定资料来源、适用条件或参数可信度，不等于另要求逐项列出所有来源或参数；保留这些条件，但不要把它们改写为新增分问。
 4. 对话历史仅用于消解“它/这个问题/这种异常”等指代和省略，不能把助手之前主动提供的内容变成本轮目标或已确认事实。
 5. 用户先描述异常现象，再问“优先怀疑哪里、先查哪部分、可能是哪一段”，属于 cause_analysis；功能定位只是检索步骤，不能把答案目标降成 function_location。
 6. 明确命名一条路、通道、支路或供电/数据/信号路径已经失效，并询问影响、后果或还能否工作时，后果同时取决于故障影响记录和剩余拓扑的成功判据，因此同时选择 impact_analysis 和 reliability_query；用户不必主动提到另一条路、备份、RBD、串并联或冗余。
@@ -384,7 +376,9 @@ TARGET_PROMPT = """你只负责识别用户这一轮明确询问的信息目标�
     "doc_type":"function_locator|hmc|fta|rbd|fmeca|mfl|fault_history",
     "basis":"逐字摘录当前用户问题中的连续原话",
     "requested_fields":["该资料下本轮明确要求的规范字段；没有字段要求则为空数组"],
-    "question_role":"evidence|capability|limitation|comparison"
+    "question_role":"evidence|capability|limitation|comparison",
+    "scope":"reference|exclusive",
+    "scope_basis":"仅 exclusive 时填写：用户明确排除其他来源的连续原话"
   }}],
   "coverage_request":{{
     "scope":"complete_collection|focused_detail|relation_path",
@@ -424,7 +418,8 @@ TARGET_PROMPT = """你只负责识别用户这一轮明确询问的信息目标�
 }}
 
 required_answer_fields 规范字段：
-record_name、record_type、record_location、responsibility、record_identity、architecture_hierarchy、architecture_function、architecture_interface、relation_path、closed_collection_members、hmc_identity、hmc_symptom、failure_mode、fault_cause、structural_cause_chain、fault_location、local_impact、final_impact、impact_propagation、severity、failure_probability、failure_probability_level、detection_method、mission_phase、design_improvement、compensation_action、maintenance_locator、maintenance_action、maintenance_api、platform_test_status、platform_test_result、history_time、history_root、history_steps、history_solution、history_result、history_personnel、history_preventive_action、rbd_success_criterion、rbd_path_structure、rbd_redundancy_structure、rbd_single_failure_boundary、rbd_missing_parameters。
+{answer_field_catalog}。
+计算结果/所需参数使用 calculation_result/calculation_parameters，具体资料和算法由 calculation_authorizations 决定；不要为凑字段把 FTA 割集映射成 FMECA 的 failure_probability 或 RBD 的 rbd_missing_parameters。没有字段可映射的分问仍保留在自然语言目标中。
 topology_dependency.required=true 时，required_answer_fields 至少包含 rbd_single_failure_boundary 和 rbd_success_criterion；询问影响/后果时同时保留用户所需的 local_impact/final_impact。
 """
 
@@ -502,9 +497,9 @@ fault_history_query（历史条件/处理/验证）、hybrid_search（语义发�
 """
 
 
-def _format_history(messages, max_turns=8):
+def _format_history(messages, max_turns=None):
     from backend.agent.answer_context_binding import conversation_review_context
-    context = conversation_review_context({"messages": messages}, max_messages=max_turns * 2)
+    context = conversation_review_context({"messages": messages}, max_messages=None if max_turns is None else max_turns * 2)
     for message in context["messages"]:
         namespace = message["message_id"]
         message["content"] = re.sub(
@@ -703,18 +698,18 @@ def _extract_json_object(text: Any) -> Optional[Dict[str, Any]]:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _bounded_text_list(value: Any, *, limit: int, item_limit: int = 240) -> List[str]:
+def _bounded_text_list(value: Any, *, limit: int | None = None, item_limit: int | None = None) -> List[str]:
     values = value if isinstance(value, list) else []
     result: List[str] = []
     seen: set[str] = set()
     for raw_value in values:
-        text = " ".join(str(raw_value or "").split())[:item_limit]
+        text = " ".join(str(raw_value or "").split())
         identity = text.casefold()
         if not text or identity in seen:
             continue
         seen.add(identity)
         result.append(text)
-        if len(result) >= limit:
+        if limit is not None and len(result) >= limit:
             break
     return result
 
@@ -734,7 +729,7 @@ def _literal_identity_text(value: Any, *, limit: int = 500) -> str:
 
     return " ".join(
         unicodedata.normalize("NFKC", str(value or "")).split()
-    )[:limit]
+    )
 
 
 def _typed_record_field_shape(value: Any) -> Dict[str, Dict[str, str]]:
@@ -858,11 +853,11 @@ def _parse_topology_dependency(
     if not isinstance(value, dict):
         return {}
     requested = value.get("required") is True
-    subject = " ".join(str(value.get("subject") or "").split())[:300]
+    subject = " ".join(str(value.get("subject") or "").split())
     subject_kind = str(value.get("subject_kind") or "").strip().casefold()
     if subject_kind not in _TOPOLOGY_SUBJECT_KINDS:
         subject_kind = "unknown"
-    failure_state = " ".join(str(value.get("failure_state") or "").split())[:300]
+    failure_state = " ".join(str(value.get("failure_state") or "").split())
     shared_basis = _literal_current_span(value.get("basis"), raw_user_query)
     subject_basis = _literal_current_span(
         value.get("subject_basis"), raw_user_query
@@ -947,7 +942,7 @@ def _parse_response_mode(
 def _literal_current_span(value: Any, raw_user_query: Any, *, limit: int = 500) -> str:
     """Return an exact current-turn span, or ``""`` when provenance fails."""
 
-    span = str(value or "").strip()[:limit]
+    span = str(value or "").strip()
     query = str(raw_user_query or "")
     return span if span and span in query else ""
 
@@ -969,45 +964,6 @@ def _parse_response_scope(
     return scope, basis
 
 
-def _parse_requested_sources(
-    value: Any,
-    *,
-    raw_user_query: Any,
-) -> List[Dict[str, Any]]:
-    """Validate explicit source requests without recognizing source names in text."""
-
-    if not isinstance(value, list):
-        return []
-    result: List[Dict[str, Any]] = []
-    seen: set[tuple[str, str, str, tuple[str, ...]]] = set()
-    for raw in value[:16]:
-        if not isinstance(raw, Mapping):
-            continue
-        doc_type = str(raw.get("doc_type") or "").strip()
-        question_role = str(raw.get("question_role") or "").strip()
-        basis = _literal_current_span(raw.get("basis"), raw_user_query)
-        if (
-            doc_type not in _ICP_DOCUMENT_TYPES
-            or question_role not in _SOURCE_QUESTION_ROLES
-            or not basis
-        ):
-            continue
-        requested_fields = normalize_answer_fields(raw.get("requested_fields"))
-        identity = (doc_type, basis, question_role, tuple(requested_fields))
-        if identity in seen:
-            continue
-        seen.add(identity)
-        result.append(
-            {
-                "doc_type": doc_type,
-                "basis": basis,
-                "requested_fields": requested_fields,
-                "question_role": question_role,
-            }
-        )
-    return result
-
-
 def _parse_coverage_request(
     value: Any,
     *,
@@ -1021,7 +977,7 @@ def _parse_coverage_request(
     scope = str(value.get("scope") or "").strip()
     member_kind = str(value.get("member_kind") or "").strip()
     reference_mode = str(value.get("reference_mode") or "").strip()
-    subject = str(value.get("subject") or "").strip()[:300]
+    subject = str(value.get("subject") or "").strip()
     basis = _literal_current_span(value.get("basis"), raw_user_query)
     if (
         scope not in _COVERAGE_SCOPES
@@ -1162,9 +1118,9 @@ def _parse_payload_contract(
     direction = str(value.get("direction") or "").strip()
     if kind not in _PAYLOAD_KINDS or direction not in _PAYLOAD_DIRECTIONS:
         return None
-    source_role = str(value.get("source_role") or "").strip()[:300]
-    destination_role = str(value.get("destination_role") or "").strip()[:300]
-    basis = str(value.get("basis") or "").strip()[:500]
+    source_role = str(value.get("source_role") or "").strip()
+    destination_role = str(value.get("destination_role") or "").strip()
+    basis = str(value.get("basis") or "").strip()
     if kind == "unknown" and direction == "unknown":
         if not source_role and not destination_role and not basis:
             return {
@@ -1328,7 +1284,7 @@ def _parse_target_response(
         primary = targets[0]
     contextualized_query = " ".join(
         str(parsed.get("contextualized_query") or "").split()
-    )[:1200]
+    )
     raw_context_used = parsed.get("context_used")
     context_used = raw_context_used is True or str(raw_context_used or "").strip().casefold() in {
         "1", "true", "yes",
@@ -1394,7 +1350,7 @@ def _parse_target_response(
         coverage_scope = str(coverage_request["scope"])
         collection_member_kind = str(coverage_request["member_kind"])
     requested_facets = _bounded_text_list(
-        parsed.get("requested_facets"), limit=12
+        parsed.get("requested_facets")
     )
     required_fields = normalize_answer_fields(
         parsed.get("required_answer_fields"),
@@ -1493,7 +1449,7 @@ def _parse_target_response(
         "primary_intent": primary,
         "query_targets": normalized_query_targets,
         "contextualized_query": contextualized_query,
-        "subjects": _bounded_text_list(parsed.get("subjects"), limit=12),
+        "subjects": _bounded_text_list(parsed.get("subjects")),
         "requested_facets": requested_facets,
         "required_answer_fields": required_fields,
         "question_semantics": question_semantics,
@@ -1625,12 +1581,6 @@ def _prepare_plan_model(model):
     if not model:
         return model
     prepared = dict(model)
-    raw_limit = prepared.get("num_predict", prepared.get("max_tokens", PLAN_MAX_PREDICTION_TOKENS))
-    try:
-        prediction_limit = max(1, int(raw_limit))
-    except (TypeError, ValueError):
-        prediction_limit = PLAN_MAX_PREDICTION_TOKENS
-    prepared["num_predict"] = min(prediction_limit, PLAN_MAX_PREDICTION_TOKENS)
     if prepared.get("provider") == "ollama":
         # 规划只需稳定的结构化 JSON；关闭长思考并使用确定性采样，避免
         # 同一问题因格式漂移退回宽召回。
@@ -1646,8 +1596,6 @@ def _prepare_target_model(model):
     if not model:
         return model
     prepared = dict(model)
-    prepared["num_predict"] = TARGET_MAX_PREDICTION_TOKENS
-    prepared["max_tokens"] = TARGET_MAX_PREDICTION_TOKENS
     if prepared.get("provider") == "ollama":
         prepared["reasoning"] = False
         prepared["temperature"] = 0.0
@@ -1696,7 +1644,7 @@ async def _repair_complete_collection_contract(
                 [{"role": "user", "content": prompt}],
                 _prepare_target_model(model),
             ),
-            timeout=TARGET_LLM_TIMEOUT_SECONDS,
+            timeout=remaining_seconds(),
         )
     except asyncio.TimeoutError:
         logger.warning("Complete-collection contract repair exceeded %.1fs", TARGET_LLM_TIMEOUT_SECONDS)
@@ -2012,6 +1960,7 @@ async def _classify_explicit_targets(
     prompt = TARGET_PROMPT.format(
         query=query,
         history=history,
+        answer_field_catalog="、".join(f"{key}（{spec['label']}）" for key, spec in ANSWER_FIELD_SPECS.items()),
         conversation_anchors=json.dumps(
             conversation_anchors, ensure_ascii=False, default=str
         ),
@@ -2020,7 +1969,7 @@ async def _classify_explicit_targets(
     if user_context:
         prompt += ("\n\n可引用的先前用户原始输入（未确认、不是证据或计算授权）：\n"
                    + json.dumps(user_context, ensure_ascii=False)
-                   + '\n当本轮仍指向这些输入、但此前未命中记录或没有引用锚点时，可设置context_used=true、context_status=resolved，并输出user_context_bindings=[{"message_id":"给出的消息ID","quote":"相关用户消息中的连续原文"}]。'
+                   + '\n当本轮仍指向这些输入时，可设置context_used=true、context_status=resolved，并输出user_context_bindings=[{"message_id":"给出的消息ID","quote":"相关用户消息中的连续原文"}]。已有证据锚点时也须保留仍适用的用户现象和工况；锚点只证明先前引用过记录，不证明候选已成为当前故障。'
                    "只选择本轮仍适用的输入；不选择助手结论、不复制旧计算授权、不跨话题自动继承。"
                    "用户追问还需哪些原始资料时，仍保留原待查对象，而非改查不相干故障。无法明确指代时保持缺少或歧义状态。")
     offered_anchor_ids = [
@@ -2028,7 +1977,7 @@ async def _classify_explicit_targets(
         if isinstance(item, dict) and str(item.get("anchor_id") or "")
     ]
     decision = None
-    deadline = time.monotonic() + TARGET_LLM_TIMEOUT_SECONDS
+    deadline = time.monotonic() + remaining_seconds()
     try:
         for attempt in range(2):
             remaining = deadline - time.monotonic()
@@ -2347,7 +2296,7 @@ async def plan_node(state, config=None) -> Dict:
     try:
         response = await asyncio.wait_for(
             _generate_plan_response(prompt, model, stream_queue),
-            timeout=PLAN_LLM_TIMEOUT_SECONDS,
+            timeout=remaining_seconds(),
         )
         parsed = _parse_json_response(response)
     except asyncio.TimeoutError:

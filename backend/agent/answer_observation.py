@@ -1,7 +1,7 @@
 """Opt-in, process-local answer observations for controlled offline experiments.
 
-No environment flag, API parameter, persistent state or public trace can enable
-this collector. The diagnostic runner owns its lifetime and private output.
+No API parameter or public trace exposes this collector. The diagnostic runner
+owns full observations; failed review exchanges also get a private local file.
 Observers never decide whether text is correct and never modify the answer.
 """
 from __future__ import annotations
@@ -21,7 +21,7 @@ _STATE_KEYS = (
     "conversation_anchors", "selected_conversation_anchors", "evidence_registry",
     "context_evidence_ids", "safety_decision", "tool_results", "calculation_results",
     "missing_input_requirements", "collection_resolution",
-    "calculation_requests", "requested_source_tools", "hmc_mfl_binding", "answer_mode",
+    "calculation_requests", "calculation_authorizations", "allowed_tools", "requested_source_tools", "hmc_mfl_binding", "answer_mode",
     "structured_entity_binding", "structured_record_binding",
     "rbd_query_binding", "fta_query_binding",
     "clarification_question", "diagnostic_context", "domain_results", "kg_summary",
@@ -70,11 +70,12 @@ class AnswerObservation:
     inputs: list[dict[str, Any]] = field(default_factory=list)
     stages: list[dict[str, Any]] = field(default_factory=list)
     model_calls: list[dict[str, Any]] = field(default_factory=list)
+    reviews: list[dict[str, Any]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return detached({"inputs": self.inputs, "stages": self.stages,
-                         "model_calls": self.model_calls, "errors": self.errors})
+                         "model_calls": self.model_calls, "reviews": self.reviews, "errors": self.errors})
 
 
 _observer: ContextVar[AnswerObservation | None] = ContextVar("answer_observation", default=None)
@@ -82,6 +83,53 @@ _observer: ContextVar[AnswerObservation | None] = ContextVar("answer_observation
 
 def answer_observation_enabled() -> bool:
     return _observer.get() is not None
+
+
+def observe_review_exchange(*, raw, prepared, ledger, safety, calculation_requests,
+                            salvage=False, result=None, error=None, transport=None) -> None:
+    """Preserve exact validator inputs, not hidden model reasoning.
+
+    Public traces retain only codes. These private snapshots permit zero-LLM
+    replay of rejected bindings, including source values and full feedback.
+    Recording is observational: an I/O failure cannot change the verdict.
+    """
+    from pathlib import Path
+    import logging
+    import os
+    import uuid
+    from backend.agent.tracing import peek
+    from backend.config.config import config
+
+    observation, trace = _observer.get(), peek()
+    if observation is None and (error is None or trace is None):
+        return
+    try:
+        files = (Path(__file__), Path(__file__).with_name("answer_review.py"),
+                 Path(__file__).with_name("citation_binding.py"))
+        snapshot = detached({
+            "schema_version": "icp-review-exchange/v1",
+            "trace_id": trace.trace_id if trace else None,
+            "source_hashes": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in files},
+            "raw": raw, "prepared": prepared, "ledger": ledger, "safety": safety,
+            "calculation_requests": calculation_requests, "salvage": salvage,
+            "result": result, "error": {"code": error.code, "feedback": error.feedback} if error else None,
+        })
+        if transport is not None:
+            snapshot["transport"] = detached(transport)
+        snapshot["sha256"] = fingerprint(snapshot)
+        if observation is not None:
+            observation.reviews.append(snapshot)
+        if error is not None and trace is not None:
+            directory = Path(getattr(config, "TRACE_DIR", None) or "data/traces").parent / "private_answer_reviews"
+            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            path = directory / f"{trace.trace_id}-{uuid.uuid4().hex}.json"
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(snapshot, handle, ensure_ascii=False, allow_nan=False)
+    except Exception as exc:
+        if observation is not None:
+            observation.errors.append(f"review_exchange:{type(exc).__name__}")
+        logging.getLogger(__name__).warning("Private review capture failed: %s", type(exc).__name__)
 
 
 @contextmanager
@@ -135,7 +183,7 @@ def observe_model_call(fields: Mapping[str, Any]) -> None:
     if observation is not None:
         try:
             observation.model_calls.append(detached({
-                key: fields[key] for key in ("template_name", "duration_ms", "ok", "model_name", "response_chars")
+                key: fields[key] for key in ("template_name", "duration_ms", "ok", "model_name", "response_chars", "token_usage", "finish_reason", "resource_budget")
                 if key in fields
             }))
         except Exception as exc:

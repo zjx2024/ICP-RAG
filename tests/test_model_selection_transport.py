@@ -13,8 +13,8 @@ class ModelSelectionTransportTests(unittest.TestCase):
         prepared = service._selection_model(original)
         self.assertFalse(prepared["reasoning"])
         self.assertEqual("json", prepared["format"])
-        self.assertEqual(1200, prepared["num_predict"])
-        self.assertEqual(1200, prepared["max_tokens"])
+        self.assertEqual(8192, prepared["num_predict"])
+        self.assertEqual(8192, prepared["max_tokens"])
         self.assertTrue(original["reasoning"])
         self.assertEqual(8192, original["num_predict"])
 

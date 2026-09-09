@@ -1,3 +1,4 @@
+# v3/v4 validator assertions below are offline compatibility; live v5 counterparts are in test_answer_integrated_review.
 """Final-attempt salvage: prune critic-rejected units, publish partial.
 
 Contracts only, no model quality.  These tests pin the structural protections:
@@ -11,7 +12,8 @@ import unittest
 from contextlib import ExitStack
 from unittest.mock import AsyncMock, patch
 
-from backend.agent import answer_observation, answer_review as protocol
+from backend.agent import answer_observation
+from scripts import legacy_answer_review as protocol
 from backend.agent.contracts import make_evidence
 from backend.agent.nodes import answer
 from backend.agent.nodes.answer_request import _answer_task_context
@@ -44,9 +46,9 @@ def clean_unit(unit_id, text):
 
 
 def response(units, goals=None):
-    return {"version": 2, "units": units,
-            "goals": goals if goals is not None
-            else [{"goal_id": "q0", "status": "answered", "issue": ""}]}
+    return {"version": 3, "units": units,
+            "goals": [{**g, "unit_ids": g.get("unit_ids", [u["unit_id"] for u in units])} for g in goals] if goals is not None
+            else [{"goal_id": "q0", "status": "answered", "unit_ids": [u["unit_id"] for u in units], "issue": ""}]}
 
 
 def prepared(state, draft=DRAFT):
@@ -64,30 +66,6 @@ def validate(value, state=None, draft=DRAFT, salvage=False):
         value if isinstance(value, str) else json.dumps(value, ensure_ascii=False),
         prepared=material, ledger=ledger, safety=state.get("safety_decision") or {},
         calculation_requests=state.get("calculation_requests") or [], salvage=salvage)
-
-
-def node_run(state=None, reviews=None, *, draft=DRAFT, revisions=None):
-    """Run answer_node with scripted model outputs; reviews is a list of review
-    JSON values, revisions the writer drafts between them."""
-    state = state or state_for()
-    reviews = reviews if reviews is not None else [response([clean_unit("u1", LINE1), check("u2", issue="无来源")])]
-    revisions = revisions if revisions is not None else [DRAFT] * (len(reviews) - 1)
-    outputs = [draft]
-    for i, review in enumerate(reviews):
-        outputs.append(json.dumps(review, ensure_ascii=False))
-        if i < len(revisions):
-            outputs.append(revisions[i])
-    with ExitStack() as stack:
-        stack.enter_context(patch.object(answer, "_with_answer_evidence_rerank", new=AsyncMock(side_effect=lambda x: x)))
-        stack.enter_context(patch.object(answer.agent_model_role_service, "apply_agent_llm_params",
-            return_value={"provider": "ollama", "model_name": "review-fixture", "num_predict": 1200, "max_tokens": 4096}))
-        call = stack.enter_context(patch.object(answer.llm_service, "call_model", side_effect=outputs))
-        async def stream(messages, model):
-            yield answer.llm_service.call_model(messages, model)
-        stack.enter_context(patch.object(answer.llm_service, "stream_model", side_effect=stream))
-        captured = stack.enter_context(answer_observation.observe_answers()) if False else None
-        result = asyncio.run(answer.answer_node(copy.deepcopy(state), None))
-        return result, call.call_args_list
 
 
 class SalvageValidationTests(unittest.TestCase):
@@ -113,7 +91,7 @@ class SalvageValidationTests(unittest.TestCase):
     def test_protocol_failure_never_salvages(self):
         with self.assertRaises(protocol.AnswerReviewError):
             validate("not json", salvage=True)
-        incomplete = {"version": 2, "units": [clean_unit("u1", LINE1)], "goals": [
+        incomplete = {"version": 3, "units": [clean_unit("u1", LINE1)], "goals": [
             {"goal_id": "q0", "status": "answered", "issue": ""}]}
         with self.assertRaises(protocol.AnswerReviewError):
             validate(incomplete, salvage=True)
@@ -182,28 +160,3 @@ class SalvageValidationTests(unittest.TestCase):
         # The surviving unit keeps a rendered citation marker bound to its record.
         self.assertIn("[^1]", result["text"])
         self.assertTrue(result["text"].strip().endswith("[^1]"))
-
-
-class SalvageNodeTests(unittest.TestCase):
-    def test_third_attempt_salvage_publishes_partial_instead_of_error(self):
-        bad = response([clean_unit("u1", LINE1), check("u2", issue="该段断言无来源支持")])
-        result, calls = node_run(reviews=[bad, bad, bad], revisions=[DRAFT, DRAFT])
-        self.assertEqual(result["answer_completion_status"], "partial")
-        self.assertIn(LINE1, result["final_answer"])
-        self.assertNotIn(LINE2, result["final_answer"])
-        self.assertTrue(result["final_answer"].strip())
-
-    def test_early_clean_review_never_salvages(self):
-        good = response([clean_unit("u1", LINE1), clean_unit("u2", LINE2)])
-        result, calls = node_run(reviews=[good])
-        self.assertEqual(result["answer_completion_status"], "full")
-        self.assertIn(LINE2, result["final_answer"])
-
-    def test_protocol_failure_on_all_attempts_still_raises(self):
-        from backend.agent.nodes.answer import AnswerGenerationError
-        with self.assertRaises(AnswerGenerationError):
-            node_run(reviews=["not json", "not json", "not json"], revisions=[DRAFT, DRAFT])
-
-
-if __name__ == "__main__":
-    unittest.main()

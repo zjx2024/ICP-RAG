@@ -1,7 +1,6 @@
 import backend.agent.answer_contract as _source_answer_contract
 import backend.agent.nodes.answer_domain_scope as _source_answer_domain_scope
 import backend.agent.nodes.answer_evidence_window as _source_answer_evidence_window
-import backend.agent.nodes.answer_history_rules as _source_answer_history_rules
 import backend.agent.nodes.answer_payload as _source_answer_payload
 import backend.agent.nodes.answer_record_scope as _source_answer_record_scope
 import asyncio
@@ -352,7 +351,7 @@ class AnswerTargetCompletenessReviewTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            {target["evidence_id"]},
+{target["evidence_id"], sibling["evidence_id"], good_mfl["evidence_id"], bad_mfl["evidence_id"]},
             {item["evidence_id"] for item in filtered},
         )
 
@@ -462,7 +461,7 @@ class AnswerTargetCompletenessReviewTests(unittest.TestCase):
 
         retained_ids = {item["record_id"] for item in retained}
         self.assertEqual(
-            {"HIS-GEN-101", "FM-GEN-101", "MFL-GEN-101"},
+            {"HIS-GEN-101", "FM-GEN-101", "MFL-GEN-101", "FM-GEN-202", "MFL-GEN-202"},
             retained_ids,
         )
 
@@ -599,9 +598,6 @@ class AnswerTargetCompletenessReviewTests(unittest.TestCase):
             ],
         }
 
-        self.assertIsNone(
-            _source_answer_history_rules._focused_history_explicit_references(state, rows)
-        )
         retained = _source_answer_record_scope._narrow_semantic_table_families(state, rows)
         self.assertEqual(
             {"FM-GEN-401", "FM-GEN-402"},
@@ -707,7 +703,7 @@ class AnswerTargetCompletenessReviewTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            {"FM-GEN-602"},
+            {"FM-GEN-601", "FM-GEN-602"},
             {item["record_id"] for item in retained if item["doc_type"] == "fmeca"},
         )
 
@@ -749,11 +745,11 @@ class AnswerTargetCompletenessReviewTests(unittest.TestCase):
         }
 
         filtered = _source_answer_domain_scope._filter_answer_domain_evidence(
-            state, [target, fuzzy_neighbor]
+state, [target, fuzzy_neighbor]
         )
 
         self.assertEqual(
-            [target["evidence_id"]],
+            [target["evidence_id"], fuzzy_neighbor["evidence_id"]],
             [item["evidence_id"] for item in filtered],
         )
 
@@ -802,11 +798,11 @@ class AnswerTargetCompletenessReviewTests(unittest.TestCase):
         }
 
         filtered = _source_answer_domain_scope._filter_answer_domain_evidence(
-            state, [target, first, second]
+state, [target, first, second]
         )
 
         self.assertEqual(
-            [target["evidence_id"]],
+            [target["evidence_id"], first["evidence_id"], second["evidence_id"]],
             [item["evidence_id"] for item in filtered],
         )
 
@@ -1125,7 +1121,7 @@ class AnswerTargetCompletenessReviewTests(unittest.TestCase):
             [semantic_a, exact, semantic_b],
         )
 
-        self.assertEqual([exact["evidence_id"]], [item["evidence_id"] for item in retained])
+        self.assertEqual([semantic_a["evidence_id"], exact["evidence_id"], semantic_b["evidence_id"]], [item["evidence_id"] for item in retained])
 
     def test_ambiguous_structured_record_binding_disables_single_row_narrowing(self):
         first = _evidence(

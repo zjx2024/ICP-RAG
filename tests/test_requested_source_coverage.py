@@ -66,15 +66,16 @@ class RequestedSourceCoverageTests(unittest.TestCase):
                     self.assertEqual([source], decision["authorized_doc_types"])
                     self.assertNotIn("fmeca_query", decision["authorized_tools"])
 
-    def test_non_mfl_source_cannot_scope_away_mfl_contract_fields(self):
-        """维修合同字段的权威属主是 MFL：模型把“资料中的处置”窄化成单一
-        FMECA 来源时，MFL 清单回读仍须保留。"""
+    def test_explicit_source_applies_to_maintenance_fields_too(self):
+        """MFL's usual field ownership cannot override the user's chosen source."""
         from backend.agent.tool_policy import resolve_tool_policy
 
-        wording = "这种情况下如何验证，再决定是否更换？请把资料中的检查与处置分开说。"
+        wording = "只根据 FMECA 中的检测和处置措施回答，不要检索 MFL。"
         request = [{
             "doc_type": "fmeca",
-            "basis": "请把资料中的检查与处置分开说",
+            "basis": "只根据 FMECA 中的检测和处置措施回答",
+            "scope": "exclusive",
+            "scope_basis": "不要检索 MFL",
             "question_role": "evidence",
             "requested_fields": ["detection_method", "maintenance_action"],
         }]
@@ -84,15 +85,9 @@ class RequestedSourceCoverageTests(unittest.TestCase):
             requested_sources=request,
             required_answer_fields=["detection_method", "maintenance_action"],
         )
-        self.assertIn("mfl_query", decision["authorized_tools"])
-        self.assertIn("mfl", decision["authorized_doc_types"])
+        self.assertNotIn("mfl_query", decision["authorized_tools"])
+        self.assertNotIn("mfl", decision["authorized_doc_types"])
         self.assertIn("fmeca", decision["authorized_doc_types"])
-        self.assertTrue(
-            any(
-                "MFL" in note or "mfl" in note
-                for note in decision.get("notes") or []
-            )
-        )
 
     def test_explicit_mfl_source_keeps_contract_scoping(self):
         from backend.agent.tool_policy import resolve_tool_policy

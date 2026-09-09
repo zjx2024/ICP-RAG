@@ -267,7 +267,7 @@ def normalize_relation_expansion_contract(
 
     relation_kind = str(value.get("relation_kind") or "").strip()
     reference_mode = str(value.get("reference_mode") or "").strip()
-    basis = str(value.get("basis") or "").strip()[:500]
+    basis = str(value.get("basis") or "").strip()
     query = str(raw_user_query or "")
     if (
         relation_kind not in RELATION_KINDS
@@ -309,7 +309,14 @@ def normalize_relation_expansion_contract(
     return result
 
 
-def _normalize_requested_sources(
+def source_request_is_scoped(request: Mapping[str, Any]) -> bool:
+    """A requested reference is a coverage floor, not an exclusion boundary."""
+    return request.get("scope") == "exclusive" or request.get("question_role") in {
+        "capability", "limitation", "comparison",
+    }
+
+
+def normalize_requested_sources(
     value: Any,
     *,
     raw_user_query: Any,
@@ -320,29 +327,35 @@ def _normalize_requested_sources(
         return []
     query = str(raw_user_query or "")
     result: List[Dict[str, Any]] = []
-    seen: set[tuple[str, str, str, tuple[str, ...]]] = set()
-    for raw in value[:16]:
+    seen: set[tuple] = set()
+    for raw in value:
         if not isinstance(raw, Mapping):
             continue
         doc_type = str(raw.get("doc_type") or "").strip()
         tool = _TOOL_BY_DOC_TYPE.get(doc_type, "")
         role = str(raw.get("question_role") or "").strip()
-        basis = str(raw.get("basis") or "").strip()[:500]
+        basis = str(raw.get("basis") or "").strip()
         if not tool or role not in _SOURCE_QUESTION_ROLES or not basis or basis not in query:
             continue
         fields = normalize_answer_fields(raw.get("requested_fields"))
-        identity = (doc_type, basis, role, tuple(fields))
-        if identity in seen:
-            continue
-        seen.add(identity)
-        result.append(
-            {
+        request = {
                 "doc_type": doc_type,
                 "basis": basis,
                 "requested_fields": fields,
                 "question_role": role,
             }
-        )
+        # Semantic interpretation belongs to the planner. Code checks the
+        # closed protocol and its literal current-turn provenance, not words
+        # such as “只” / “only”. Legacy requests mean reference, never exclusion.
+        scope_basis = str(raw.get("scope_basis") or "").strip()
+        if raw.get("scope") == "exclusive" and scope_basis and scope_basis in query:
+            request.update(scope="exclusive", scope_basis=scope_basis)
+        identity = (doc_type, basis, role, tuple(fields), request.get("scope", "reference"),
+                    request.get("scope_basis", ""))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        result.append(request)
     return result
 
 
@@ -620,7 +633,7 @@ def resolve_tool_policy(
         raw_user_query=authorization_text,
     )
     target_intents = [item["intent"] for item in normalized_targets]
-    normalized_requested_sources = _normalize_requested_sources(
+    normalized_requested_sources = normalize_requested_sources(
         requested_sources,
         raw_user_query=authorization_text,
     )
@@ -689,23 +702,14 @@ def resolve_tool_policy(
     # authorize the source families that may complete this turn.  This also
     # lets a narrowly mislabelled target retain an explicitly requested field
     # without reopening every source associated with the neighbouring intent.
-    # Requested dimensions are not claims about source capability. A user
-    # asking source A for field X authorizes A's read, not an unsolicited read
-    # of source B merely because B usually stores X. Preserve X as an answer
-    # obligation even when A's actual rows have no support for it.
-    scoped_fields = set(source_coverage_fields)
-    # 用户点名的资料族只授权该族的读取，但 MFL 合同字段的所有权仍归 MFL：
-    # 规划模型把“资料中的检查与处置”窄化成单一 FMECA 来源时，维修处置的
-    # 权威清单不能因此失去 MFL 回读。只有用户本轮明确点名 MFL 时，这些
-    # 字段才允许由该来源条目独占。
-    if _MFL_CONTRACT_FIELDS & scoped_fields and not any(
-        item["doc_type"] == "mfl" for item in normalized_requested_sources
-    ):
-        scoped_fields -= _MFL_CONTRACT_FIELDS
-        notes.append(
-            "维修合同字段权威属主为MFL，已保留MFL清单回读："
-            + "、".join(sorted(_MFL_CONTRACT_FIELDS & set(source_coverage_fields)))
-        )
+    # Asking to consult A must not suppress sources needed for other requested
+    # dimensions. Only explicit exclusion or a question about A's own
+    # capability scopes field ownership to A.
+    scoped_fields = {
+        field for request in normalized_requested_sources
+        if source_request_is_scoped(request)
+        for field in request["requested_fields"]
+    }
     query_contract_tools = list(dict.fromkeys([*tools_for_answer_fields([
         field for field in contract_fields if field not in scoped_fields
     ]), *requested_source_tools]))
@@ -889,7 +893,7 @@ def resolve_tool_policy(
     if RBD_ANSWER_FIELDS.intersection(contract_fields) and "rbd_query" in allowed_by_intent:
         forced_tools.append("rbd_query")
         notes.append("模型显式 RBD 回答字段已保留权威结构查询")
-    maintenance_contract_fields = _MFL_CONTRACT_FIELDS & set(contract_fields)
+    maintenance_contract_fields = _MFL_CONTRACT_FIELDS & (set(contract_fields) - scoped_fields)
     if maintenance_contract_fields and "mfl_query" in allowed_by_intent:
         # Same contract-completion pattern as the RBD rule above: the target
         # model has already committed to maintenance fields whose authoritative
@@ -1244,6 +1248,8 @@ def resolve_tool_policy(
                 "fields": list(item.get("requested_fields") or []),
                 "question_role": item["question_role"],
                 "basis": item["basis"],
+                "scope": item.get("scope", "reference"),
+                "scope_basis": item.get("scope_basis", ""),
             }
             for item in normalized_requested_sources
         ],

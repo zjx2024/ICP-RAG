@@ -8,10 +8,10 @@ import time
 from typing import Any, Mapping, Sequence
 
 from backend.agent.current_model_selection import (
-    SELECTION_PROMPT, SELECTION_TIMEOUT_SECONDS, model_candidates, validate_selection_with_reason,
+    SELECTION_PROMPT, model_candidates, validate_selection_with_reason,
 )
 from backend.agent.model_role_service import agent_model_role_service
-from backend.agent.model_runtime_policy import bounded_model_transport
+from backend.agent.model_runtime_policy import bounded_model_transport, remaining_seconds
 from backend.core.llm_service import llm_service
 
 logger = logging.getLogger(__name__)
@@ -24,10 +24,10 @@ def _text(value: Any) -> str:
 def _selection_model(model: Mapping[str, Any]) -> dict[str, Any]:
     """Reserve the bounded output for the selection contract, not hidden thought."""
 
-    prepared = {**model, "temperature": 0, "max_tokens": 1200, "num_predict": 1200, "stream": False}
+    prepared = {**model, "temperature": 0, "stream": False}
     if str(prepared.get("provider") or "").casefold() == "ollama":
         prepared.update(reasoning=False, format="json")
-    return bounded_model_transport(prepared, SELECTION_TIMEOUT_SECONDS)
+    return bounded_model_transport(prepared)
 
 
 def _selection_failed(doc_type: str, reason: str) -> None:
@@ -48,7 +48,7 @@ async def select_current_models(
     if not candidates or not query:
         return {}
     model_id = _text(state.get("chat_model_id"))
-    payload = {"current_question": query, "retrieval_context": _text(state.get("rewritten_query"))[:2000], "candidates": candidates}
+    payload = {"current_question": query, "retrieval_context": _text(state.get("rewritten_query")), "candidates": candidates}
     try:
         if model_id:
             from backend.storage.postgres_client import postgres_client
@@ -61,7 +61,7 @@ async def select_current_models(
         if not model:
             return {}
         model = _selection_model(model)
-        deadline = time.monotonic() + SELECTION_TIMEOUT_SECONDS
+        deadline = time.monotonic() + remaining_seconds()
         for attempt in range(2):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -83,7 +83,7 @@ async def select_current_models(
                 return {}
             payload = {**payload, "contract_correction": {
                 "error": rejection,
-                "instruction": "重新理解同一个原始问题，只从同一候选中选择。question_basis必须逐字摘自current_question，不能摘自retrieval_context；身份和标题必须逐字来自候选。不要修造ID或改问句。",
+                "instruction": "重新理解同一个原始问题，只从同一候选中选择。无需输出 question_basis，当前问题身份由程序绑定；模型身份和标题必须逐字来自候选，不得修造ID。",
             }}
         return {}
     except Exception as exc:

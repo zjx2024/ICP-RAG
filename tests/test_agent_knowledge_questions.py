@@ -16,16 +16,16 @@ def _run(coroutine):
 
 class KnowledgeQuestionFlowTests(unittest.TestCase):
     def test_answer_prompts_require_evidence_backed_complete_but_non_mechanical_answers(self):
-        self.assertIn("只展开与本轮分问相关的内容", answer_module.ANSWER_PROMPT)
-        self.assertIn("逐条抄录字段", answer_module.ANSWER_PROMPT)
+        self.assertIn("规划提示和证据字段不是额外必答栏目", answer_module.ANSWER_PROMPT)
+        self.assertIn("各数值结果就近引用自己的确定性计算凭据，可同段比较", answer_module.ANSWER_PROMPT)
         self.assertFalse(hasattr(answer_module, "MAINTENANCE_ANSWER_PROMPT"))
 
     def test_exact_hmc_prompt_can_use_only_explicitly_linked_complementary_evidence(self):
         prompt = answer_module._build_answer_prompt({"query": "这个报码有对应接口吗？",
             "answer_mode": "exact_code_lookup"}, "本轮证据")
         self.assertIn("这个报码有对应接口吗？", prompt)
-        self.assertIn("相似描述不能证明记录相同或跨文档关联", prompt)
-        self.assertIn("未确认关联均不等于原文没有", prompt)
+        self.assertIn("不能证明当前命中或跨文档关联", prompt)
+        self.assertIn("未确认关联不等于原文没有", prompt)
         self.assertFalse(hasattr(answer_module, "EXACT_HMC_ANSWER_PROMPT"))
 
     def test_other_question_focus_keeps_direct_result_and_actionable_boundary(self):
@@ -33,14 +33,14 @@ class KnowledgeQuestionFlowTests(unittest.TestCase):
         history_focus = answer_module._answer_task_instruction({"intent": "history_query"})
 
         self.assertEqual(reliability_focus, history_focus)
-        self.assertIn("原问题是本轮目标的依据", reliability_focus)
+        self.assertIn("原问题及用户纠正优先", reliability_focus)
         self.assertNotIn("发生时间", history_focus)
 
         contracted = answer_module._answer_task_instruction(
             {"query_frame": {"required_answer_fields": ["rbd_missing_parameters"]}},
         )
         self.assertEqual(reliability_focus, contracted)
-        self.assertIn("参数缺项和阻断原因", contracted)
+        self.assertIn('"calculation_requests":[]', contracted)
 
     def test_multi_target_focus_keeps_cause_maintenance_and_history(self):
         focus = answer_module._answer_task_instruction(
@@ -53,7 +53,7 @@ class KnowledgeQuestionFlowTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("原问题是本轮目标的依据", focus)
+        self.assertIn("原问题及用户纠正优先", focus)
         self.assertNotIn("原因与作用机制", focus)
         self.assertNotIn("发生时间", focus)
 

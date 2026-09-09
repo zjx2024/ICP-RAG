@@ -330,24 +330,23 @@ class DiagnosisIntegrationTests(unittest.TestCase):
         ) as lookup:
             hydrated = diagnosis_module._hydrate_record_search_hits(
                 handoffs,
-                limit_per_type=1,
-                limits_by_type=diagnosis_module._DIAGNOSTIC_RECORD_HYDRATION_LIMITS,
+                limit_per_type=4,
             )
 
         self.assertEqual(3, lookup.call_count)
         for call in lookup.call_args_list:
-            self.assertEqual(2, call.kwargs["limit"])
-            self.assertEqual(2, len(call.args[1]))
+            self.assertEqual(4, call.kwargs["limit"])
+            self.assertEqual(3, len(call.args[1]))
         self.assertEqual(
-            ["91850002**0001", "91850002**0002"],
+            ["91850002**0001", "91850002**0002", "91850002**0099"],
             [row["hmc_code"] for row in hydrated["hmc_query"]],
         )
         self.assertEqual(
-            ["FM-SYN-058", "FM-SYN-059"],
+            ["FM-SYN-058", "FM-SYN-059", "FM-SYN-099"],
             [row["code"] for row in hydrated["fmeca_query"]],
         )
         self.assertEqual(
-            ["MFL-SYN-058", "MFL-SYN-059"],
+            ["MFL-SYN-058", "MFL-SYN-059", "MFL-SYN-099"],
             [row["mfl_code"] for row in hydrated["mfl_query"]],
         )
         for rows in hydrated.values():
@@ -1584,7 +1583,7 @@ class AnswerEvidenceIntegrationTests(unittest.TestCase):
         selected = answer_module._context_evidence(state)
 
         self.assertEqual(
-            [relevant_history["evidence_id"]],
+            [broad_history["evidence_id"], relevant_history["evidence_id"]],
             [item["evidence_id"] for item in selected],
         )
 
@@ -1755,7 +1754,8 @@ class AnswerEvidenceIntegrationTests(unittest.TestCase):
         selected_records = [item["record_id"] for item in selected]
 
         self.assertIn("HIS-SYN-002", selected_records)
-        self.assertNotIn("HIS-SYN-023", selected_records)
+        self.assertIn("HIS-SYN-023", selected_records)
+        self.assertEqual(["HIS-SYN-002"], state["history_parent_binding"]["case_ids"])
 
 
     def test_context_and_citations_share_deduplicated_gate_selection(self):

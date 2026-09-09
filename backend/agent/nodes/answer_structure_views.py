@@ -159,7 +159,7 @@ def _rbd_matches_topology_dependency(
     # selected formal graph and must not be reinterpreted as a graph payload;
     # it does not carry branch vertices or single-failure clauses to match.
     claim_type = str(item.get("claim_type") or "")
-    if claim_type == "rbd_calculation":
+    if claim_type in {"rbd_calculation", "model_content"}:
         return True
     if claim_type != "rbd_structure":
         return False
@@ -179,7 +179,10 @@ def _rbd_structure_answer_fields_for_state(
         return fields
     clauses = _rbd_target_boundary_clauses(item, state)
     if not clauses:
-        return {}
+        # Missing target-specific survivability is not missing model content.
+        # The caller marks this view model_content_only; never synthesize the
+        # absent relation from natural wording or a parallel connection label.
+        return fields
     fields["single_failure_boundary"] = clauses[0] if len(clauses) == 1 else clauses
     return fields
 

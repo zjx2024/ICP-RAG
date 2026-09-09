@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Mapping, Sequence, Tuple
 from backend.agent.query_understanding import extract_business_codes
 
 
-HISTORY_FOCUS_MAX_CASES = 2
+HISTORY_FOCUS_MAX_CASES = None
 
 
 HISTORY_PARENT_BINDING_VERSION = 1
@@ -130,6 +130,14 @@ def history_parent_selection_from_binding(
             conflict=True,
         )
 
+    # Candidate lists are observations, not a frozen choice of the user's case.
+    # Reconsider the current available rows after hydration/adaptive retrieval.
+    if raw.get("authority") == "candidate" or (
+        raw.get("source") in {"retrieval_candidates", "candidate_singleton", "adaptive_candidates"}
+        and raw.get("authority") != "identity"
+    ):
+        return None
+
     requested_ids = {
         _stable_identity(value)
         for value in (raw.get("case_ids") or [])
@@ -208,7 +216,7 @@ def merge_history_parent_bindings(
     first: Mapping[str, Any] | None,
     second: Mapping[str, Any] | None,
     *,
-    limit: int = HISTORY_FOCUS_MAX_CASES,
+    limit: int | None = HISTORY_FOCUS_MAX_CASES,
 ) -> Dict[str, Any]:
     """Merge bounded adaptive batches without changing identity authority."""
 
@@ -282,10 +290,9 @@ def merge_history_parent_bindings(
     if not previous_cases:
         return current
     candidates = list(dict.fromkeys([*previous_cases, *current_cases]))
-    bounded = candidates[: max(1, int(limit))]
     return {
         "version": HISTORY_PARENT_BINDING_VERSION,
-        "case_ids": bounded,
+        "case_ids": candidates,
         "row_ids": list(
             dict.fromkeys([*ids(previous, "row_ids"), *ids(current, "row_ids")])
         ),
@@ -303,7 +310,7 @@ def resolve_history_parent_cases(
     rows: Sequence[Mapping[str, Any]],
     *,
     require_explicit_target: bool = False,
-    limit: int = HISTORY_FOCUS_MAX_CASES,
+    limit: int | None = HISTORY_FOCUS_MAX_CASES,
 ) -> HistoryParentSelection:
     """Use the persisted tool decision, or select once when none exists."""
 
@@ -405,23 +412,6 @@ def _original_query(state: Mapping[str, Any]) -> str:
     return str(frame.get("original_query") or state.get("query") or "").strip()
 
 
-def _case_score(rows: Sequence[Mapping[str, Any]]) -> float:
-    """Use answer-stage relevance only; raw semantic recall is not authority."""
-
-    values: List[float] = []
-    for row in rows:
-        raw = row.get("answer_rerank_score")
-        if not isinstance(raw, (int, float)):
-            raw = row.get("rerank_score")
-        if not isinstance(raw, (int, float)):
-            raw = row.get("retrieval_score")
-        if not isinstance(raw, (int, float)):
-            raw = row.get("retrieval_match_score")
-        if isinstance(raw, (int, float)):
-            values.append(float(raw))
-    return max(values, default=-1.0)
-
-
 def _comparison_requested(state: Mapping[str, Any]) -> bool:
     frame = _mapping(state.get("query_frame"))
     return str(frame.get("question_semantics") or "").strip() == "compare"
@@ -495,7 +485,7 @@ def select_history_parent_cases(
     rows: Sequence[Mapping[str, Any]],
     *,
     require_explicit_target: bool = False,
-    limit: int = HISTORY_FOCUS_MAX_CASES,
+    limit: int | None = HISTORY_FOCUS_MAX_CASES,
 ) -> HistoryParentSelection:
     """Select current history parents from authoritative candidate rows.
 
@@ -647,43 +637,26 @@ def select_history_parent_cases(
             )
         return HistoryParentSelection(
             selected_case_ids=frozenset(
-                verified_groups[: max(1, int(limit))]
+                verified_groups
             ),
             source="verified_records",
             comparison=comparison,
             ambiguous=(
-                len(verified_groups) > max(1, int(limit))
-                or (len(verified_groups) > 1 and not comparison)
+                len(verified_groups) > 1 and not comparison
             ),
             identity_authorized=(
                 len(verified_groups) == 1
-                or (comparison and len(verified_groups) <= max(1, int(limit)))
+                or comparison
             ),
         )
 
-    # Open-language relevance belongs to the retrieval/rerank models.  This
-    # identity layer deliberately has no Chinese phrase dictionary, direction
-    # parser or substring scorer.  It only carries a bounded set of candidates
-    # forward and keeps their non-authoritative status explicit.
-    ranked: List[Tuple[float, int, str]] = [
-        (_case_score(group_rows), index, case_id)
-        for index, (case_id, group_rows) in enumerate(groups.items())
-        if _case_score(group_rows) >= 0
-    ]
-    if not ranked:
-        return HistoryParentSelection(
-            source="retrieval_candidates", comparison=comparison, ambiguous=True
-        )
-    ranked.sort(key=lambda entry: (-entry[0], entry[1]))
-    best_score = ranked[0][0]
-    floor = max(best_score * 0.82, best_score - 2.5)
-    selected = [entry[2] for entry in ranked if entry[0] >= floor][:
-        max(1, int(limit))
-    ]
+    # SQL match counts and semantic scores are incomparable. Neither selects
+    # the incident identity. Offer every hydrated candidate to the one answer
+    # matching/review path; exact links still require identity_authorized.
     return HistoryParentSelection(
-        selected_case_ids=frozenset(selected),
+        selected_case_ids=frozenset(groups),
         source="retrieval_candidates",
         comparison=comparison,
-        ambiguous=len(selected) != 1,
+        ambiguous=len(groups) != 1,
         identity_authorized=False,
     )

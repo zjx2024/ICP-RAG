@@ -6,8 +6,6 @@ from __future__ import annotations
 
 from backend.agent.answer_contract import required_answer_fields
 from backend.agent.nodes.answer_fault_rules import _fault_candidate_fit
-from backend.agent.nodes.answer_fault_rules import _fault_public_scalar
-from backend.agent.nodes.answer_payload import _answer_relevance_score
 from backend.agent.nodes.answer_payload import _binding_identity_codes
 from backend.agent.nodes.answer_payload import _evidence_answer_fields
 from backend.agent.nodes.answer_payload import _evidence_object_business_ids
@@ -16,7 +14,6 @@ from backend.agent.nodes.answer_payload import _normalize_business_id
 from backend.agent.nodes.answer_payload import _selected_anchor_record_ids
 from backend.agent.nodes.answer_presence import normalize_presence_text
 from backend.agent.nodes.answer_record_scope import _narrow_semantic_table_families
-from backend.agent.nodes.answer_request import _diagnostic_closure_required
 from backend.agent.nodes.answer_request import _is_fta_structure_only_request
 from backend.agent.nodes.answer_request import _source_obligation_map
 from backend.agent.nodes.answer_request import _topology_dependency
@@ -29,7 +26,6 @@ from typing import List
 from typing import Mapping
 from typing import Sequence
 import ast
-import json
 
 
 def _filter_answer_domain_evidence(
@@ -99,6 +95,20 @@ def _filter_answer_domain_evidence(
         and not (requested_fields - source_boundary_fields)
         and not non_source_focus
     )
+    source_owned_goals = bool(source_boundary_fields and requested_fields
+                             and not (requested_fields - source_boundary_fields))
+    source_boundary_locked = source_boundary_locked or source_owned_goals
+    # A reread anchor may identify the object for a named-source follow-up;
+    # a neighbouring document/record is not that anchor. Independent goals
+    # outside the named source keep their own families. Explicit exclusivity
+    # never opens an anchor exception.
+    allow_source_anchor = source_owned_goals and not any(
+        isinstance(request, Mapping) and (request.get("scope") == "exclusive"
+                                         or request.get("question_role", "evidence") != "evidence")
+        for request in frame.get("source_obligations") or []
+    )
+    source_anchors = [anchor for anchor in state.get("selected_conversation_anchors") or []
+                      if isinstance(anchor, Mapping) and anchor.get("doc_id") and anchor.get("record_id")]
     # 边界/元问题（“RBD 能证明什么”“哪些结论不能说”）由 plan 判定后把
     # evidence_domain_locked 与上一轮已批准 doc_type 放进 query_frame。
     # 这里把答案窗口锁到这些来源族：跨域的强语义邻居（例如 function_locator
@@ -143,51 +153,6 @@ def _filter_answer_domain_evidence(
         and str(item.get("claim_type") or "") in {"fta_structure", "fta_calculation"}
         for item in evidence
     )
-    # A current incident can have several broad FTA recalls.  When Function
-    # Locator has already bound a durable FUNC-* object and the corresponding
-    # FMECA record names a mode, retain only FTA structures that literally
-    # contain that stored mode.  This is a source-selection check, not a graph
-    # merge or a similarity-based entity resolution: no new edge is created
-    # and both original records remain in the audit catalog.
-    anchored_fta_ids: set[str] = set()
-    if _diagnostic_closure_required(state):
-        function_ids: set[str] = set()
-        for item in evidence:
-            if str(item.get("doc_type") or "") != "function_locator":
-                continue
-            function_ids.update(_evidence_object_business_ids(item))
-        fmeca_candidates = [
-            item
-            for item in evidence
-            if str(item.get("doc_type") or "") == "fmeca"
-            and str(item.get("authority") or "") == "authoritative_record"
-            and (
-                not function_ids
-                or bool(_evidence_object_business_ids(item) & function_ids)
-            )
-            and _fault_public_scalar(_evidence_answer_fields(item).get("failure_mode"))
-        ]
-        if fmeca_candidates:
-            anchor = max(fmeca_candidates, key=_answer_relevance_score)
-            mode = _compact_semantic_text(
-                _evidence_answer_fields(anchor).get("failure_mode")
-            )
-            if mode:
-                for item in evidence:
-                    if str(item.get("doc_type") or "") != "fta":
-                        continue
-                    source_text = _compact_semantic_text(
-                        "\n".join(
-                            str(value or "")
-                            for value in (
-                                item.get("title"),
-                                item.get("display_summary") or item.get("content"),
-                                json.dumps(item.get("metadata") or {}, ensure_ascii=False, default=str),
-                            )
-                        )
-                    )
-                    if mode in source_text:
-                        anchored_fta_ids.add(str(item.get("evidence_id") or ""))
     # 已批准 FTA 树的叶子事件是其显式组成部分。当 FMECA 行的故障模式与某
     # 个叶子事件原文完全一致、或其业务 ID 显式出现在图顶点时，该行是树的
     # 证据而不只是语义邻居；这类行不应因产品/功能标志里没有当前轮绑定的对
@@ -270,9 +235,15 @@ def _filter_answer_domain_evidence(
     filtered: List[Dict[str, Any]] = []
     for item in evidence:
         _dropped_by = ""
+        exact_source_anchor = allow_source_anchor and str(item.get("evidence_id") or "") in approved_evidence_ids and any(
+            all(item.get(key) == anchor.get(key) for key in ("doc_type", "doc_id", "record_id"))
+            and (not anchor.get("revision_id") or anchor["revision_id"] == (item.get("metadata") or {}).get("revision_id"))
+            for anchor in source_anchors
+        )
         if (
             source_boundary_locked
             and str(item.get("doc_type") or "") not in source_boundary_doc_types
+            and not exact_source_anchor
         ):
             _dropped_by = "source_boundary"
         elif (
@@ -282,12 +253,6 @@ def _filter_answer_domain_evidence(
             _dropped_by = "followup_domain"
         elif fta_structure_only and str(item.get("doc_type") or "") != "fta":
             _dropped_by = "fta_structure_only"
-        elif (
-            anchored_fta_ids
-            and str(item.get("doc_type") or "") == "fta"
-            and str(item.get("evidence_id") or "") not in anchored_fta_ids
-        ):
-            _dropped_by = "anchored_fta"
         elif (
             focused_business_ids
             and not complete_collection

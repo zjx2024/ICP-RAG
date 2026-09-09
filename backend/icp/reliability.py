@@ -35,17 +35,25 @@ def _name(item: Dict[str, Any]) -> str:
     return str(props.get("name") or item.get("name") or item.get("id") or "")
 
 
+_PROBABILITY_KEYS = ("probability", "failure_probability", "unreliability", "q")
+_RATE_KEYS = ("failure_rate", "lambda", "λ")
+_RELIABILITY_KEYS = ("reliability", "success_probability", "r")
+
+
+def _first_parameter(node: Dict[str, Any], keys: Sequence[str]) -> Dict[str, Any]:
+    for key in keys:
+        value = _as_float(_props(node).get(key))
+        if value is not None:
+            return {"field": key, "value": value}
+    return {}
+
+
 def _node_probability(node: Dict[str, Any], mission_time: Optional[float]) -> Optional[float]:
     props = _props(node)
-    for key in ("probability", "failure_probability", "unreliability", "q"):
-        value = _as_float(props.get(key))
-        if value is not None:
-            return min(max(value, 0.0), 1.0)
-    failure_rate = None
-    for key in ("failure_rate", "lambda", "λ"):
-        failure_rate = _as_float(props.get(key))
-        if failure_rate is not None:
-            break
+    parameter = _first_parameter(node, _PROBABILITY_KEYS)
+    if parameter:
+        return min(max(parameter["value"], 0.0), 1.0)
+    failure_rate = _first_parameter(node, _RATE_KEYS).get("value")
     time_value = mission_time
     if time_value is None:
         time_value = _as_float(props.get("mission_time"))
@@ -55,11 +63,9 @@ def _node_probability(node: Dict[str, Any], mission_time: Optional[float]) -> Op
 
 
 def _block_reliability(node: Dict[str, Any], mission_time: Optional[float]) -> Optional[float]:
-    props = _props(node)
-    for key in ("reliability", "success_probability", "r"):
-        value = _as_float(props.get(key))
-        if value is not None:
-            return min(max(value, 0.0), 1.0)
+    parameter = _first_parameter(node, _RELIABILITY_KEYS)
+    if parameter:
+        return min(max(parameter["value"], 0.0), 1.0)
     failure_probability = _node_probability(node, mission_time)
     if failure_probability is not None:
         return 1.0 - failure_probability
@@ -115,7 +121,8 @@ def _fta_root(graph: Dict[str, Any], vertices: Dict[str, Dict[str, Any]], childr
     raise ReliabilityModelError("FTA 图没有节点")
 
 
-def calculate_fta(graph: Dict[str, Any], mission_time: Optional[float] = None) -> Dict[str, Any]:
+def calculate_fta(graph: Dict[str, Any], mission_time: Optional[float] = None,
+                  *, include_probability: bool = True) -> Dict[str, Any]:
     """计算 FTA 最小割集与顶事件概率。缺少基本事件概率时仍返回割集。"""
     vertices, children = _graph(graph)
     root = _fta_root(graph, vertices, children)
@@ -258,6 +265,10 @@ def calculate_fta(graph: Dict[str, Any], mission_time: Optional[float] = None) -
         return probability_cache[node_id]
 
     minimal_cut_sets = [sorted(item) for item in cuts(root)]
+    if not include_probability:
+        return {"model": "FTA", "root_id": root, "top_event": _name(vertices[root]),
+                "minimal_cut_sets": minimal_cut_sets, "minimal_cut_set_count": len(minimal_cut_sets),
+                "assumption": "按已校验的 AND/OR 门结构求最小割集；未请求概率计算"}
     shared_dependencies = dependency_conflicts()
     if shared_dependencies:
         # Do not publish a numerically plausible but mathematically invalid value.
@@ -343,6 +354,7 @@ def calculate_rbd(graph: Dict[str, Any], mission_time: Optional[float] = None, m
         raise ReliabilityModelError("START 到 END 之间不存在成功路径")
 
     block_reliability: Dict[str, float] = {}
+    block_parameters: Dict[str, Dict[str, Any]] = {}
     missing: List[str] = []
     path_blocks: List[Set[str]] = []
     for path in paths:
@@ -360,6 +372,11 @@ def calculate_rbd(graph: Dict[str, Any], mission_time: Optional[float] = None, m
                 missing.append(_name(vertices[node_id]) or node_id)
             else:
                 block_reliability[node_id] = value
+                parameter = _first_parameter(vertices[node_id], _RELIABILITY_KEYS + _PROBABILITY_KEYS + _RATE_KEYS)
+                block_parameters[node_id] = {"name": _name(vertices[node_id]), **parameter}
+                if parameter.get("field") in _RATE_KEYS:
+                    block_parameters[node_id]["mission_time"] = (
+                        mission_time if mission_time is not None else _as_float(_props(vertices[node_id]).get("mission_time")))
 
     system_reliability = None
     if not missing and not path_limit_reached:
@@ -387,6 +404,7 @@ def calculate_rbd(graph: Dict[str, Any], mission_time: Optional[float] = None, m
         "system_reliability": system_reliability,
         "system_unreliability": None if system_reliability is None else 1.0 - system_reliability,
         "mission_time": mission_time,
+        "block_parameters": block_parameters,
         "missing_reliability_blocks": sorted(set(missing)),
         "path_limit": max_paths,
         "path_limit_reached": path_limit_reached,

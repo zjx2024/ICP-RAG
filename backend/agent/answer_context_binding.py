@@ -11,15 +11,44 @@ import json
 from typing import Any, Mapping
 
 
+def reread_identity_sources(state: Mapping, ledger: Mapping) -> list[str]:
+    """Carry only identities selected for this turn AND reread from PostgreSQL.
+
+    A rewrite or an old answer is not authority. Document coordinates and any
+    known revision must match; ambiguous versions cannot lend an identity.
+    These handles identify the subject, not its symptoms, API or diagnosis.
+    """
+    if (state.get("dialogue_context") or {}).get("status") != "resolved":
+        return []
+    safety = state.get("safety_decision") or {}
+    approved = set(safety.get("approved_evidence_ids") or []) - set(safety.get("blocked_evidence_ids") or [])
+    handles = []
+    coordinates = ("doc_type", "doc_id", "record_id")
+    versions = ("revision_id", "document_version", "configuration")
+    for anchor in state.get("selected_conversation_anchors") or []:
+        if not isinstance(anchor, Mapping) or not all(anchor.get(k) for k in coordinates):
+            continue
+        matches = []
+        for number, item in ledger.items():
+            metadata = item.get("metadata") or {}
+            if (item.get("evidence_id") in approved and item.get("source_kind") == "postgres"
+                    and item.get("authority") in {"authoritative_record", "validated_relation", "confirmed_relation"}
+                    and all(item.get(k) == anchor[k] for k in coordinates)
+                    and all(not anchor.get(k) or anchor[k] == metadata.get(k) for k in versions)):
+                matches.append((number, tuple(metadata.get(k) for k in versions)))
+        if len({version for _, version in matches}) == 1:
+            handles.extend(f"e{number}:/record_id" for number, _ in matches)
+    return list(dict.fromkeys(handles))
+
+
 def conversation_review_context(
-    state: Mapping[str, Any], *, max_messages: int = 16
+    state: Mapping[str, Any], *, max_messages: int | None = None
 ) -> dict[str, Any]:
     messages = state.get("messages") or []
     if not isinstance(messages, list):
         messages = []
     offered: list[dict[str, Any]] = []
-    remaining = 18000
-    count = min(16, max(0, max_messages))
+    count = len(messages) if max_messages is None else max(0, max_messages)
     for index in range(len(messages) - 1, max(-1, len(messages) - count - 1), -1):
         message = messages[index]
         if isinstance(message, Mapping):
@@ -32,15 +61,12 @@ def conversation_review_context(
         role = {"ai": "assistant", "human": "user"}.get(role, role)
         if role not in {"assistant", "user"} or not isinstance(content, str):
             continue
-        limit = min(6000, remaining)
-        if limit <= 0:
-            break
         offered.append(
             {
                 "message_id": f"h{index}",
                 "role": role,
-                "content": content[:limit],
-                "truncated": len(content) > limit,
+                "content": content,
+                "truncated": False,
             }
         )
         if role == "assistant" and isinstance(message, Mapping):
@@ -48,17 +74,16 @@ def conversation_review_context(
             # The original answer remains the only basis for history quotes;
             # a delivery label never suppresses a new question in that area.
             progress = []
-            for entry in (message.get("answer_delivery_manifest") or [])[:16]:
+            for entry in (message.get("answer_delivery_manifest") or []):
                 if not isinstance(entry, Mapping) or entry.get("kind") != "goal_delivery":
                     continue
                 if entry.get("status") not in {"answered", "partial", "unanswered"}:
                     continue
-                progress.append({"goal": str(entry.get("goal") or "")[:600],
+                progress.append({"goal": str(entry.get("goal") or ""),
                                  "status": entry["status"],
-                                 "evidence_ids": [str(value)[:240] for value in (entry.get("evidence_ids") or [])[:16]]})
+                                 "evidence_ids": [str(value) for value in (entry.get("evidence_ids") or [])]})
             if progress:
                 offered[-1]["prior_delivery"] = progress
-        remaining -= len(content[:limit])
     return {"query": str(state.get("query") or ""), "messages": list(reversed(offered))}
 
 
@@ -85,13 +110,11 @@ def clarification_review_observations(
         if not isinstance(values, list):
             continue
         for record in values:
-            if not isinstance(record, Mapping) or len(observations) >= 48:
+            if not isinstance(record, Mapping):
                 continue
             fields: dict[str, str] = {}
 
             def flatten(value: Any, path: str, depth: int = 0) -> None:
-                if depth > 6 or len(fields) >= 100:
-                    return
                 if isinstance(value, Mapping):
                     for key, child in value.items():
                         flatten(
@@ -104,7 +127,7 @@ def clarification_review_observations(
                         flatten(child, f"{path}/{index}", depth + 1)
                 elif isinstance(value, (str, int, float, bool)):
                     text = value if isinstance(value, str) else json.dumps(value)
-                    if text and len(text) <= 1000:
+                    if text:
                         fields[path] = text
 
             flatten(record, "")

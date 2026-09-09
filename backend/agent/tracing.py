@@ -94,6 +94,9 @@ class TraceRecorder:
         ok: bool,
         model_name: str = "",
         response_chars: int = 0,
+        token_usage: Optional[Dict] = None,
+        finish_reason: str = "",
+        resource_budget: Optional[Dict] = None,
     ) -> None:
         self._record(
             "llm",
@@ -102,6 +105,9 @@ class TraceRecorder:
             ok=bool(ok),
             model_name=model_name or "",
             response_chars=response_chars,
+            token_usage=token_usage or {},
+            finish_reason=finish_reason,
+            resource_budget=resource_budget or {},
         )
 
     def record_tool(
@@ -226,7 +232,7 @@ def record_answer_review(*, attempt: int, outcome: str, code: str = "", issues=(
             issues=[{"location": item["location"], "code": item["code"]}
                     for item in issues if isinstance(item, dict)
                     and isinstance(item.get("location"), str)
-                    and re.fullmatch(r"(?:u\d+|q\d+|review)", item["location"])
+                    and re.fullmatch(r"(?:u\d+|q\d+|review|draft|question|citation_binding)", item["location"])
                     and isinstance(item.get("code"), str)
                     and re.fullmatch(r"[a-z_]{1,80}", item["code"])][:40],
         )

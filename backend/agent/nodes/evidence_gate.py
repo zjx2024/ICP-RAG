@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 from backend.agent.diagram_query_scope import diagram_in_scope
+from backend.agent.current_model_selection import current_model_observations
 
 import json
 from typing import Any, Dict, Iterable, List, Mapping, Sequence, Set, Tuple
@@ -1241,13 +1242,26 @@ async def evidence_gate_node(state: Dict[str, Any]) -> Dict[str, Any]:
         )
 
     if rbd_authority_invalid:
-        blocked_claims.extend(
-            ["rbd_model_identity", "formal_topology", "formal_calculation"]
-        )
+        # RBD exclusions above are per-evidence. An unbound secondary model
+        # must not revoke an independently approved FTA structure/calculation.
+        blocked_claims.append("rbd_model_identity")
+        if not has_approved_formal_topology:
+            blocked_claims.append("formal_topology")
+        if not has_approved_calculation:
+            blocked_claims.append("formal_calculation")
         warnings.append(
-            "RBD 查询未通过精确稳定 ID、已选引用或正式图业务 ID 交集完成"
-            "模型绑定；自然名称与检索相似度不能授权正式结构结论或计算"
+            "本轮尚未选中并核验适用的 RBD 模型，不能作正式结构结论或计算；"
+            "仍可说明已检索候选的范围与选择结果，不能把未选中解释为全库不存在"
         )
+
+    # The gate alone owns this slot. Reporting an unmatched candidate search
+    # does not require the user to supply an ID; selecting a model for actual
+    # calculation or resolving competing candidates still does.
+    unmatched_rbd_search = any(
+        item.get("doc_type") == "rbd" and item.get("selection_status") == "not_represented"
+        for item in current_model_observations(state)
+    )
+    if rbd_authority_invalid and (not unmatched_rbd_search or "rbd_reliability" in calculation_requests):
         identity = make_clarification_identity(
             doc_type="rbd",
             record_ids=(

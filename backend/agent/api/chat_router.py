@@ -8,9 +8,9 @@
 import json
 import uuid
 import asyncio
+from backend.agent.model_runtime_policy import TURN_TIMEOUT_SECONDS, turn_budget
 import logging
 import os
-from typing import Optional
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
@@ -32,7 +32,7 @@ def _positive_env_float(name: str, default: float) -> float:
         return default
 
 
-CHAT_TOTAL_TIMEOUT_SECONDS = _positive_env_float("ICP_AGENT_TOTAL_TIMEOUT_SECONDS", 240.0)
+CHAT_TOTAL_TIMEOUT_SECONDS = TURN_TIMEOUT_SECONDS
 SSE_HEARTBEAT_SECONDS = _positive_env_float("ICP_AGENT_SSE_HEARTBEAT_SECONDS", 12.0)
 # Answer 最多使用 25 条提示证据；工具事件最多公开另外 75 个稳定 ID，
 # 从而都能落入 answer.py 的 100 条受限 evidence_catalog。
@@ -42,7 +42,7 @@ PROCESS_EVIDENCE_EVENT_LIMIT = 75
 class ChatRequest(BaseModel):
     agent_id: str
     session_id: str
-    query: str = Field(min_length=1, max_length=12000)
+    query: str = Field(min_length=1)
     user_id: str = "default"
     chat_model_id: str = ""
     embedding_model_id: str = ""
@@ -139,6 +139,8 @@ async def _stream_graph_events(graph, state, thread_id: str, agent_id: str,
             exposed.append(evidence_id)
         return exposed
 
+    budget_scope = turn_budget(CHAT_TOTAL_TIMEOUT_SECONDS)
+    budget_scope.__enter__()
     try:
         iterator = graph.astream(state, config=config, stream_mode="updates").__aiter__()
         deadline = asyncio.get_running_loop().time() + CHAT_TOTAL_TIMEOUT_SECONDS
@@ -351,6 +353,7 @@ async def _stream_graph_events(graph, state, thread_id: str, agent_id: str,
         logger.error(f"图运行失败: {e}")
         await stream_queue.put({"type": "error", "message": str(e)})
     finally:
+        budget_scope.__exit__(None, None, None)
         # 哨兵：通知 event_stream 循环图已结束
         await stream_queue.put(None)
 
@@ -374,7 +377,7 @@ async def chat(body: ChatRequest, request: Request):
         agent_db.add_message(body.session_id, "user", body.query)
 
         # 取历史消息作为上下文
-        history = agent_db.list_messages_for_state(body.session_id, limit=20)
+        history = agent_db.list_messages_for_state(body.session_id, limit=None)
 
         # 构造初始状态（注入 agent 配置的参数：模型采样参数 + 各工具检索参数）
         state = create_initial_state(
@@ -644,86 +647,11 @@ def message_feedback(message_id: str, feedback: str):
 
 @router.post("/session/{session_id}/compress")
 def compress_session(session_id: str):
-    """压缩上下文：用 LLM 摘要旧对话，保留摘要 + 最近几轮"""
-    session = agent_db.get_session(session_id)
-    if not session:
+    """Keep the route, never replace source messages with a lossy summary."""
+    if not agent_db.get_session(session_id):
         raise HTTPException(404, "会话不存在")
-
-    messages = agent_db.list_messages(session_id, limit=200)
-    # 保留最近 N 条消息，摘要其余的（N 读 agent 配置 keep_recent_turns，默认 6）
-    agent_cfg = agent_db.get_agent(session.get("agent_id", "")) if session.get("agent_id") else None
-    keep_recent = int((agent_cfg or {}).get("keep_recent_turns", 6) or 6)
-    if len(messages) <= keep_recent:
-        return {"session_id": session_id, "before_tokens": 0, "after_tokens": 0,
-                "note": "对话轮数较少，无需压缩"}
-
-    old_msgs = messages[:-keep_recent]
-    recent_msgs = messages[-keep_recent:]
-
-    # 计算 before tokens（粗略估算）
-    def _est_tokens(text):
-        cn = len([c for c in text if '\u4e00' <= c <= '\u9fa5'])
-        return int(cn / 1.5 + (len(text) - cn) / 4) if text else 0
-
-    before_tokens = sum(_est_tokens(m.get("content", "")) for m in messages)
-
-    # 用 LLM 生成摘要
-    summary_text = "\n".join([
-        f"{'用户' if m['role']=='user' else '助手'}: {m.get('content','')[:500]}"
-        for m in old_msgs
-    ])
-
-    try:
-        from backend.core.llm_service import llm_service
-        summary_prompt = f"请用中文简洁总结以下对话的关键信息（实体、结论、上下文），不超过300字：\n\n{summary_text}"
-        summary = llm_service.call_model(
-            [{"role": "user", "content": summary_prompt}], None
-        )
-    except Exception as e:
-        logger.warning(f"压缩摘要生成失败，使用简单截断: {e}")
-        summary = f"[历史对话摘要生成失败，保留前200字] {summary_text[:200]}"
-
-    # 删除旧消息
-    from backend.storage.postgres_client import postgres_client
-    old_ids = [m["id"] for m in old_msgs if m.get("id")]
-    with postgres_client.conn.cursor() as cur:
-        if old_ids:
-            cur.execute(
-                "DELETE FROM agent_messages WHERE id = ANY(%s)",
-                (old_ids,)
-            )
-        # 在最近消息之前插入摘要
-        if recent_msgs:
-            first_recent_time = recent_msgs[0].get("created_at")
-            msg_id = str(uuid.uuid4())
-            cur.execute("""
-                INSERT INTO agent_messages (id, session_id, role, content, created_at)
-                VALUES (%s, %s, 'system', %s, %s)
-            """, (msg_id, session_id, f"[上下文摘要] {summary}", first_recent_time))
-        postgres_client.conn.commit()
-
-    # 清除 LangGraph checkpoint（让 agent 从摘要重新开始）
-    try:
-        with postgres_client.conn.cursor() as cur:
-            cur.execute("DELETE FROM checkpoints WHERE thread_id = %s", (session_id,))
-            cur.execute("DELETE FROM checkpoint_writes WHERE thread_id = %s", (session_id,))
-            cur.execute("DELETE FROM checkpoint_blobs WHERE thread_id = %s", (session_id,))
-            postgres_client.conn.commit()
-    except Exception as e:
-        logger.warning(f"清除 checkpoint 失败（不影响压缩）: {e}")
-        try:
-            postgres_client.conn.rollback()
-        except Exception:
-            pass
-
-    after_tokens = _est_tokens(summary) + sum(
-        _est_tokens(m.get("content", "")) for m in recent_msgs
+    raise HTTPException(
+        409,
+        "旧压缩会删除原始消息和证据锚点，现已停用；会话原文保持不变。"
+        "如需减少上下文，请新建会话并说明当前对象和必要条件。",
     )
-
-    return {
-        "session_id": session_id,
-        "before_tokens": before_tokens,
-        "after_tokens": after_tokens,
-        "deleted_count": len(old_msgs),
-        "summary": summary[:200],
-    }

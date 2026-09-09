@@ -24,9 +24,9 @@ class ConversationBindingTests(unittest.TestCase):
     def test_bounded_context_keeps_stable_ids_citations_and_explicit_truncation(self):
         messages = [{"role": "assistant", "content": "x" * 7000 + "[^9]"} for _ in range(12)]
         context = conversation_review_context({"messages": messages})
-        self.assertLessEqual(sum(len(m["content"]) for m in context["messages"]), 18000)
+        self.assertEqual(12 * 7004, sum(len(m["content"]) for m in context["messages"]))
         self.assertEqual("h11", context["messages"][-1]["message_id"])
-        self.assertTrue(context["messages"][-1]["truncated"])
+        self.assertFalse(context["messages"][-1]["truncated"])
         self.assertIn("[^3]", conversation_review_context(self.state)["messages"][-1]["content"])
 
 

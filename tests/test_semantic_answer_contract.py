@@ -106,32 +106,14 @@ class EvidenceSelectionSemanticBoundaryTests(unittest.TestCase):
         self.assertEqual(outputs[0], outputs[1])
         self.assertEqual(outputs[1], outputs[2])
 
-    def test_evidence_family_reservation_comes_from_fields_not_intent(self):
-        blank_results = []
-        for intent in (
-            "cause_analysis",
-            "maintenance_query",
-            "history_query",
-            "architecture_query",
-        ):
-            blank_results.append(
-                _source_answer_evidence_window._evidence_target_types(
-                    {
-                        "intent": intent,
-                        "query_targets": [{"intent": intent}],
-                        "query_frame": {"required_answer_fields": []},
-                    }
-                )
-            )
-        self.assertEqual([[], [], [], []], blank_results)
-
-        typed = {
-            "intent": "architecture_query",
-            "query_frame": {"required_answer_fields": ["fault_cause"]},
-        }
-        self.assertEqual(
-            ["fmeca", "fta"], _source_answer_evidence_window._evidence_target_types(typed)
-        )
+    def test_intent_and_fields_do_not_reserve_or_drop_candidate_families(self):
+        rows = [_evidence(doc_type=kind, record_id=f"ROW-{n}", claim_type="source_fact",
+                          answer_fields={"description": "事实"})
+                for n, kind in enumerate(("fmeca", "fta", "fault_history", "mfl"))]
+        for intent in ("cause_analysis", "maintenance_query", "history_query", "architecture_query"):
+            state = {"intent": intent, "query_frame": {"required_answer_fields": ["fault_cause"]}}
+            self.assertEqual({r["record_id"] for r in rows},
+                             {r["record_id"] for r in _source_answer_evidence_window._select_evidence_window(state, rows)})
 
     def test_architecture_intent_alone_does_not_expand_a_closed_group_window(self):
         members = []
@@ -160,7 +142,7 @@ class EvidenceSelectionSemanticBoundaryTests(unittest.TestCase):
 
         selected = _source_answer_evidence_window._select_evidence_window(state, members, limit=3)
 
-        self.assertEqual(3, len(selected))
+        self.assertEqual(8, len(selected))
 
     def test_surface_domain_words_do_not_change_an_unbound_evidence_window(self):
         """A noun in the question is not an authority-bearing object binding."""
@@ -307,7 +289,7 @@ class EvidenceSelectionSemanticBoundaryTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            [fmeca["evidence_id"]],
+[fmeca["evidence_id"], mfl["evidence_id"]],
             [item["evidence_id"] for item in retained],
         )
 

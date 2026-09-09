@@ -1,4 +1,6 @@
 import os
+import asyncio
+from contextvars import ContextVar
 import re
 import json
 import base64
@@ -13,8 +15,132 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+_call_usage: ContextVar[dict | None] = ContextVar("llm_call_usage", default=None)
+
+
+def _capture_usage(response) -> None:
+    stats = _call_usage.get()
+    if stats is None:
+        return
+    metadata = getattr(response, "response_metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    usage = getattr(response, "usage_metadata", None)
+    usage = usage if isinstance(usage, dict) else {}
+    if isinstance(response, dict):
+        metadata = response
+        usage = response.get("usage") or {}
+    if isinstance(usage, dict) and usage:
+        stats["token_usage"] = dict(usage)
+    if metadata.get("prompt_eval_count") is not None:
+        stats.setdefault("token_usage", {})["input_tokens"] = metadata["prompt_eval_count"]
+    if metadata.get("eval_count") is not None:
+        stats.setdefault("token_usage", {})["output_tokens"] = metadata["eval_count"]
+    output = metadata.get("output")
+    output = output if isinstance(output, dict) else {}
+    choices = metadata.get("choices") or output.get("choices") or []
+    reason = metadata.get("done_reason") or metadata.get("finish_reason")
+    if choices and isinstance(choices[0], dict):
+        reason = choices[0].get("finish_reason") or reason
+    if reason:
+        stats["finish_reason"] = str(reason)
+
+
+def _check_output_finished(partial_content: str = "") -> None:
+    stats = _call_usage.get() or {}
+    if stats.get("finish_reason") in {"length", "max_tokens", "max_output_tokens"}:
+        raise LLMOutputLimitError(
+            "模型输出预算已耗尽，未将截断内容当作完整回答发布；请分步提问或调整 Agent 输出预算",
+            partial_content=partial_content,
+        )
+
+
 class LLMStreamError(RuntimeError):
     """流式模型在完整响应形成前失败；调用方必须丢弃已收集的半截文本。"""
+
+
+class LLMOutputLimitError(LLMStreamError):
+    """Safe public resource failure, distinct from a remote provider exception."""
+
+    def __init__(self, message: str, *, partial_content: str = ""):
+        super().__init__(message)
+        # Explicit completion text only; never include hidden reasoning or
+        # put the partial JSON into the public exception message.
+        self.partial_content = partial_content
+
+
+def _ollama_runtime_payload(messages: List[Dict], model: Dict, *, stream: bool) -> dict:
+    """The installed SDK drops native no-truncation flags; send them explicitly.
+
+    ICP uses text prompts. Keep every role and byte, and fail on unsupported
+    content instead of silently omitting it. Legacy multimodal parsing keeps
+    its existing SDK transport below.
+    """
+    if any(not isinstance(message.get("content"), str) for message in messages):
+        raise LLMStreamError("ICP 文本调用收到非文本内容，本轮未丢弃消息")
+    payload = {
+        "model": model["model_name"], "messages": messages, "stream": stream,
+        "truncate": False, "shift": False,
+        "options": {"num_ctx": model["num_ctx"], "num_predict": model["max_tokens"],
+                    "temperature": model.get("temperature", config.MODEL_TEMPERATURE),
+                    "top_p": model.get("top_p", config.MODEL_TOP_P)},
+    }
+    for key in ("seed", "stop"):
+        if model.get(key) is not None:
+            payload["options"][key] = model[key]
+    for source, target in (("reasoning", "think"), ("format", "format"), ("keep_alive", "keep_alive")):
+        if model.get(source) is not None:
+            payload[target] = model[source]
+    return payload
+
+
+def _ollama_runtime_content(result: dict, *, final: bool = False) -> str:
+    error = result.get("error")
+    if error:
+        if "context" in str(error).lower() or "input length" in str(error).lower():
+            from backend.agent.model_runtime_policy import ModelBudgetError
+            raise ModelBudgetError("模型服务确认上下文容量不足，本轮未截断输入或发布半截答案；请分步提问")
+        raise LLMStreamError("Ollama 未完成本次请求")
+    if final and result.get("done") is not True:
+        raise LLMStreamError("Ollama 未返回完成标志，本轮未发布半截答案")
+    _capture_usage(result)
+    return (result.get("message") or {}).get("content") or ""
+
+
+def _call_ollama_runtime(messages: List[Dict], model: Dict) -> str:
+    response = requests.post(
+        str(model["base_url"]).rstrip("/") + "/api/chat",
+        json=_ollama_runtime_payload(messages, model, stream=False), timeout=model["timeout"],
+    )
+    result = response.json()
+    content = _ollama_runtime_content(result, final=True)
+    response.raise_for_status()
+    return content
+
+
+async def _stream_ollama_runtime(messages: List[Dict], model: Dict) -> AsyncGenerator[str, None]:
+    import httpx
+    done = False
+    async with httpx.AsyncClient(timeout=model["timeout"]) as client:
+        async with client.stream(
+            "POST", str(model["base_url"]).rstrip("/") + "/api/chat",
+            json=_ollama_runtime_payload(messages, model, stream=True),
+        ) as response:
+            if response.is_error:
+                await response.aread()
+                _ollama_runtime_content(response.json())
+                response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line.strip():
+                    continue
+                result = json.loads(line)
+                content = _ollama_runtime_content(result)
+                if content:
+                    yield content
+                if result.get("done") is True:
+                    done = True
+                    break
+    if not done:
+        raise LLMStreamError("Ollama 流未完整结束，本轮未发布半截答案")
 
 try:
     from langchain_ollama import ChatOllama
@@ -36,6 +162,7 @@ def _build_ollama_chat(
     num_predict: Any = None,
     reasoning: Any = None,
     response_format: Any = None,
+    num_ctx: Any = None,
 ):
     """Construct ChatOllama with the option names supported by this SDK.
 
@@ -66,6 +193,8 @@ def _build_ollama_chat(
         if request_timeout <= 0:
             raise ValueError("Ollama timeout 必须为正数")
         kwargs["client_kwargs"] = {"timeout": request_timeout}
+    if num_ctx is not None:
+        kwargs["num_ctx"] = int(num_ctx)
     if reasoning is not None:
         kwargs["reasoning"] = reasoning
     if response_format is not None:
@@ -175,8 +304,13 @@ class LLMClient:
         started = time.time()
         ok = False
         response = ""
+        stats = {}
+        usage_token = _call_usage.set(stats)
         try:
+            from backend.agent.model_runtime_policy import prepare_model_request
+            model_config = prepare_model_request(model_config, messages)
             response = self._call_model(messages, model_config)
+            _check_output_finished(str(response or ""))
             text = str(response or "").strip()
             ok = bool(text) and not text.startswith(("[LLM", "[AI调用失败]"))
             return response
@@ -196,9 +330,13 @@ class LLMClient:
                     ok=ok,
                     model_name=str((model_config or {}).get("model_name") or ""),
                     response_chars=len(str(response or "")) if ok else 0,
+                    token_usage=stats.get("token_usage"),
+                    finish_reason=stats.get("finish_reason", ""),
+                    resource_budget=(model_config or {}).get("_runtime_budget"),
                 )
             except Exception as exc:  # tracing 失败不得影响调用本身
                 logger.debug("trace record_llm failed: %s", exc)
+            _call_usage.reset(usage_token)
 
     async def stream_model(self, messages: List[Dict], model_config: Optional[Dict] = None) -> AsyncGenerator[str, None]:
         """流式调用 LLM，逐 token yield 输出内容。
@@ -212,7 +350,11 @@ class LLMClient:
         started = time.time()
         response_chars = 0
         ok = False
+        stats = {}
+        usage_token = _call_usage.set(stats)
         try:
+            from backend.agent.model_runtime_policy import prepare_model_request
+            model_config = await asyncio.to_thread(prepare_model_request, model_config, messages)
             if model_config:
                 provider = model_config.get("provider", self.provider)
                 if provider == "ollama":
@@ -232,6 +374,7 @@ class LLMClient:
                         yield chunk
                 else:
                     raise LLMStreamError("未配置可用的流式对话模型")
+            _check_output_finished()
             ok = True
         finally:
             elapsed_ms = (time.time() - started) * 1000
@@ -244,9 +387,13 @@ class LLMClient:
                     ok=ok,
                     model_name=str((model_config or {}).get("model_name") or ""),
                     response_chars=response_chars,
+                    token_usage=stats.get("token_usage"),
+                    finish_reason=stats.get("finish_reason", ""),
+                    resource_budget=(model_config or {}).get("_runtime_budget"),
                 )
             except Exception as exc:  # tracing 失败不得影响流式本身
                 logger.debug("trace stream_model failed: %s", exc)
+            _call_usage.reset(usage_token)
 
     async def _stream_ollama(self, messages: List[Dict]) -> AsyncGenerator[str, None]:
         """异步流式调用：必须用 astream + async for，避免同步 for 阻塞事件循环
@@ -261,6 +408,7 @@ class LLMClient:
                 langchain_messages.append(HumanMessage(content=msg["content"]))
         try:
             async for chunk in self.chat_model.astream(langchain_messages):
+                _capture_usage(chunk)
                 if chunk.content:
                     yield chunk.content
         except Exception as e:
@@ -269,6 +417,10 @@ class LLMClient:
 
     async def _stream_ollama_with_config(self, messages: List[Dict], model_config: Dict) -> AsyncGenerator[str, None]:
         """异步流式调用：使用 astream 而非 stream，避免同步阻塞事件循环。"""
+        if model_config.get("_icp_runtime"):
+            async for content in _stream_ollama_runtime(messages, model_config):
+                yield content
+            return
         if not HAS_LANGCHAIN:
             raise LLMStreamError("langchain_ollama 不可用")
         base_url = model_config.get("base_url")
@@ -287,6 +439,7 @@ class LLMClient:
                 num_predict=model_config.get("num_predict"),
                 reasoning=model_config.get("reasoning"),
                 response_format=model_config.get("format"),
+                num_ctx=model_config.get("num_ctx"),
             )
             langchain_messages = []
             for msg in messages:
@@ -295,6 +448,7 @@ class LLMClient:
                 elif msg["role"] == "user":
                     langchain_messages.append(HumanMessage(content=msg["content"]))
             async for chunk in chat_model.astream(langchain_messages):
+                _capture_usage(chunk)
                 if chunk.content:
                     yield chunk.content
         except Exception as e:
@@ -333,7 +487,8 @@ class LLMClient:
                             break
                         try:
                             chunk = json.loads(data_str)
-                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            _capture_usage(chunk)
+                            delta = (chunk.get("choices") or [{}])[0].get("delta", {})
                             content = delta.get("content", "")
                             if content:
                                 yield content
@@ -359,6 +514,7 @@ class LLMClient:
         
         try:
             response = self.chat_model.invoke(langchain_messages)
+            _capture_usage(response)
             return response.content
         except Exception as e:
             logger.error(f"Ollama模型调用失败: {e}")
@@ -373,6 +529,8 @@ class LLMClient:
 
     def _call_ollama_with_config(self, messages: List[Dict], model_config: Dict) -> str:
         """带配置的 Ollama 调用：必须有 model_name 和 base_url，无 config 回退。"""
+        if model_config.get("_icp_runtime"):
+            return _call_ollama_runtime(messages, model_config)
         if not HAS_LANGCHAIN:
             return "[langchain_ollama不可用]"
         
@@ -396,6 +554,7 @@ class LLMClient:
                 num_predict=model_config.get("num_predict"),
                 reasoning=model_config.get("reasoning"),
                 response_format=model_config.get("format"),
+                num_ctx=model_config.get("num_ctx"),
             )
             
             langchain_messages = []
@@ -409,6 +568,7 @@ class LLMClient:
             if "stream" in model_config:
                 invoke_options["stream"] = bool(model_config["stream"])
             response = chat_model.invoke(langchain_messages, **invoke_options)
+            _capture_usage(response)
             return response.content
         except Exception as e:
             logger.error(f"Ollama调用失败: {e}")
@@ -457,7 +617,10 @@ class LLMClient:
             
             response.raise_for_status()
             result = response.json()
+            _capture_usage(result)
             
+            if "choices" in result:
+                return result["choices"][0]["message"]["content"]
             if "output" in result and "choices" in result["output"]:
                 return result["output"]["choices"][0]["message"]["content"]
             elif "result" in result:

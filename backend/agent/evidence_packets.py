@@ -63,6 +63,7 @@ def build_evidence_packets(
             "authority": item.get("authority", ""),
             "evidence_level": item.get("evidence_level", ""),
             "review_status": item.get("review_status", ""),
+            "usage_scope": metadata.get("usage_scope", ""),
             "usage": "blocked" if evidence_id in blocked_ids else (
                 "approved" if evidence_id in approved_ids else "context_only"
             ),

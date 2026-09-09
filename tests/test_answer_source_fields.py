@@ -21,7 +21,7 @@ class SourceOwnedFieldTests(unittest.TestCase):
         return {"query": "那份指定资料究竟提供了什么？", "evidence_registry": [item],
                 "safety_decision": {"approved_evidence_ids": ["source-1"]},
                 "query_frame": {"required_answer_fields": ["maintenance_action", "maintenance_api"],
-                    "source_obligations": [{"doc_type": "mfl", "fields": ["maintenance_action", "maintenance_api"]}]}}
+                    "source_obligations": [{"scope": "exclusive", "doc_type": "mfl", "fields": ["maintenance_action", "maintenance_api"]}]}}
 
     def test_all_answer_consumers_exclude_nonowner_fields_without_mutating_source(self):
         item = self.item()
@@ -46,14 +46,10 @@ class SourceOwnedFieldTests(unittest.TestCase):
                     state["query"] = query
                     state["query_frame"]["source_obligations"][0]["doc_type"] = owner
                     view = source_owned_field_view(item, state)
-                    if "maintenance_action" in view["metadata"].get("source_field_exclusions", []):
-                        # 字段被剥除只允许发生在“非属主”行上；MFL 合同字段的
-                        # 属主集合永远包含 MFL 本身。
-                        self.assertNotEqual("mfl", source)
-                    if owner == source or (owner != "mfl" and source == "mfl"):
-                        # 属主自留；或维修合同字段被窄化到非 MFL 属主时，
-                        # MFL 行仍保留权威字段。
+                    if owner == source:
                         self.assertIn("maintenance_action", view["metadata"]["answer_fields"])
+                    else:
+                        self.assertNotIn("maintenance_action", view["metadata"]["answer_fields"])
 
     def test_shared_alias_preserved_for_independent_dimension(self):
         item = self.item("fmeca")
@@ -67,18 +63,18 @@ class SourceOwnedFieldTests(unittest.TestCase):
         item = self.item()
         state = self.state(item)
         state["query_frame"]["source_obligations"] = [
-            {"doc_type": "hmc", "fields": ["maintenance_action"]},
-            {"doc_type": "mfl", "fields": ["maintenance_api"]},
+            {"scope": "exclusive", "doc_type": "hmc", "fields": ["maintenance_action"]},
+            {"scope": "exclusive", "doc_type": "mfl", "fields": ["maintenance_api"]},
         ]
         view = source_owned_field_view(item, state)
         self.assertIn("maintenance_action", view["metadata"]["answer_fields"])
         self.assertNotIn("api_name", view["metadata"]["answer_fields"])
-        state["query_frame"]["source_obligations"].append({"doc_type": "hmc", "fields": ["maintenance_api"]})
+        state["query_frame"]["source_obligations"].append({"scope": "exclusive", "doc_type": "hmc", "fields": ["maintenance_api"]})
         self.assertEqual(item, source_owned_field_view(item, state))
 
     def test_missing_invalid_and_empty_contract_does_not_invent_owner(self):
         item = self.item()
-        for obligations in ([], [{"doc_type": "invented", "fields": ["maintenance_action"]}], [{"doc_type": "mfl", "fields": []}]):
+        for obligations in ([], [{"doc_type": "invented", "fields": ["maintenance_action"]}], [{"scope": "exclusive", "doc_type": "mfl", "fields": []}]):
             state = self.state(item)
             state["query_frame"]["source_obligations"] = obligations
             self.assertIs(item, source_owned_field_view(item, state))

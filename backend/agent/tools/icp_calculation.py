@@ -506,6 +506,14 @@ async def icp_calculation_node(state) -> Dict[str, Any]:
             state.get("evidence_registry") or [],
         )
 
+    def parent_scope(parents: List[str]) -> Dict[str, Any]:
+        # The source locator travels with its derived result, not with a
+        # similarly named diagram returned elsewhere in the query.
+        scopes = [item.get("scope") or {} for item in state.get("evidence_registry") or []
+                  if item.get("evidence_id") in parents]
+        return {key: value for scope in scopes for key, value in scope.items()
+                if all(other.get(key, value) == value for other in scopes)}
+
     if want_fta:
         started = time.time()
         previews = []
@@ -514,7 +522,8 @@ async def icp_calculation_node(state) -> Dict[str, Any]:
         rows = graph_rows("fta", errors, warnings)
         for row in rows:
             try:
-                result = calculate_fta(row.get("graph") or {}, mission_time=mission_time)
+                result = calculate_fta(row.get("graph") or {}, mission_time=mission_time,
+                                       include_probability="fta_probability" in calculation_requests)
                 result["title"] = row.get("image_title", "")
                 result["doc_id"] = row.get("doc_id", "")
                 result["revision_id"] = row.get("revision_id", "")
@@ -522,11 +531,12 @@ async def icp_calculation_node(state) -> Dict[str, Any]:
                 parents = parent_evidence_ids(row, "fta")
                 missing_probabilities = result.get("missing_probability_nodes") or []
                 probability_block_reason = str(result.get("probability_block_reason") or "").strip()
+                probability_requested = "fta_probability" in calculation_requests
                 numeric_complete = (
                     result.get("top_event_probability") is not None
                     and not missing_probabilities
                     and not probability_block_reason
-                )
+                ) if probability_requested else None
                 if not parents:
                     warnings.append(
                         f"FTA 修订 {row.get('revision_id') or row.get('id') or '未知'} 缺少可引用的有效图证据"
@@ -550,12 +560,13 @@ async def icp_calculation_node(state) -> Dict[str, Any]:
                         content=json.dumps(result, ensure_ascii=False, default=str),
                         display_summary=summarize_fta_calculation(result, graph=graph),
                         derived_from=parents,
+                        scope=parent_scope(parents),
                         limitations=[
                             result.get("assumption", ""),
                             "" if parents else "缺少可引用的当前有效图修订证据，门禁将阻止正式计算结论",
                             (
                                 ""
-                                if numeric_complete
+                                if numeric_complete or "fta_probability" not in calculation_requests
                                 else probability_block_reason
                                 or "缺少基本事件概率/故障率参数，不得形成顶事件概率结论"
                             ),
@@ -570,21 +581,25 @@ async def icp_calculation_node(state) -> Dict[str, Any]:
                             "numeric_complete": numeric_complete,
                             "calculation": {
                                 "requested_operations": sorted(calculation_requests),
+                                "numeric_status": ("not_requested" if not probability_requested else
+                                                   "complete" if numeric_complete else "incomplete"),
                                 "cut_sets_require_probability": False,
                                 "probability_block_reason": probability_block_reason,
                                 "missing_probability_nodes": missing_probabilities,
-                                "parameters": {"mission_time": mission_time, "mission_time_unit": "h"},
-                                "results": {"top_event_probability": result.get("top_event_probability")},
-                                "units": {"top_event_probability": "1"},
+                                "parameters": {"mission_time": mission_time, "mission_time_unit": "h"} if probability_requested else {},
+                                "results": {key: result[key] for key in (
+                                    "minimal_cut_sets", "minimal_cut_set_count", "top_event_probability",
+                                ) if key in result},
+                                "units": {"top_event_probability": "1"} if "fta_probability" in calculation_requests else {},
                             },
                         },
                     )
                 )
                 previews.append({
                     "title": row.get("image_title", ""),
-                    "snippet": f"最小割集 {result.get('minimal_cut_set_count', 0)} 个；顶事件概率 {result.get('top_event_probability')}",
+                    "snippet": summarize_fta_calculation(result, graph=graph),
                 })
-                if not numeric_complete:
+                if probability_requested and not numeric_complete:
                     reason = probability_block_reason or "缺少概率参数"
                     warnings.append(
                         f"FTA {row.get('revision_id') or row.get('id') or '未知'} {reason}，"
@@ -669,6 +684,7 @@ async def icp_calculation_node(state) -> Dict[str, Any]:
                         content=json.dumps(result, ensure_ascii=False, default=str),
                         display_summary=summarize_rbd_calculation(result),
                         derived_from=parents,
+                        scope=parent_scope(parents),
                         limitations=[
                             result.get("assumption", ""),
                             "" if parents else "缺少可引用的当前有效图修订证据，门禁将阻止正式计算结论",
@@ -687,6 +703,7 @@ async def icp_calculation_node(state) -> Dict[str, Any]:
                                 "parameters": {"mission_time": mission_time, "mission_time_unit": "h"},
                                 "results": {"system_reliability": result.get("system_reliability")},
                                 "units": {"system_reliability": "1"},
+                                "block_parameters": result.get("block_parameters") or {},
                             },
                         },
                     )

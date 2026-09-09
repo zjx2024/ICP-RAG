@@ -86,9 +86,9 @@ class EvidencePacketTests(unittest.TestCase):
         item = evidence(claim_type="fmeca_fact", metadata={"answer_fields": {"detection_method": "测" * 2000}})
         original = copy.deepcopy(item)
         claim = packets([item])[0]["claims"][0]
-        self.assertEqual("truncated", claim["view_state"]["status"])
+        self.assertEqual("complete_selected_view", claim["view_state"]["status"])
         self.assertEqual(quote_field_view(item), claim["quote_view"])
-        self.assertIn("/answer_fields/detection_method", claim["quote_view"]["truncated_fields"])
+        self.assertEqual("测" * 2000, claim["quote_view"]["fields"]["/answer_fields/detection_method"])
         self.assertEqual(original, item)
 
     def test_source_restricted_view_does_not_reintroduce_hidden_content(self):
@@ -130,6 +130,31 @@ class QueryCoverageTests(unittest.TestCase):
 
 
 class EvidencePacketIntegrationTests(unittest.TestCase):
+    def test_function_parent_ids_reach_writer_and_reviewer_without_name_inference(self):
+        from backend.agent.tools.icp_diagnosis import _direct_evidence
+        from backend.agent.nodes.answer import _format_context
+        from backend.agent.answer_review import _records
+        from backend.agent.citation_binding import validate_record_citations
+        for suffix in ('019', 'BX7', '5021'):
+            module, function, parent = f'MOD-{suffix}', f'FUNC-{suffix}', f'FUNC-P{suffix}'
+            row = {'doc_id': 'source-a', 'function_id': function, 'module_id': module,
+                   'parent_function_id': parent, 'module_name': '同名模块', 'function_name': '数据保存',
+                   'failure_symptoms': '无法加载', 'source_ref': 'table-7/row-3'}
+            item = _direct_evidence('function_locator', [row])[0]
+            state = {'query': '它的功能是什么？', 'evidence_registry': [item],
+                     'context_evidence_ids': [item['evidence_id']],
+                     'safety_decision': {'approved_evidence_ids': [item['evidence_id']]}}
+            source = _records({1: item})['1']['fields']
+            self.assertEqual(module, source['/answer_fields/module_id'])
+            self.assertEqual(parent, source['/answer_fields/parent_function_id'])
+            self.assertIn(module, _format_context(state))
+            self.assertEqual('table-7/row-3', item['source_ref'])
+            validate_record_citations(f'{module} 可能无法加载。[^1]', {1: item})
+            missing = _direct_evidence('function_locator', [{k: v for k, v in row.items()
+                                                           if k not in {'module_id', 'parent_function_id'}}])[0]
+            self.assertNotIn('/answer_fields/module_id', quote_field_view(missing)['fields'])
+            self.assertNotIn('/answer_fields/parent_function_id', quote_field_view(missing)['fields'])
+
     def test_pg_identity_reaches_registry_without_needing_a_unique_source_ref(self):
         from backend.agent.tools.icp_diagnosis import _direct_evidence
         for tool, record in (("hmc_query", {"hmc_code": "009"}), ("fmeca_query", {"code": "009"})):

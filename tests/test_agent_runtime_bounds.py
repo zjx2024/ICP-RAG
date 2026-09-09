@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 from backend.agent.contracts import make_evidence
+from backend.agent.model_runtime_policy import turn_budget
 from backend.agent.nodes import answer as answer_module
 from backend.agent.nodes import plan as plan_module
 from backend.core.llm_service import LLMClient, LLMStreamError
@@ -62,7 +63,7 @@ class AgentModelBudgetTests(unittest.TestCase):
         for provider in ("ollama", "openai"):
             original = {"provider": provider, "max_tokens": 256, "num_predict": 256}
             prepared = plan_module._prepare_target_model(original)
-            self.assertGreaterEqual(prepared["num_predict"], 1536)
+            self.assertEqual(prepared["num_predict"], 256)
             self.assertEqual(prepared["num_predict"], prepared["max_tokens"])
             self.assertEqual(256, original["max_tokens"])
 
@@ -92,7 +93,7 @@ class AgentModelBudgetTests(unittest.TestCase):
         model = {"provider": "ollama", "max_tokens": 4096}
         state = {"query": "FAN转速反馈丢失", "messages": [], "memory_enabled": False}
         with (
-            patch.object(plan_module.llm_service, "_call_model", return_value=response) as call,
+            patch.object(plan_module.llm_service, "call_model", return_value=response) as call,
             patch.object(
                 plan_module.agent_model_role_service,
                 "apply_agent_llm_params",
@@ -105,7 +106,7 @@ class AgentModelBudgetTests(unittest.TestCase):
         self.assertFalse(prepared["reasoning"])
         self.assertEqual(0.0, prepared["temperature"])
         self.assertEqual("json", prepared["format"])
-        self.assertEqual(plan_module.PLAN_MAX_PREDICTION_TOKENS, prepared["num_predict"])
+        self.assertEqual(4096, prepared["num_predict"])
         self.assertGreaterEqual(
             prepared["num_predict"],
             1536,
@@ -129,7 +130,7 @@ class AgentModelBudgetTests(unittest.TestCase):
                 "apply_agent_llm_params",
                 return_value={"provider": "ollama", "max_tokens": 4096},
             ),
-            patch.object(plan_module, "PLAN_LLM_TIMEOUT_SECONDS", 0.01),
+            turn_budget(0.01),
         ):
             result = asyncio.run(plan_module.plan_node(state, config))
 
@@ -192,7 +193,7 @@ class AgentModelBudgetTests(unittest.TestCase):
                 "apply_agent_llm_params",
                 return_value={"provider": "ollama", "max_tokens": 4096},
             ),
-            patch.object(answer_module, "ANSWER_LLM_TIMEOUT_SECONDS", 0.01),
+            turn_budget(0.01),
         ):
             with self.assertRaises(answer_module.AnswerGenerationError) as caught:
                 asyncio.run(answer_module.answer_node(state, config))
@@ -201,7 +202,7 @@ class AgentModelBudgetTests(unittest.TestCase):
         self.assertNotIn("FAN 转速反馈丢失", str(caught.exception))
         self.assertTrue(config["configurable"]["stream_queue"].empty())
         self.assertFalse(observed[0]["reasoning"])
-        self.assertEqual(answer_module.ANSWER_MAX_PREDICTION_TOKENS, observed[0]["num_predict"])
+        self.assertEqual(4096, observed[0]["num_predict"])
 
     def test_partial_stream_failure_discards_partial_text_and_raises(self):
         async def broken_stream(_messages, _model):

@@ -14,7 +14,7 @@ import re
 from typing import Any, Dict, Mapping, Optional
 
 from backend.agent.model_role_service import agent_model_role_service
-from backend.agent.model_runtime_policy import bounded_model_transport
+from backend.agent.model_runtime_policy import bounded_model_transport, remaining_seconds, TURN_TIMEOUT_SECONDS
 from backend.core.llm_service import llm_service
 
 logger = logging.getLogger(__name__)
@@ -28,10 +28,7 @@ def _positive_env_float(name: str, default: float) -> float:
         return default
 
 
-SCOPE_ROUTER_TIMEOUT_SECONDS = _positive_env_float(
-    "ICP_AGENT_SCOPE_TIMEOUT_SECONDS", 20.0
-)
-SCOPE_ROUTER_MAX_PREDICTION_TOKENS = 256
+SCOPE_ROUTER_TIMEOUT_SECONDS = TURN_TIMEOUT_SECONDS
 
 SCOPE_KNOWLEDGE_BASE = "knowledge_base"
 SCOPE_AGENT_CAPABILITY = "agent_capability"
@@ -148,22 +145,13 @@ SCOPE_ROUTER_PROMPT = """你是 ICP 航空电子知识智能体的入口路由�
 """
 
 
-def _format_history(messages: Any, *, max_turns: int = 4) -> str:
-    if not isinstance(messages, list) or not messages:
-        return "无"
-    recent = messages[-max_turns * 2 :]
-    lines = []
-    for item in recent:
-        if not isinstance(item, Mapping):
-            continue
-        role = str(item.get("role") or "")
-        if role not in {"user", "assistant"}:
-            continue
-        content = re.sub(r"\[\^\d+\]", "", str(item.get("content") or ""))
-        content = " ".join(content.split())[:500]
-        if content:
-            lines.append(f"{'用户' if role == 'user' else '助手'}：{content}")
-    return "\n".join(lines) if lines else "无"
+def _format_history(messages: Any, *, max_turns: int | None = None) -> str:
+    from backend.agent.answer_context_binding import conversation_review_context
+
+    context = conversation_review_context(
+        {"messages": messages}, max_messages=None if max_turns is None else max_turns * 2,
+    )
+    return json.dumps(context["messages"], ensure_ascii=False) if context["messages"] else "无"
 
 
 def _extract_json_object(value: Any) -> Optional[Dict[str, Any]]:
@@ -201,7 +189,7 @@ def parse_scope_response(value: Any) -> Optional[Dict[str, Any]]:
         confidence = min(max(float(parsed.get("confidence") or 0.0), 0.0), 1.0)
     except (TypeError, ValueError):
         confidence = 0.0
-    question = " ".join(str(parsed.get("clarification_question") or "").split())[:300]
+    question = " ".join(str(parsed.get("clarification_question") or "").split())
     if route == SCOPE_CLARIFICATION and not question:
         question = "请说明你指的是哪个系统、模块、代码或故障现象。"
     if route != SCOPE_CLARIFICATION:
@@ -218,7 +206,6 @@ def _prepare_scope_model(model: Optional[Mapping[str, Any]]) -> Optional[Dict[st
     if not model:
         return None
     prepared = dict(model)
-    prepared["num_predict"] = SCOPE_ROUTER_MAX_PREDICTION_TOKENS
     if prepared.get("provider") == "ollama":
         prepared["reasoning"] = False
         prepared["temperature"] = 0.0
@@ -272,7 +259,7 @@ async def scope_router_node(state: Mapping[str, Any], config=None) -> Dict[str, 
                 [{"role": "user", "content": prompt}],
                 _model_for_state(state),
             ),
-            timeout=SCOPE_ROUTER_TIMEOUT_SECONDS,
+            timeout=remaining_seconds(),
         )
         parsed = parse_scope_response(response)
         if parsed is None:

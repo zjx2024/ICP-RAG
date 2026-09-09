@@ -52,8 +52,8 @@ class AnswerGenerationEntryTests(unittest.TestCase):
         state = self.state()
         state["messages"][1]["content"] = "内容" * 4000 + "不可据此判断遗漏"
         text = answer._build_answer_prompt(state, "证据")
-        self.assertIn('"truncated": true', text)
-        self.assertNotIn("不可据此判断遗漏", text)
+        self.assertIn('"truncated": false', text)
+        self.assertIn("不可据此判断遗漏", text)
 
     def test_arbitrary_question_dimensions_do_not_need_a_generation_vocabulary(self):
         for query in ("What observation would reverse that inference?", "何时只能支持相关而不能支持因果？",

@@ -188,7 +188,7 @@ class ScopeRoutingTests(unittest.TestCase):
                 with (
                     patch.object(
                         plan_module.llm_service,
-                        "_call_model",
+                        "call_model",
                         side_effect=[target_response, planner_response],
                     ),
                     patch.object(
@@ -1061,7 +1061,7 @@ class ConversationAnchorTests(unittest.TestCase):
 
         with patch.object(
             plan_module.llm_service,
-            "_call_model",
+            "call_model",
             side_effect=[initial, repaired],
         ) as call:
             result = _run(plan_module._classify_explicit_targets(
@@ -1097,7 +1097,7 @@ class ConversationAnchorTests(unittest.TestCase):
 
         with patch.object(
             plan_module.llm_service,
-            "_call_model",
+            "call_model",
             return_value=model_response,
         ) as call:
             result = _run(plan_module._classify_explicit_targets(
@@ -1171,7 +1171,7 @@ class ConversationAnchorTests(unittest.TestCase):
         with (
             patch.object(
                 plan_module.llm_service,
-                "_call_model",
+                "call_model",
                 side_effect=[target_response, planner_response],
             ),
             patch.object(
@@ -1260,7 +1260,7 @@ class ConversationAnchorTests(unittest.TestCase):
         with (
             patch.object(
                 plan_module.llm_service,
-                "_call_model",
+                "call_model",
                 side_effect=[target_response, planner_response],
             ),
             patch.object(
@@ -1365,7 +1365,7 @@ class ConversationAnchorTests(unittest.TestCase):
         with (
             patch.object(
                 plan_module.llm_service,
-                "_call_model",
+                "call_model",
                 side_effect=[target_response, planner_response],
             ),
             patch.object(
@@ -1479,7 +1479,7 @@ class ConversationAnchorTests(unittest.TestCase):
         with (
             patch.object(
                 plan_module.llm_service,
-                "_call_model",
+                "call_model",
                 side_effect=[target_response, planner_response],
             ),
             patch.object(
@@ -1550,7 +1550,7 @@ class ConversationAnchorTests(unittest.TestCase):
         with (
             patch.object(
                 plan_module.llm_service,
-                "_call_model",
+                "call_model",
                 side_effect=[target_response, planner_response],
             ),
             patch.object(
@@ -1595,7 +1595,7 @@ class ConversationAnchorTests(unittest.TestCase):
         with (
             patch.object(
                 plan_module.llm_service,
-                "_call_model",
+                "call_model",
                 side_effect=[target_response, planner_response],
             ),
             patch.object(
@@ -1683,7 +1683,7 @@ class ConversationAnchorTests(unittest.TestCase):
         with (
             patch.object(
                 plan_module.llm_service,
-                "_call_model",
+                "call_model",
                 side_effect=[target_response, planner_response],
             ),
             patch.object(

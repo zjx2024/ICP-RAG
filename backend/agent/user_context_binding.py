@@ -22,7 +22,7 @@ def offered_user_inputs(state: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def validate_user_context_bindings(value: Any, offered: Any) -> list[dict[str, str]]:
-    if not isinstance(value, list) or len(value) > 8 or not isinstance(offered, list):
+    if not isinstance(value, list) or not isinstance(offered, list):
         return []
     messages = {row["message_id"]: row for row in offered if isinstance(row, Mapping) and row.get("role") == "user"}
     bindings: list[dict[str, str]] = []
@@ -30,7 +30,7 @@ def validate_user_context_bindings(value: Any, offered: Any) -> list[dict[str, s
         if not isinstance(item, Mapping):
             return []
         message_id, quote = item.get("message_id"), item.get("quote")
-        if not isinstance(message_id, str) or not isinstance(quote, str) or not quote.strip() or len(quote) > 1200:
+        if not isinstance(message_id, str) or not isinstance(quote, str) or not quote.strip():
             return []
         if message_id not in messages or quote not in messages[message_id]["content"]:
             return []

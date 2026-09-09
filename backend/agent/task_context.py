@@ -24,9 +24,11 @@ def current_task(state: Mapping[str, Any]) -> dict[str, Any]:
 def task_query(state: Mapping[str, Any]) -> str:
     """A relevance query, not an identity or calculation authorization."""
     task = current_task(state)
+    from backend.agent.user_context_binding import selected_user_input_quotes
     return "\n".join(dict.fromkeys(
         str(value).strip() for value in (
             task["resolved_question"], task["original_question"],
             *task["subjects"], *task["information_goals"],
+            *selected_user_input_quotes(state),
         ) if str(value).strip()
     ))

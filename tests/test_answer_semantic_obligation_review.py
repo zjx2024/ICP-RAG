@@ -27,8 +27,8 @@ class AnswerSemanticObligationReviewTests(unittest.TestCase):
     def test_history_budget_and_explicit_truncation_still_apply(self):
         messages = [{"role": "assistant", "content": "字" * 7000} for _ in range(30)]
         view = conversation_review_context({"messages": messages})
-        self.assertLessEqual(len(view["messages"]), 16)
-        self.assertLessEqual(sum(len(item["content"]) for item in view["messages"]), 18000)
-        self.assertTrue(view["messages"][-1]["truncated"])
+        self.assertEqual(len(view["messages"]), 30)
+        self.assertEqual(sum(len(item["content"]) for item in view["messages"]), 210000)
+        self.assertFalse(view["messages"][-1]["truncated"])
         self.assertEqual("h29", view["messages"][-1]["message_id"])
-        self.assertIn('"truncated": true', answer._format_history(messages))
+        self.assertIn('"truncated": false', answer._format_history(messages))

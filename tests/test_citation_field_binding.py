@@ -4,7 +4,6 @@ import unittest
 from unittest.mock import patch
 
 from backend.agent.citation_binding import (
-    MAX_QUOTE_RECORD_CHARS,
     quote_field_view,
     unit_record_requirements,
 )
@@ -44,8 +43,8 @@ class CitationFieldBindingTests(unittest.TestCase):
         item = {**self.item, "content": "正文" * 9000, "metadata": {"answer_fields": {"notes": "附注" * 10000}}}
         view = quote_field_view(item)
         self.assertEqual("FUNC-731", view["fields"]["/record_id"])
-        self.assertTrue(view["truncated_fields"])
-        self.assertLessEqual(sum(map(len, view["fields"].values())), MAX_QUOTE_RECORD_CHARS)
+        self.assertFalse(view["truncated_fields"])
+        self.assertEqual("附注" * 10000, view["fields"]["/answer_fields/notes"])
 
     def test_name_obligation_preserves_names_at_each_explicit_source_level(self):
         from backend.agent.nodes.answer_field_catalog import _TARGET_COMPLETENESS_FIELD_KEYS

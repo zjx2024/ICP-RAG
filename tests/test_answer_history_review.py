@@ -1,4 +1,3 @@
-import backend.agent.nodes.answer_history_rules as _source_answer_history_rules
 import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -150,12 +149,12 @@ class AnswerHistoryReviewTests(unittest.TestCase):
         weak = history_variant(
             "HIS-WEAK",
             "semantic_id_hydration",
-            _source_answer_history_rules.HISTORY_SUPPLEMENT_MIN_SCORE - 0.01,
+            0.15 - 0.01,
         )
         strong = history_variant(
             "HIS-STRONG",
             "semantic_id_hydration",
-            _source_answer_history_rules.HISTORY_SUPPLEMENT_MIN_SCORE,
+            0.15,
         )
         evidence = [broad, exact, weak, strong]
         evidence_ids = [item["evidence_id"] for item in evidence]
@@ -205,12 +204,10 @@ class AnswerHistoryReviewTests(unittest.TestCase):
         # The exact stored relationship is an identity boundary.  A semantic
         # neighbour remains auditable but cannot be co-presented as the same
         # parent merely because its score crosses a threshold.
-        self.assertEqual({"HIS-EXACT"}, context_ids)
-        self.assertEqual({"HIS-EXACT"}, ledger_ids)
-        self.assertNotIn("HIS-BROAD", context_ids)
-        self.assertNotIn("HIS-WEAK", context_ids)
+        self.assertEqual({"HIS-EXACT", "HIS-STRONG", "HIS-BROAD", "HIS-WEAK"}, context_ids)
+        self.assertEqual(context_ids, ledger_ids)
 
-    def test_supplemental_history_uses_absolute_relative_and_unique_case_limits(self):
+    def test_candidate_view_preserves_scores_and_distinct_provenance(self):
         def history_variant(record_id, match_type, score=None):
             evidence = make_evidence(
                 source_kind="postgres",
@@ -280,34 +277,35 @@ class AnswerHistoryReviewTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            {"HIS-BEST", "HIS-NEAR"},
+            {"HIS-BEST", "HIS-NEAR", "HIS-LAGGING", "HIS-BELOW-FLOOR"},
             {item["record_id"] for item in semantic_only},
         )
-        self.assertEqual(2, len({item["record_id"] for item in semantic_only}))
-        self.assertNotIn(
+        self.assertEqual(4, len({item["record_id"] for item in semantic_only}))
+        self.assertIn(
             "HIS-LAGGING", {item["record_id"] for item in semantic_only}
         )
-        self.assertNotIn(
+        self.assertIn(
             "HIS-BELOW-FLOOR", {item["record_id"] for item in semantic_only}
         )
         self.assertEqual(
-            {"HIS-EXACT"},
+            {"HIS-BEST", "HIS-NEAR", "HIS-LAGGING", "HIS-BELOW-FLOOR", "HIS-EXACT"},
             {item["record_id"] for item in with_exact},
         )
-        self.assertEqual(1, len(with_exact))
+        self.assertEqual(6, len(with_exact))
+        # Distinct evidence IDs remain distinct provenance, not a fuzzy merge.
 
 
-    def test_weak_semantic_history_stays_audit_only_for_nonhistory_answer(self):
+    def test_low_raw_score_does_not_hide_an_approved_case(self):
         evidence = _history_evidence()
         evidence["retrieval_score"] = (
-            _source_answer_history_rules.HISTORY_SUPPLEMENT_MIN_SCORE - 0.01
+            0.15 - 0.01
         )
         state = _state(evidence)
         state["intent"] = "cause_analysis"
         state["query_targets"] = [{"intent": "cause_analysis"}]
         state["query_frame"] = {"required_answer_fields": []}
 
-        self.assertEqual([], answer_module._context_evidence(state))
+        self.assertEqual([evidence["record_id"]], [row["record_id"] for row in answer_module._context_evidence(state)])
 
     def test_strong_semantic_history_can_supplement_nonhistory_answer(self):
         evidence = _history_evidence()

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from contextlib import nullcontext
 import difflib
 import inspect
 import json
@@ -156,7 +157,25 @@ def require_real_postgres(client) -> None:
         raise ValueError("Live experiment requires PostgreSQL; mock fallback is not valid")
 
 
+class GenerationCaptured(RuntimeError):
+    """Local-only stop after the exact writer input was observed, before inference."""
+
+
+async def stop_before_generation(*args, **kwargs):
+    raise GenerationCaptured()
+
+
+def was_generation_capture(exc):
+    while exc is not None:
+        if isinstance(exc, GenerationCaptured):
+            return True
+        exc = exc.__cause__
+    return False
+
+
 async def capture(args) -> int:
+    from unittest.mock import patch
+    from backend.agent.nodes import answer
     from backend.agent.db import agent_db
     from backend.agent.state import create_initial_state
     from backend.storage.postgres_client import postgres_client
@@ -206,14 +225,19 @@ async def capture(args) -> int:
                         try:
                             # Match the production buffered streaming transport;
                             # the queue stays local and is never exposed by SSE.
-                            result = await graph.ainvoke(state, config={
-                                "recursion_limit": 50,
-                                "configurable": {"stream_queue": asyncio.Queue()},
-                            })
+                            guard = (patch.object(answer, "_generate_answer_response", stop_before_generation)
+                                     if args.capture_only else nullcontext())
+                            with guard:
+                                result = await graph.ainvoke(state, config={
+                                    "recursion_limit": 50,
+                                    "configurable": {"stream_queue": asyncio.Queue()},
+                                })
                             record = {**identity, "status": "ok", "final_answer": result.get("final_answer", ""),
                                       "citations": detached(result.get("citations") or [])}
                         except Exception as exc:
-                            record = {**identity, "status": "runtime_error", "error_type": type(exc).__name__}
+                            stopped = args.capture_only and was_generation_capture(exc)
+                            record = {**identity, "status": "captured" if stopped else "runtime_error",
+                                      "error_type": None if stopped else type(exc).__name__}
                     record.update(observation=observation.as_dict(), duration_seconds=time.monotonic() - started)
                     record["stage_deltas"] = stage_deltas(record["observation"])
                     if observation.errors:
@@ -232,7 +256,7 @@ async def capture(args) -> int:
         raise
     finally:
         write_private(output / "run.json", run)
-    return int(any(record["status"] not in {"ok", "direct_response_no_answer_node"} for record in records))
+    return int(any(record["status"] not in {"ok", "captured", "direct_response_no_answer_node"} for record in records))
 
 
 def resolve_captured_model(generation):
@@ -467,6 +491,7 @@ def main(argv=None) -> int:
     capture_parser.add_argument("--case-id", action="append", default=[])
     capture_parser.add_argument("--turn-index", type=positive)
     capture_parser.add_argument("--repeats", type=positive, default=1)
+    capture_parser.add_argument("--capture-only", action="store_true", help="取得当前生成输入即停，不调用作者或审核模型")
     comparison_parser = commands.add_parser("compare", help="仅离线生成；不计端到端成绩")
     comparison_parser.add_argument("--capture-dir", required=True)
     comparison_parser.add_argument("--suite", default="evals/icp_multiturn_dialogue_cases.json")

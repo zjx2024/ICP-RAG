@@ -19,7 +19,7 @@ def _evidence(evidence_id: str, title: str, content: str) -> dict:
 
 
 class AnswerEvidenceRerankTests(unittest.TestCase):
-    def test_answer_window_keeps_only_explicitly_linked_fmeca_mfl_family(self):
+    def test_semantic_ranking_does_not_turn_linked_family_into_the_only_candidate(self):
         primary = _evidence(
             "e-fm-002",
             "输入滤波性能退化",
@@ -94,7 +94,7 @@ class AnswerEvidenceRerankTests(unittest.TestCase):
         selected = _context_evidence(state)
 
         self.assertEqual(
-            {"e-fm-002", "e-mfl-002"},
+            set(ids),
             {item["evidence_id"] for item in selected},
         )
 
@@ -136,7 +136,7 @@ class AnswerEvidenceRerankTests(unittest.TestCase):
             [item["evidence_id"] for item in selected],
         )
 
-    def test_strong_history_exact_ids_narrow_single_fault_family(self):
+    def test_recalled_history_does_not_confirm_the_current_fault_family(self):
         target = _evidence(
             "e-fm-038", "突发丢包", "高负载下缓存不足导致成片丢包。"
         )
@@ -211,7 +211,7 @@ class AnswerEvidenceRerankTests(unittest.TestCase):
         selected = _context_evidence(state)
 
         self.assertEqual(
-            {"e-fm-038", "e-mfl-038", "e-history-013"},
+            set(ids),
             {item["evidence_id"] for item in selected},
         )
 

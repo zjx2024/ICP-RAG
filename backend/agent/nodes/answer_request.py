@@ -372,21 +372,42 @@ _CLARIFICATION_REASON_LABELS = {
     "incomplete_calculation": "计算参数不完整",
 }
 
+# Presentation of closed machine slots, never an intent/question vocabulary.
+_INPUT_LABELS = {
+    "configuration": "适用设备构型",
+    "document_version": "适用手册版本",
+    "hamc": "完整报码中的 HAMC 字段（可提供原始报码截图）",
+    "lcn": "原始报码中的 LCN 字段", "hsc": "原始报码中的 HSC 字段（保留前导零）",
+    "hmc_identity": "完整原始报码或报码截图（LCN、HAMC、HSC）",
+    "rbd_model_identity": "需要分析的可靠性框图名称、来源文档或图修订标识",
+    "fta_model_identity": "需要分析的故障树名称、来源文档或图修订标识",
+    "fmeca_record_identity": "需要分析的故障模式记录编号或所在原表行",
+    "applicability_scope": "适用机型、构型或文档版本",
+    "block_reliability": "相关功能块的可靠度或故障率参数",
+    "basic_event_probability": "相关基本事件的概率或故障率参数",
+    "mission_time": "任务持续时间及单位",
+}
+_IDENTITY_LABELS = {"lcn": "LCN", "hamc": "HAMC", "hsc": "HSC",
+                    "system": "系统", "configuration": "构型",
+                    "document_number": "文档编号", "document_version": "文档版本"}
+
 
 def _describe_clarification_identity(identity: Mapping[str, Any]) -> str:
     parts: List[str] = []
     doc_type = str(identity.get("doc_type") or "").strip()
     if doc_type:
-        parts.append(doc_type)
+        parts.append(DOC_TYPE_BY_TOOL.get(doc_type, doc_type).upper())
     for record_id in (identity.get("record_ids") or [])[:6]:
         value = str(record_id or "").strip()
         if value:
             parts.append(value)
     fields = identity.get("fields") if isinstance(identity.get("fields"), Mapping) else {}
     for key, value in list(fields.items())[:6]:
+        if key not in _IDENTITY_LABELS:
+            continue
         text = str(value or "").strip()
         if text:
-            parts.append(f"{key}={text}")
+            parts.append(f"{_IDENTITY_LABELS[key]}={text}")
     return "、".join(parts)
 
 
@@ -422,9 +443,13 @@ def render_clarification_only_answer(state: Mapping[str, Any]) -> str:
     if not (missing or unresolved or reasons):
         return ""
 
+    no_match = any(item.get("kind") == "authoritative_record_not_found" for item in reasons)
     lines: List[str] = [
-        "本轮未能发布经过核验的完整回答。为继续查询，还需要补充以下信息："
+        "本轮权威查询未命中可确认的对应记录，暂不能据此解释当前对象；这不证明原始资料中不存在该对象。"
+        if no_match else "本轮未能发布经过核验的完整回答。"
     ]
+    if missing or unresolved:
+        lines.append("为继续查询，还需要补充以下信息：")
     seen: set = set()
     for item in missing + unresolved:
         slot = str(item.get("slot") or "").strip()
@@ -436,16 +461,15 @@ def render_clarification_only_answer(state: Mapping[str, Any]) -> str:
         )
         label = _CLARIFICATION_SLOT_LABELS.get(kind, kind or "信息")
         described = _describe_clarification_identity(identity)
-        basis = str(item.get("basis") or "").strip()
-        parts = [f"{label}：{slot}" if slot else label]
+        parts = [f"{label}：{_INPUT_LABELS[slot]}" if slot in _INPUT_LABELS else label]
         if described:
             parts.append(f"（涉及：{described}）")
-        if basis:
-            parts.append(f"——{basis}")
         line = "".join(parts)
         if line not in seen:
             seen.add(line)
             lines.append(f"- {line}")
+    if reasons:
+        lines.append("当前查询限制：")
     for item in reasons:
         kind = str(item.get("kind") or "").strip()
         identity = (
@@ -454,20 +478,13 @@ def render_clarification_only_answer(state: Mapping[str, Any]) -> str:
             else {}
         )
         label = _CLARIFICATION_REASON_LABELS.get(kind, kind or "条件")
-        blocked = [
-            str(value or "").strip()
-            for value in (item.get("blocked_claims") or [])[:4]
-            if str(value or "").strip()
-        ]
         described = _describe_clarification_identity(identity)
         parts = [f"{label}"]
         if described:
             parts.append(f"（涉及：{described}）")
-        if blocked:
-            parts.append("；在其确认前不能给出：" + "、".join(blocked))
         line = "".join(parts)
         if line not in seen:
             seen.add(line)
             lines.append(f"- {line}")
-    lines.append("补充以上信息后，可以基于权威资料重新检索并给出有来源的回答。")
+    lines.append("以上缺口补齐后，可以基于权威资料重新检索；暂不能把相似记录当作当前对象。")
     return "\n".join(lines)

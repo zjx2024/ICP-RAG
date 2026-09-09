@@ -154,6 +154,10 @@ ANSWER_FIELD_SPECS = {
         "label": "故障概率等级",
         "tools": ("fmeca_query", "hybrid_search"),
     },
+    # An operation's authorization selects its domain and calculator. Generic
+    # result/parameter goals must not accidentally select FMECA or RBD.
+    "calculation_result": {"label": "已请求操作的计算结果（含最小割集或数值）", "tools": ()},
+    "calculation_parameters": {"label": "已请求操作的所需/缺失参数", "tools": ()},
     "detection_method": {
         "label": "检测与判别方法",
         "tools": ("fmeca_query", "mfl_query", "hybrid_search"),
@@ -260,7 +264,7 @@ RESPONSE_MODES = frozenset(
 
 
 def _current_turn_basis(value: Any, raw_user_query: Any, *, limit: int = 500) -> str:
-    basis = str(value or "").strip()[:limit]
+    basis = str(value or "").strip()
     query = str(raw_user_query or "")
     return basis if basis and basis in query else ""
 

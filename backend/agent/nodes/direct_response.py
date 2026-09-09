@@ -8,7 +8,7 @@ from typing import Any, Dict, Mapping
 
 from backend.agent.answer_context_binding import conversation_review_context
 from backend.agent.model_role_service import agent_model_role_service
-from backend.agent.model_runtime_policy import bounded_model_transport
+from backend.agent.model_runtime_policy import bounded_model_transport, remaining_seconds, TURN_TIMEOUT_SECONDS
 from backend.core.llm_service import llm_service
 from backend.agent.nodes.scope_router import (
     SCOPE_AGENT_CAPABILITY,
@@ -17,9 +17,9 @@ from backend.agent.nodes.scope_router import (
 )
 
 logger = logging.getLogger(__name__)
-CAPABILITY_TIMEOUT_SECONDS = 15.0
+CAPABILITY_TIMEOUT_SECONDS = TURN_TIMEOUT_SECONDS
 CAPABILITY_FACTS = """产品：面向 ICP 航空电子系统的工程知识查询与辅助诊断。
-资料范围仅为已上传并解析的七类文档：系统架构与功能说明、HMC、FMECA、FTA、RBD、MFL、故障历史。
+资料范围仅为已上传并解析的七类文档：系统架构与功能说明、HMC 故障代码手册、FMECA 故障模式影响及危害性分析、FTA 故障树分析、RBD 可靠性框图分析、MFL 维修故障清单、故障历史。使用这些正式类别名称，不自行展开缩写。
 用户可以描述模糊现象、阶段、告警、已执行操作，或提供模块/功能/报码；缺少对象时会澄清，证据不足时给有来源的候选和区分问题，不能作无证据的唯一诊断。
 故障历史用于查相近案例的发生条件、检查处理、根因及恢复验证；只有资料有记载才报告，不保证存在匹配案例，也不把案例试验当作普遍复测/放行标准。
 FTA/RBD 可用于查询结构及其适用假设；只有用户本轮授权计算且图为 auto_validated 或兼容 manual_confirmed、身份适用范围核验通过时，才由确定性算法计算。provisional 不得用于正式计算。最小割集需要完整逻辑结构而非概率参数；概率/可靠度缺参数时不能造数值。
@@ -47,7 +47,7 @@ async def _answer_capability(state: Mapping[str, Any], agent_name: str) -> str:
         model = agent_model_role_service.apply_agent_llm_params(dict(state), model)
         if not model:
             raise ValueError("model_unavailable")
-        model = bounded_model_transport({**model, "max_tokens": 1200, "num_predict": 1200, "temperature": 0, "stream": False}, CAPABILITY_TIMEOUT_SECONDS)
+        model = bounded_model_transport({**model, "temperature": 0, "stream": False})
         if str(model.get("provider") or "").casefold() == "ollama":
             model["reasoning"] = False
             model.pop("format", None)
@@ -56,9 +56,9 @@ async def _answer_capability(state: Mapping[str, Any], agent_name: str) -> str:
             [{"role": "system", "content": CAPABILITY_PROMPT},
              {"role": "user", "content": json.dumps({
                  "agent_name": agent_name, "current_question": query,
-                 "conversation": conversation_review_context(state, max_messages=8),
+                 "conversation": conversation_review_context(state),
              }, ensure_ascii=False)}], model, template_name="agent_capability_response",
-        ), timeout=CAPABILITY_TIMEOUT_SECONDS)
+        ), timeout=remaining_seconds())
         if not isinstance(result, str) or not result.strip():
             raise ValueError("empty_output")
         return result.strip()

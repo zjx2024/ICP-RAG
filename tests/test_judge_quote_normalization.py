@@ -31,10 +31,18 @@ class JudgeQuoteNormalizationTests(unittest.TestCase):
         quote = "HSC 前导零与 ** 通配保留"
         self.assertIn(_normalized_judge_quote(quote), _normalized_judge_quote(answer))
 
-    def test_ellipsis_between_verbatim_segments_passes_in_order(self):
+    def test_ellipsis_cannot_splice_separate_claims(self):
         answer = "不能单凭框图认定实际根因，也不能替代正式维修程序。"
         quote = "不能单凭框图认定实际根因...替代正式维修程序"
-        self.assertTrue(_judge_quote_supported(quote, answer))
+        self.assertFalse(_judge_quote_supported(quote, answer))
+
+    def test_multiple_wildcard_codes_survive_markdown_rendering(self):
+        answer = "**HMC** 87654321**0012 与 87654322**0012"
+        self.assertIn("87654321**0012", _normalized_judge_quote(answer))
+        self.assertIn("87654322**0012", _normalized_judge_quote(answer))
+
+    def test_quoted_literal_ellipsis_remains_supported(self):
+        self.assertTrue(_judge_quote_supported("记录为 A...B", "记录为 A...B"))
 
     def test_ellipsis_with_invented_segment_still_fails(self):
         answer = "优先排查方向包括电源链路、温度监测与连接器检查。"

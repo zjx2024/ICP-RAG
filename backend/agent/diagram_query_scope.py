@@ -1,7 +1,7 @@
 """Current-question graph identity, separate from validity and calculation permission."""
 from __future__ import annotations
 from typing import Any, Mapping, Sequence
-from backend.agent.current_model_selection import model_candidates, query_fingerprint, selection_matches_model
+from backend.agent.current_model_selection import model_candidates, query_fingerprint, selection_matches_model, selection_observation
 from backend.agent.diagram_identity import _requested_graph_selectors, _selector_match_score
 from backend.agent.model_selection_service import select_current_models
 
@@ -65,6 +65,7 @@ async def bind_current_diagrams(state: Mapping[str, Any], rows: Sequence[Mapping
     selected = [dict(row) for row in candidates if selection_matches_model(selection, row, query=query)]
     return selected, {**binding, "status": selection.get("status", "unavailable"),
                       "basis": "current_semantic_selection", "models": model_candidates(selected, doc_type),
+                      "selection_observation": selection_observation(selection, candidates, doc_type=doc_type, query=query),
                       "reason": selection.get("reason", "")}
 
 

@@ -194,12 +194,11 @@ class RbdSuccessCriterionProjectionTests(unittest.TestCase):
         fields = _source_answer_structure_views._rbd_structure_answer_fields(evidence)
         self.assertEqual(["并联"], fields["connection_types"])
         self.assertNotIn("single_failure_boundary", fields)
-        self.assertEqual(
-            {},
-            _source_answer_structure_views._rbd_structure_answer_fields_for_state(
-                evidence, _bound_state(evidence)
-            ),
+        scoped = _source_answer_structure_views._rbd_structure_answer_fields_for_state(
+            evidence, _bound_state(evidence)
         )
+        self.assertEqual("输出端可达", scoped["success_criterion"])
+        self.assertNotIn("single_failure_boundary", scoped)
 
     def test_bound_formal_structured_relation_is_exposed(self):
         relation = _relation()
@@ -214,6 +213,50 @@ class RbdSuccessCriterionProjectionTests(unittest.TestCase):
             [relation["statement"]],
             _source_answer_structure_views._rbd_target_boundary_clauses(evidence, state),
         )
+
+    def test_missing_failure_relation_preserves_model_facts_in_writer_and_critic_views(self):
+        from backend.agent.answer_review import prepare_review, review_input
+        from backend.agent.citation_binding import quote_field_view
+        from backend.agent.nodes.answer_evidence_context import _citation_source_item
+
+        evidence = _evidence(criterion="至少保留一条支路且公共部件正常")
+        state = _bound_state(evidence)
+        item = _citation_source_item(evidence, state)
+        self.assertEqual('model_content_only', item['metadata']['usage_scope'])
+        self.assertEqual('至少保留一条支路且公共部件正常',
+                         quote_field_view(item)['fields']['/answer_fields/success_criterion'])
+        self.assertNotIn('single_failure_boundary', item['metadata']['answer_fields'])
+        self.assertNotIn('usage_scope', evidence['metadata'])
+        self.assertIn('至少保留一条支路且公共部件正常', answer_module._format_context(state))
+        self.assertIn('model_content_only', answer_module._format_context(state))
+        prepared = prepare_review('模型有成功条件', ledger={1: item}, conversation={}, observations=[],
+                                  task={}, document_semantics='')
+        self.assertEqual('model_content_only', review_input(prepared, {1: item})['records']['1']['usage_scope'])
+
+    def test_model_fact_permission_does_not_authorize_target_failure_topology(self):
+        from backend.agent.answer_review import AnswerReviewError, prepare_review, validate_review
+        from backend.agent.nodes.answer_evidence_context import _citation_source_item
+
+        evidence = _evidence()
+        item = _citation_source_item(evidence, _bound_state(evidence))
+        draft = '模型记载成功判据为输出端可达。[^1]'
+        prepared = prepare_review(draft, ledger={1: item}, conversation={},
+                                  observations=[], task={'original_question': '说明模型条件'}, document_semantics='')
+        review = {'version': 5, 'verdict': 'pass', 'completion': 'complete', 'issues': [], 'formal_claims': []}
+        args = {'prepared': prepared, 'ledger': {1: item}, 'safety': {}, 'calculation_requests': []}
+        self.assertEqual('full', validate_review(json.dumps(review), **args)['status'])
+        review['formal_claims'] = [{'kind': 'formal_topology', 'span_id': 'p1'}]
+        with self.assertRaises(AnswerReviewError) as caught:
+            validate_review(json.dumps(review), **args)
+        self.assertIn('model_contents_do_not_authorize_applicability', caught.exception.feedback[0]['detail'])
+
+    def test_existing_typed_failure_relation_keeps_formal_permission(self):
+        from backend.agent.nodes.answer_evidence_context import _citation_source_item
+
+        evidence = _evidence(relations=[_relation()])
+        item = _citation_source_item(evidence, _bound_state(evidence))
+        self.assertNotEqual('model_content_only', item['metadata'].get('usage_scope'))
+        self.assertEqual(_relation()['statement'], item['metadata']['answer_fields']['single_failure_boundary'])
 
     def test_natural_wording_does_not_change_structured_relation_authority(self):
         relation = _relation(statement="结构化验证确认目标支路失效后模型仍成功。")

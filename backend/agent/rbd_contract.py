@@ -16,8 +16,7 @@ from collections import defaultdict
 from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 
 from backend.icp.diagram_validation import FORMAL_VALIDATION_STATUSES
-from backend.agent.current_model_selection import CONTRACT_VERSION as SELECTION_CONTRACT_VERSION
-from backend.agent.current_model_selection import selection_matches_model
+from backend.agent.current_model_selection import selection_matches_model, selection_observation
 
 
 RBD_AUTHORITY_CONTRACT_VERSION = "rbd-authority-v1"
@@ -30,14 +29,7 @@ RBD_SELECTOR_BASES = frozenset(
         "current_model_selection",
     }
 )
-# 语义模型选择服务的 ``not_represented`` 终态：用户点名的部件/失效路径在
-# 本轮候选图中未被独立建模。它与“未解析”不同——这是模型对候选集合的明确
-# 判定，允许发布确定性的否定回答（未找到该部件的直接成功路径），而不是
-# 落回“无法确认+要求图号”的澄清式空发布。
-RBD_NOT_REPRESENTED_BASE = "current_model_selection_not_represented"
-RBD_BINDING_BASES = frozenset(
-    {*RBD_SELECTOR_BASES, "explicit_model_set", RBD_NOT_REPRESENTED_BASE}
-)
+RBD_BINDING_BASES = frozenset({*RBD_SELECTOR_BASES, "explicit_model_set"})
 RBD_STABLE_ID_FIELDS = (
     "revision_id",
     "diagram_id",
@@ -52,11 +44,6 @@ RBD_BLOCK_BUSINESS_ID_FIELDS = (
     "component_id",
     "function_id",
 )
-# 跨轮终态否定锚点：上轮发布的 not_represented 结论（含其核对范围指纹）
-# 随助手消息 manifest 持久化。追问轮绑定解析失败且无候选时，用当前已发布
-# RBD 全集做指纹比对：一致则确定性恢复终态，不一致则视为过期（世界已变，
-# 不能沿用旧判定），回落正常未解析处理。
-RBD_TERMINAL_NEGATION_ANCHOR_VERSION = "rbd-terminal-negation-v1"
 
 _RBD_EXPLICIT_ID_RE = re.compile(
     r"(?<![A-Za-z0-9._-])RBD-[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?",
@@ -446,25 +433,9 @@ def bind_rbd_models(
         ]
     elif current_selection:
         selector_basis = "current_model_selection"
-        if (
-            current_selection.get("contract_version") == SELECTION_CONTRACT_VERSION
-            and current_selection.get("status") == "not_represented"
-        ):
-            # 语义选择服务明确判定：用户点名的部件/失效路径在本轮候选图中
-            # 未被独立建模。这与“未解析”不同——这是可发布的确定性否定
-            # （不能把上级模块的框图当成该部件的直接模型），不是模糊匹配
-            # 失败。绑定记录 not_represented 终态，消费方据此输出否定回答
-            # 并保留候选图的审计目录，而不是要求用户提供图号。
-            base["basis"] = RBD_NOT_REPRESENTED_BASE
-            base["current_selection"] = dict(current_selection)
-            base["not_represented_subjects"] = sorted(
-                {
-                    _text(value)
-                    for value in (current_selection.get("selections") or [])
-                    if isinstance(value, Mapping) and _text(value.get("matched_title"))
-                }
-            )
-            return [], base
+        observation = selection_observation(current_selection, copied, doc_type="rbd", query=str(raw_user_query))
+        if observation:
+            base["selection_observation"] = observation
         selected_descriptors = [
             descriptor for _, descriptor in described
             if selection_matches_model(current_selection, descriptor, query=str(raw_user_query))
@@ -590,22 +561,6 @@ def validate_rbd_binding_contract(binding: Any) -> Dict[str, Any]:
         return {"valid": False, "reason": "unknown_contract_version", "revision_ids": []}
     if binding.get("required") is not True:
         return {"valid": False, "reason": "binding_not_required", "revision_ids": []}
-    if _text(binding.get("basis")) == RBD_NOT_REPRESENTED_BASE:
-        # ``not_represented`` 是无模型的确定性终态：语义选择服务对“该部件
-        # 未被独立建模”的明确判定。它没有可绑定的 revision，验证只检查
-        # 终态字段自洽；消费方据此发布否定回答而非拓扑结论。
-        if binding.get("ambiguous") is True:
-            return {"valid": False, "reason": "not_represented_cannot_be_ambiguous", "revision_ids": []}
-        selection = binding.get("current_selection")
-        if not isinstance(selection, Mapping) or selection.get("status") != "not_represented":
-            return {"valid": False, "reason": "not_represented_selection_missing", "revision_ids": []}
-        return {
-            "valid": True,
-            "reason": "",
-            "revision_ids": [],
-            "not_represented": True,
-            "model_bindings": [],
-        }
     if binding.get("bound") is not True or binding.get("ambiguous") is True:
         return {"valid": False, "reason": "binding_not_unique", "revision_ids": []}
     basis = _text(binding.get("basis"))
@@ -1082,112 +1037,4 @@ def merge_rbd_query_bindings(first: Any, second: Any) -> Dict[str, Any]:
         "record_ids": [],
         "candidate_record_ids": candidates,
         "model_bindings": [],
-    }
-
-
-def published_rbd_universe_fingerprint(rows: Sequence[Mapping[str, Any]]) -> List[str]:
-    """Deterministic identity set of the currently published RBD universe."""
-
-    return sorted(
-        {
-            _candidate_identity(descriptor)
-            for row in rows
-            if isinstance(row, Mapping) and (descriptor := rbd_model_descriptor(row))
-        }
-    )
-
-
-def build_rbd_terminal_negation_anchor(
-    binding: Any,
-    *,
-    published_universe: Sequence[str],
-) -> Dict[str, Any] | None:
-    """Build the persistable anchor for a published not_represented turn.
-
-    只在绑定确实处于 not_represented 终态时可用。锚点携带上轮的完整
-    current_selection（闭合约形状）与已发布 RBD 全集指纹，供追问轮做
-    确定性复核；它不是结论文本的复用授权，恢复时必须重新指纹比对。
-    """
-
-    if not isinstance(binding, Mapping):
-        return None
-    if _text(binding.get("basis")) != RBD_NOT_REPRESENTED_BASE:
-        return None
-    selection = binding.get("current_selection")
-    if not isinstance(selection, Mapping) or _text(selection.get("status")) != "not_represented":
-        return None
-    universe = sorted({_text(value) for value in published_universe if _text(value)})
-    if not universe:
-        return None
-    return {
-        "kind": "terminal_negation_anchor",
-        "doc_type": "rbd",
-        "contract_version": RBD_TERMINAL_NEGATION_ANCHOR_VERSION,
-        "subject": "；".join(
-            _text(value)
-            for value in (binding.get("not_represented_subjects") or [])
-            if _text(value)
-        )[:400],
-        "question_basis": _text(selection.get("question_basis"))[:500],
-        "reason": _text(selection.get("reason"))[:800],
-        "verified_universe": universe,
-        "current_selection": {
-            "contract_version": _text(selection.get("contract_version")),
-            "status": "not_represented",
-            "question_basis": _text(selection.get("question_basis"))[:500],
-            "selections": [],
-            "reason": _text(selection.get("reason"))[:800],
-        },
-    }
-
-
-def reinstate_rbd_terminal_negation_anchor(
-    anchor: Any,
-    *,
-    published_universe: Sequence[str],
-) -> Dict[str, Any] | None:
-    """Deterministically reinstate a prior terminal negation for this turn.
-
-    复用条件全部满足才恢复：锚点形状合法（版本、终态选择、非空指纹），
-    且当前已发布 RBD 全集与上轮核对范围逐项一致。任何新发布/撤回/修订
-    都会使指纹失配——此时世界已变，旧判定不能沿用，返回 None 走正常
-    未解析路径。恢复的绑定带 anchor_provenance 供合同注明"复核一致"。
-    """
-
-    if not isinstance(anchor, Mapping):
-        return None
-    if _text(anchor.get("kind")) != "terminal_negation_anchor":
-        return None
-    if _text(anchor.get("doc_type")) != "rbd":
-        return None
-    if _text(anchor.get("contract_version")) != RBD_TERMINAL_NEGATION_ANCHOR_VERSION:
-        return None
-    selection = anchor.get("current_selection")
-    if not isinstance(selection, Mapping) or _text(selection.get("status")) != "not_represented":
-        return None
-    verified = sorted({_text(value) for value in anchor.get("verified_universe") or [] if _text(value)})
-    current = sorted({_text(value) for value in published_universe if _text(value)})
-    if not verified or verified != current:
-        return None
-    return {
-        "contract_version": RBD_AUTHORITY_CONTRACT_VERSION,
-        "required": True,
-        "bound": False,
-        "ambiguous": False,
-        "basis": RBD_NOT_REPRESENTED_BASE,
-        "record_ids": [],
-        "candidate_record_ids": list(current),
-        "model_bindings": [],
-        "current_selection": dict(selection),
-        "not_represented_subjects": [
-            _text(value)
-            for value in ([anchor.get("subject")] if _text(anchor.get("subject")) else [])
-        ],
-        # 恢复轮同样携带全集指纹，使锚点可以跨多轮追问连续再持久化。
-        "published_universe_fingerprint": list(current),
-        "anchor_provenance": {
-            "kind": "prior_turn_terminal_negation",
-            "question_basis": _text(anchor.get("question_basis"))[:500],
-            "reverified_universe": list(current),
-        },
     }

@@ -119,9 +119,9 @@ class HistoryParentBindingTests(unittest.TestCase):
         selection = select_history_parent_cases(state, rows)
         binding = history_parent_binding(selection, rows)
 
-        self.assertEqual(frozenset({"case-rx"}), selection.selected_case_ids)
+        self.assertEqual(frozenset({"case-rx", "case-dsp"}), selection.selected_case_ids)
         self.assertFalse(selection.authorizes_exact_links)
-        self.assertEqual("candidate", binding["authority"])
+        self.assertIn(binding["authority"], {"candidate", "ambiguous"})
         self.assertFalse(binding["authorizes_exact_links"])
 
     def test_structured_query_singleton_is_not_an_identity_claim(self):

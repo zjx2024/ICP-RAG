@@ -1,4 +1,4 @@
-"""Read-only critique/one revision. Fixtures test contracts, not model quality."""
+"""Serving v5 contracts and node lifecycle; model quality is measured separately."""
 import asyncio
 import copy
 import json
@@ -8,500 +8,446 @@ from contextlib import ExitStack
 from unittest.mock import AsyncMock, patch
 
 from backend.agent import answer_observation, answer_review as protocol, tracing
-from backend.agent.contracts import make_evidence
 from backend.agent.nodes import answer
 from backend.agent.nodes.answer_request import _answer_task_context
+from scripts.replay_icp_review import replay
+from tests.legacy_review_fixtures import state_for
 
 TEXT = "输出更新时间滞后。"
-SOURCE = "e1:/answer_fields/local_impact"
+DRAFT = TEXT + "[^1]"
 
 
-def state_for(doc_type="fmeca", **changes):
-    item = make_evidence(source_kind="postgres", authority="authoritative_record", evidence_level="L1_DIRECT",
-        claim_type={"hmc": "hmc_fault", "rbd": "rbd_structure"}.get(doc_type, doc_type + "_fact"),
-        doc_type=doc_type, doc_id="document-57", record_id="ROW-731", title="本轮对象",
-        content=TEXT, metadata={"answer_fields": {"local_impact": TEXT}})
-    item.update(changes)
-    return {"query": "为什么它重要？最先受影响的是什么？", "messages": [],
-        "evidence_registry": [item], "context_evidence_ids": [item["evidence_id"]],
-        "safety_decision": {"approved_evidence_ids": [item["evidence_id"]], "can_claim_unique": False}}
+def response(*, issues=(), formal_claims=(), verdict="pass", completion="complete"):
+    return {"version": 5, "verdict": verdict, "completion": completion,
+            "issues": list(issues), "formal_claims": list(formal_claims)}
 
 
-def check(**changes):
-    value = {"unit_id": "u1", "sources": [SOURCE], "claims": ["source_fact"],
-             "attributed_doc_types": [], "issue": ""}
-    value.update(changes)
-    return value
+def issue(kind="factual", quote="", reason="把其他故障的方法归给当前记录", requirement=""):
+    return {"kind": kind, "span_ids": ["p1"] if quote else [], "reason": reason,
+            "requirement": requirement, "citation_ids": []}
 
 
-def response(*units, status="answered"):
-    return {"version": 2, "units": list(units) or [check()],
-            "goals": [{"goal_id": "q0", "status": status, "issue": ""}]}
-
-
-def prepared(state, draft=TEXT):
+def prepared(state, draft=DRAFT):
     ledger, conversation, observations = answer._answer_review_material(state)
-    material = protocol.prepare_review(draft, ledger=ledger, conversation=conversation,
-        observations=observations, task=_answer_task_context(state), document_semantics=answer.document_semantics_prompt())
+    material = protocol.prepare_review(draft, ledger=ledger, conversation=conversation, observations=observations,
+        task=_answer_task_context(state), document_semantics=answer.document_semantics_prompt())
     return material, ledger
 
 
-def validate(value, state=None, draft=TEXT):
+def validate(value=None, state=None, draft=DRAFT):
     state = state or state_for()
     material, ledger = prepared(state, draft)
-    return protocol.validate_review(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False),
+    return protocol.validate_review(json.dumps(response() if value is None else value, ensure_ascii=False),
         prepared=material, ledger=ledger, safety=state.get("safety_decision") or {},
         calculation_requests=state.get("calculation_requests") or [])
 
 
-def node_run(state=None, review=None, *, draft=TEXT, revision=None, second_review=None,
-             third_revision=None, third_review=None, config=None, observed=False):
-    state = state or state_for()
-    outputs = [draft, json.dumps(review if review is not None else response(), ensure_ascii=False)]
+def node_run(state=None, review=None, *, draft=DRAFT, revision=None, second_review=None, config=None, observed=False):
+    outputs = [draft, json.dumps(response() if review is None else review, ensure_ascii=False)]
     if revision is not None:
-        outputs += [revision, json.dumps(second_review if second_review is not None else response(), ensure_ascii=False)]
-    if third_revision is not None:
-        outputs += [third_revision, json.dumps(third_review if third_review is not None else response(), ensure_ascii=False)]
+        outputs += [revision, json.dumps(response() if second_review is None else second_review, ensure_ascii=False)]
+    sequence = iter(outputs)
+    def next_response(*_args, **_kwargs):
+        try:
+            return next(sequence)
+        except StopIteration:
+            raise AssertionError("Unexpected extra model call") from None
     with ExitStack() as stack:
         stack.enter_context(patch.object(answer, "_with_answer_evidence_rerank", new=AsyncMock(side_effect=lambda x: x)))
         stack.enter_context(patch.object(answer.agent_model_role_service, "apply_agent_llm_params",
             return_value={"provider": "ollama", "model_name": "review-fixture", "num_predict": 1200, "max_tokens": 4096}))
-        call = stack.enter_context(patch.object(answer.llm_service, "call_model", side_effect=outputs))
+        call = stack.enter_context(patch.object(answer.llm_service, "call_model", side_effect=next_response))
         async def stream(messages, model):
             yield answer.llm_service.call_model(messages, model)
         stack.enter_context(patch.object(answer.llm_service, "stream_model", side_effect=stream))
         captured = stack.enter_context(answer_observation.observe_answers()) if observed else None
-        result = asyncio.run(answer.answer_node(copy.deepcopy(state), config))
+        result = asyncio.run(answer.answer_node(copy.deepcopy(state or state_for()), config))
         return result, call.call_args_list, captured
 
 
-class ReviewProtocolTests(unittest.TestCase):
-    def test_valid_and_rephrased_answers_preserve_writer_text(self):
-        for draft in (TEXT, "数据新鲜度因此下降。", "The output is no longer fresh.", "使用方拿到的是较早时刻的数值。"):
-            result = validate(response(), draft=draft)
-            self.assertEqual(draft + "[^1]", result["text"])
-            self.assertEqual("full", result["status"])
-            self.assertEqual("answer", result["manifest"][0]["evidence_scope"])
+class WholeAnswerReviewTests(unittest.TestCase):
+    def test_quoted_review_reasons_survive_without_length_or_vocabulary_rules(self):
+        for reason in ('资料写「更新时间滞后」，不支持完全丧失。',
+                       'The source says "delayed", not "lost".',
+                       '该条件尚未得到证据支持。' * 100):
+            with self.subTest(reason=reason[:30]), self.assertRaises(protocol.AnswerReviewError) as caught:
+                validate(response(verdict='revise', issues=[issue(quote=DRAFT, reason=reason)]))
+            self.assertEqual('review_rejected', caught.exception.code)
+            self.assertEqual(reason, caught.exception.feedback[0]['detail'])
 
-    def test_lossy_planning_cannot_drop_whole_original_question(self):
-        state = state_for()
-        state["dialogue_context"] = {"status": "resolved", "requested_facets": ["未收录于字段目录的新目标"]}
-        self.assertEqual(state["query"], prepared(state)[0]["goals"]["q0"])
-        with self.assertRaises(protocol.AnswerReviewError):
-            validate(response(), state)
-        value = response()
-        value["goals"].append({"goal_id": "q1", "status": "answered", "issue": ""})
-        self.assertEqual("full", validate(value, state)["status"])
-
-    def test_malformed_duplicate_nonfinite_old_protocol_fails(self):
-        for raw in ('{"version":2', "已检查", "[AI调用失败]", "", '{"version":2,"version":2}',
-                    '{"x":NaN}', '{"x":Infinity}', "[]", '{"version":1,"coverage_checked":true}'):
-            with self.subTest(raw=raw), self.assertRaises(protocol.AnswerReviewError):
-                validate(raw)
-
-    def test_missing_extra_or_critic_text_fields_fail(self):
-        for key in response():
-            value = response()
-            del value[key]
-            with self.subTest(key=key), self.assertRaises(protocol.AnswerReviewError):
-                validate(value)
-        for key in check():
-            value = response()
-            del value["units"][0][key]
-            with self.subTest(key=key), self.assertRaises(protocol.AnswerReviewError):
-                validate(value)
-        for key in ("text", "bindings", "kind", "history_bindings"):
-            with self.subTest(key=key), self.assertRaises(protocol.AnswerReviewError):
-                validate(response(check(**{key: "cannot publish critic text"})))
-
-    def test_every_paragraph_checked_without_reverse_goal_lists(self):
-        draft = TEXT + "\n\n须人工复核正式程序。"
-        value = response(check(), check(unit_id="u2", sources=["policy:safety"], claims=["policy"]))
-        self.assertIn("须人工复核", validate(value, draft=draft)["text"])
-        with self.assertRaises(protocol.AnswerReviewError):
-            validate(response(), draft=draft)
-
-    def test_nonfactual_heading_needs_review_but_not_invented_source(self):
-        value = response(check(unit_id="u1", sources=[], claims=["presentation"]), check(unit_id="u2"))
-        self.assertIn("几点说明：", validate(value, draft="几点说明：\n" + TEXT)["text"])
-        value["units"][0]["issue"] = "这一行夹带了未核验的工程断言。"
-        with self.assertRaises(protocol.AnswerReviewError):
-            validate(value, draft="几点说明：\n" + TEXT)
-
-    def test_unknown_duplicate_units_goals_and_status_fail(self):
-        for value in (response(check(unit_id="u99")), response(check(), check()), response(check(unit_id=True)),
-                      response(status="looks_good")):
-            with self.assertRaises(protocol.AnswerReviewError):
-                validate(value)
-        value = response()
-        value["goals"][0]["goal_id"] = "q9"
-        with self.assertRaises(protocol.AnswerReviewError):
-            validate(value)
-
-    def test_unknown_unapproved_or_hidden_sources_fail(self):
-        for sid in ("e99:/content", "e1:/hidden", True, 1):
-            with self.subTest(sid=sid), self.assertRaises(protocol.AnswerReviewError):
-                validate(response(check(sources=[sid])))
-        state = state_for()
-        state["safety_decision"]["approved_evidence_ids"] = []
-        with self.assertRaises(protocol.AnswerReviewError):
-            validate(response(), state)
-        self.assertEqual(TEXT, prepared(state_for())[0]["sources"][SOURCE]["quote"])
-
-    def test_inline_citation_must_match_selected_record(self):
-        # Draft citation numbers are provisional and may be stale after a
-        # reranked/revision evidence window.  The critic's selected handles
-        # own the final citation mapping, so both markers are replaced.
-        for draft in (TEXT + "[^99]", TEXT + "[^0]"):
-            self.assertEqual(TEXT + "[^1]", validate(response(), draft=draft)["text"])
-        self.assertEqual(TEXT + "[^1]", validate(response(), draft=TEXT + "[^1]")["text"])
-
-    def test_critic_owns_final_citations_not_two_independent_numbering_contracts(self):
-        state = state_for()
-        item = copy.deepcopy(state["evidence_registry"][0])
-        item.update(evidence_id="neighbor", record_id="ROW-947")
-        state["evidence_registry"].append(item)
-        state["context_evidence_ids"].append("neighbor")
-        state["safety_decision"]["approved_evidence_ids"].append("neighbor")
-        self.assertEqual("ROW-731 " + TEXT + "[^1]", validate(response(), state, draft="ROW-731 " + TEXT + "[^2]")["text"])
-        with self.assertRaises(protocol.AnswerReviewError):
-            validate(response(), state, draft="ROW-947 " + TEXT + "[^2]")
-
-    def test_explicit_source_owner_matches_bound_document_type(self):
-        with self.assertRaises(protocol.AnswerReviewError):
-            validate(response(check(attributed_doc_types=["mfl"])), draft="维修清单记录：" + TEXT)
-        self.assertEqual("full", validate(response(check(attributed_doc_types=["fmeca"])), draft="FMECA 记录：" + TEXT)["status"])
-
-    def test_neighbor_row_with_identical_words_is_not_same_record(self):
-        state = state_for()
-        item = copy.deepcopy(state["evidence_registry"][0])
-        item.update(record_id="ROW-947", evidence_id="neighbor")
-        state["evidence_registry"].append(item)
-        state["context_evidence_ids"].append("neighbor")
-        state["safety_decision"]["approved_evidence_ids"].append("neighbor")
-        with self.assertRaises(protocol.AnswerReviewError):
-            validate(response(), state, draft="ROW-947 " + TEXT)
-
-    def test_user_grounded_identity_adds_its_offered_owner_handle(self):
-        ledger = {
-            1: {"record_id": "MOD-GPP-MSM"},
-            2: {"record_id": "FUNC-230"},
-        }
-        offered = {
-            "e1:/record_id": {"quote": "MOD-GPP-MSM"},
-            "e2:/record_id": {"quote": "FUNC-230"},
-        }
-        selected = protocol._augment_exact_identity_sources(
-            "MOD-GPP-MSM " + TEXT,
-            ["e2:/record_id"],
-            ledger,
-            offered,
-            "MOD-GPP-MSM 为什么重要？",
-        )
-        self.assertEqual(["e2:/record_id", "e1:/record_id"], selected)
-        # An ungrounded neighboring ID is not mechanically promoted.
-        self.assertEqual(
-            ["e1:/record_id"],
-            protocol._augment_exact_identity_sources(
-                "FUNC-230 " + TEXT, ["e1:/record_id"], ledger, offered,
-                "MOD-GPP-MSM 为什么重要？",
-            ),
-        )
-
-    def test_random_exact_ids_not_fixed_test_values(self):
-        rng = random.Random(9843)
-        for _ in range(12):
-            code = f"ROW-{rng.randrange(10000, 99999)}"
-            state = state_for(record_id=code)
-            self.assertIn(code, validate(response(), state, draft=code + TEXT)["text"])
-            with self.assertRaises(protocol.AnswerReviewError):
-                validate(response(), state, draft=code + "9" + TEXT)
-
-    def test_unknown_api_code_leading_zero_and_wildcard_identity(self):
-        state = state_for(record_id="87654321**0001")
-        self.assertIn("87654321**0001", validate(response(), state, draft="87654321**0001 " + TEXT)["text"])
-        for draft in ("87654321**001 " + TEXT, "ROW-947 " + TEXT, "调用 GetUnrecordedStatus。", "报码 76543210**0001。"):
-            with self.subTest(draft=draft), self.assertRaises(protocol.AnswerReviewError):
-                validate(response(), state, draft=draft)
-
-    def test_hmc_fault_cannot_borrow_hidden_maintenance(self):
-        state = state_for("hmc", metadata={"answer_fields": {"fault_symptom": "钳位", "maintenance_action": "更换板卡"}})
-        with self.assertRaises(protocol.AnswerReviewError):
-            validate(response(check(sources=["e1:/answer_fields/maintenance_action"])), state, draft="更换板卡。")
-
-    def test_semantic_feedback_points_to_unit_and_omitted_goal(self):
-        value = response(check(sources=[], claims=[], issue="把另一行检测方法当成当前故障处理。"))
-        value["goals"][0]["issue"] = "未说明排除板卡的观测依据。"
+    def test_unescaped_review_quote_is_not_silently_repaired_or_accepted(self):
+        material, ledger = prepared(state_for())
+        raw = json.dumps(response(verdict='revise', issues=[issue(quote=DRAFT, reason='source "delayed"')]))
         with self.assertRaises(protocol.AnswerReviewError) as caught:
-            validate(value)
-        self.assertEqual(["u1", "q0"], [f["location"] for f in caught.exception.feedback])
-        self.assertIn("排除板卡", caught.exception.feedback[1]["detail"])
+            protocol.validate_review(raw.replace('\\"delayed\\"', '"delayed"'), prepared=material,
+                                     ledger=ledger, safety={}, calculation_requests=[])
+        self.assertEqual('invalid_review_json', caught.exception.code)
 
-    def test_disclaimer_is_never_exempt_from_review(self):
-        value = response(check(sources=["policy:safety"], claims=["policy"], issue="免责句夹带无依据的故障结论。"))
-        with self.assertRaises(protocol.AnswerReviewError):
-            validate(value, draft="仅供参考；该板已经确定损坏。")
-        value["units"][0]["issue"] = ""
-        value["goals"][0]["issue"] = "只有免责声明，未回应所问影响。"
-        with self.assertRaises(protocol.AnswerReviewError):
-            validate(value, draft="仅供参考。")
+    def test_semantic_feedback_preserves_review_coordinates_without_selecting_sources(self):
+        finding = {**issue(quote=DRAFT, reason='来源描述更新时间滞后，不支持完全丧失；应保留原失效程度。'),
+                   'citation_ids': [1]}
+        with self.assertRaises(protocol.AnswerReviewError) as caught:
+            validate(response(verdict='revise', issues=[finding]))
+        feedback = caught.exception.feedback[0]
+        self.assertEqual(['p1'], feedback['span_ids'])
+        self.assertEqual([1], feedback['citation_ids'])
+        self.assertEqual(DRAFT, feedback['text'])
+        self.assertEqual(finding['reason'], feedback['detail'])
+        finding['citation_ids'].clear()
+        self.assertEqual([1], feedback['citation_ids'])
+        self.assertNotIn('replacement', feedback)
 
-    def test_history_cannot_prove_current_fact(self):
-        state = state_for()
-        state["messages"] = [{"role": "assistant", "content": TEXT}]
-        with self.assertRaises(protocol.AnswerReviewError):
-            validate(response(check(sources=["history:h0"])), state)
-        self.assertNotIn("[^", validate(response(check(sources=["history:h0"], claims=["conversation"])),
-                         state, draft="此前提到过输出更新时间滞后。")["text"])
-
-    def test_long_history_binding_does_not_retruncate_selected_identity(self):
-        state = state_for()
-        state["messages"] = [{"role": "assistant", "content": "很长的背景。" * 350 + " ROW-845。"}]
-        value = response(check(sources=["history:h0"], claims=["conversation"]))
-        self.assertIn("ROW-845", validate(value, state, draft="此前讨论过 ROW-845。")["text"])
-
-    def test_nonengineering_sources_cannot_replace_each_other(self):
-        for claim in ("query_status", "conversation", "source_fact", "formal_topology"):
-            with self.subTest(claim=claim), self.assertRaises(protocol.AnswerReviewError):
-                validate(response(check(sources=["policy:safety"], claims=[claim])))
-
-    def test_scoped_negative_boundary_can_be_full_or_partial(self):
-        state = state_for()
-        state["requested_source_tools"] = ["fault_history_query"]
-        material, _ = prepared(state)
-        sid = next(s for s, v in material["sources"].items()
-                   if v.get("category") == "query_coverage" and v["quote"] == "not_queried")
-        value = response(check(sources=[sid], claims=["query_status"]))
-        self.assertEqual("full", validate(value, state, draft="本轮尚未查询历史资料。")["status"])
-        value["goals"][0]["status"] = "partial"
-        self.assertEqual("partial", validate(value, state, draft="本轮尚未查询历史资料。")["status"])
-
-    def test_unconfirmed_relation_does_not_establish_source_absence(self):
-        state = state_for()
-        state["hmc_mfl_binding"] = {"required": True, "bound": False, "hmc_codes": ["87654321**0001"]}
-        relation = next(o for o in answer._answer_review_material(state)[2] if o["category"] == "source_relation")
-        self.assertEqual("false", relation["fields"]["/bound"])
-        self.assertIn("不证明原文", relation["fields"]["/meaning"])
-
-    def test_selected_continuation_identity_can_bind_query_boundary_only(self):
-        state = state_for()
-        state["selected_conversation_anchors"] = [{
-            "anchor_id": "anchor-1",
-            "doc_type": "fmeca",
-            "record_id": "ROW-731",
-            "title": "本轮对象",
-            "answer_fields": {"record_id": "ROW-731"},
-        }]
-        material, _ = prepared(state)
-        target = next(
-            sid for sid, source in material["sources"].items()
-            if source.get("category") == "target_binding"
-        )
-        value = response(check(sources=[target], claims=["query_status"]))
-        self.assertEqual(
-            "full",
-            validate(value, state, draft="当前目标 ROW-731 的本轮查询边界已明确。") ["status"],
-        )
-
-    def test_resource_bounds(self):
-        for draft in ("字" * 4001, "\n".join([TEXT] * 41)):
-            with self.assertRaises(protocol.AnswerReviewError):
-                validate(response(), draft=draft)
-
-    def test_footnotes_are_reviewed_not_rejected_or_deleted_by_format(self):
-        draft = TEXT + "[^1]\n\n[^1]: 记录来源说明。"
-        material, _ = prepared(state_for(), draft)
-        self.assertEqual(2, len(material["units"]))
-        value = response(check(), check(unit_id="u2", issue="来源说明不能由该字段证明。"))
+    def test_semantic_binding_and_formal_issues_are_returned_together(self):
+        draft = 'OTHER-918 的输出必然停止。[^1]\n另一个结论。[^99]'
+        value = response(verdict='revise', issues=[issue(quote=draft, reason='资料未证明必然停止')],
+                         formal_claims=[{'span_id': 'p1', 'kind': 'current_unique_diagnosis'},
+                                        {'span_id': 'p2', 'kind': 'formal_calculation'}])
         with self.assertRaises(protocol.AnswerReviewError) as caught:
             validate(value, draft=draft)
-        self.assertEqual("u2", caught.exception.feedback[0]["location"])
+        details = '\n'.join(row['detail'] for row in caught.exception.feedback)
+        for expected in ('资料未证明必然停止', 'OTHER-918', '[^99]', 'blocked_claim',
+                         'unknown_formal_claim_citation'):
+            self.assertIn(expected, details)
+        self.assertEqual('review_rejected', caught.exception.code)
 
-    def test_exact_source_definition_keeps_its_label_and_cannot_invent_locator(self):
-        state = state_for(source_ref="source.docx#table=2;row=3")
-        draft = TEXT + "[^1]\n\n[^1]: source.docx#table=2;row=3"
-        value = response(check(), check(unit_id="u2", sources=[], claims=["presentation"]))
-        self.assertEqual(draft, validate(value, state, draft)["text"])
-        with self.assertRaises(protocol.AnswerReviewError):
-            validate(value, state, draft.replace("row=3", "row=4"))
+    def test_unverified_review_remains_unverified_even_with_binding_feedback(self):
+        with self.assertRaises(protocol.AnswerReviewError) as caught:
+            validate(response(verdict='unverified'), draft='OTHER-918。[^1]')
+        self.assertEqual('review_unverified', caught.exception.code)
+        self.assertIn('OTHER-918', caught.exception.feedback[0]['detail'])
 
-    def test_prior_delivery_is_preserved_but_not_an_engineering_source(self):
+    def test_ordinary_joint_citations_do_not_override_wrong_row_or_version_review(self):
+        from backend.agent.tools.icp_diagnosis import _direct_evidence
+        items = _direct_evidence('function_locator', [
+            {'doc_id': 'manual', 'content_type': 'function_component', 'component_id': 'MOD-019',
+             'name': '数据模块', 'description': '保存配置'},
+            {'doc_id': 'manual', 'function_id': 'FUNC-8X', 'module_id': 'MOD-019',
+             'module_name': '数据模块', 'function_name': '读取配置'},
+        ])
         state = state_for()
-        state["messages"] = [{"role": "assistant", "content": TEXT, "answer_delivery_manifest": [
-            {"kind": "goal_delivery", "goal": "此前所问", "status": "answered", "evidence_ids": ["old-evidence"]}]}]
-        source = prepared(state)[0]["sources"]["history:h0"]
-        self.assertEqual("此前所问", source["prior_delivery"][0]["goal"])
-        with self.assertRaises(protocol.AnswerReviewError):
-            validate(response(check(sources=["history:h0"])), state)
-
-    def test_unique_diagnosis_requires_permission_for_any_wording(self):
-        for draft in ("仅此一种可能。", "问题已锁定。", "No alternatives remain."):
+        state.update(evidence_registry=items, context_evidence_ids=[i['evidence_id'] for i in items],
+                     safety_decision={'approved_evidence_ids': [i['evidence_id'] for i in items]})
+        draft = 'MOD-019 提供FUNC-8X。[^1][^2]'
+        self.assertEqual(draft, validate(state=state, draft=draft)['text'])
+        for reason in ('关联部件并不证明可借用邻居故障行的方法', '文档版本不兼容，不能联合断言',
+                       '同属一个系统不能证明必然因果'):
             with self.assertRaises(protocol.AnswerReviewError):
-                validate(response(check(claims=["unique_diagnosis"])), draft=draft)
+                validate(response(verdict='revise', issues=[issue(quote=draft, reason=reason)]), state, draft)
 
-    def test_all_formal_claims_respect_blocked_and_unvalidated_evidence(self):
-        for claim in ("formal_topology", "formal_calculation", "formal_numeric_result", "unique_diagnosis"):
-            for status in ("provisional", "quarantined"):
-                state = state_for(review_status=status)
-                state["safety_decision"]["can_claim_unique"] = True
-                with self.subTest(claim=claim, status=status), self.assertRaises(protocol.AnswerReviewError):
-                    validate(response(check(claims=[claim])), state)
-            state = state_for()
-            state["safety_decision"]["blocked_claims"] = [claim]
+    def test_binding_revision_feedback_identifies_text_code_and_owned_citations(self):
+        with self.assertRaises(protocol.AnswerReviewError) as caught:
+            validate(draft='OTHER-918 的输出滞后。[^1]')
+        feedback = caught.exception.feedback[0]
+        self.assertEqual('OTHER-918 的输出滞后。[^1]', feedback['text'])
+        self.assertIn('OTHER-918', feedback['detail'])
+        self.assertIn('[^1]', feedback['detail'])
+        self.assertEqual('review_rejected', caught.exception.code)
+
+    def test_writer_owns_bytes_and_refs_not_critic(self):
+        for draft in (DRAFT, "数据新鲜度下降。[^1]", "**ROW-731** " + DRAFT, "The output is stale.[^1]"):
+            self.assertEqual(draft, validate(draft=draft)["text"])
+        for number in (0, 99):
             with self.assertRaises(protocol.AnswerReviewError):
-                validate(response(check(claims=[claim])), state)
+                validate(draft=TEXT + f"[^{number}]")
 
+    def test_review_has_no_per_unit_proof_and_no_source_reassignment(self):
+        schema = protocol.review_schema()
+        self.assertNotIn("units", schema["properties"])
+        self.assertNotIn("goals", schema["properties"])
+        self.assertEqual([5], schema["properties"]["version"]["enum"])
+        value = response()
+        value["text"] = "critic replacement"
+        with self.assertRaises(protocol.AnswerReviewError):
+            validate(value)
 
-class CalculationReviewTests(unittest.TestCase):
-    def calculation(self, doc_type="rbd"):
-        state = state_for(doc_type, authority="deterministic_derivation", claim_type=doc_type + "_calculation",
-            metadata={"answer_fields": {}, "calculation": {"reliability": 0.91827}, "numeric_complete": True})
-        state["calculation_requests"] = ["rbd_reliability" if doc_type == "rbd" else "fta_probability"]
-        return state, response(check(sources=["e1:/calculation/reliability"],
-                                     claims=["formal_calculation", "formal_numeric_result"]))
+    def test_raw_question_remains_goal_planner_only_hints(self):
+        state = state_for()
+        state["dialogue_context"] = {"requested_facets": ["列举全部参数"]}
+        material, ledger = prepared(state)
+        self.assertEqual(state["query"], material["original_question"])
+        self.assertEqual(["列举全部参数"], material["planning_hints"])
+        self.assertIn("ROW-731", json.dumps(protocol.review_input(material, ledger)))
+        fabricated_goal = response(verdict="revise", issues=[issue("task", requirement="列举全部参数")])
+        with self.assertRaises(protocol.AnswerReviewError) as caught:
+            validate(fabricated_goal, state)
+        self.assertEqual("issue_not_grounded_in_user_request", caught.exception.code)
 
-    def test_authorized_deterministic_result_and_equivalent_scientific_notation(self):
-        for doc_type in ("rbd", "fta"):
-            state, value = self.calculation(doc_type)
-            for number in ("0.91827", "9.1827e-1"):
-                self.assertEqual("full", validate(value, state, draft=f"结果 {number}。")["status"])
+    def test_true_omission_revises_but_optional_advice_does_not(self):
+        state = state_for()
+        omission = response(verdict="revise", issues=[issue("task", requirement="最先受影响的是什么")])
+        with self.assertRaises(protocol.AnswerReviewError) as caught:
+            validate(omission, state)
+        self.assertEqual("review_rejected", caught.exception.code)
+        good = validate(response(issues=[issue("quality", reason="可以补充非必要背景")]))
+        self.assertEqual("full", good["status"])
+        self.assertEqual(1, len(good["quality_suggestions"]))
 
-    def test_missing_wrong_cutset_only_authorization_and_hidden_source_fact_fail(self):
-        for doc_type, auth in (("rbd", []), ("rbd", ["fta_probability"]), ("fta", ["fta_cut_sets"])):
-            state, value = self.calculation(doc_type)
-            state["calculation_requests"] = auth
+    def test_partial_is_honest_gap_not_permission_for_factual_error(self):
+        self.assertEqual("partial", validate(response(completion="partial"))["status"])
+        for verdict in ("pass", "revise"):
             with self.assertRaises(protocol.AnswerReviewError):
-                validate(value, state, draft="结果 0.91827。")
-        state, value = self.calculation()
-        state["calculation_requests"] = []
-        value["units"][0]["claims"] = ["source_fact"]
-        with self.assertRaises(protocol.AnswerReviewError):
-            validate(value, state, draft="结果 0.91827。")
+                validate(response(completion="partial", verdict=verdict, issues=[issue()]))
 
-    def test_cutsets_have_their_separate_permission(self):
-        state, value = self.calculation("fta")
-        state["calculation_requests"] = ["fta_cut_sets"]
-        state["evidence_registry"][0]["metadata"]["calculation"] = {"minimal_cut_sets": [["EVENT-81"]]}
-        value["units"][0].update(sources=["e1:/calculation/minimal_cut_sets/0/0"], claims=["formal_calculation"])
-        self.assertEqual("full", validate(value, state, draft="最小割集为 EVENT-81。")["status"])
+    def test_protocol_errors_or_empty_verdict_never_release(self):
+        for value in ({}, [], {"version": 4}, response(verdict="unverified"),
+                      response(verdict="revise"), response(issues=[{**issue(), "span_ids": ["p999"]}]),
+                      response(issues=[issue("task")])):
+            with self.subTest(value=value), self.assertRaises(protocol.AnswerReviewError):
+                validate(value)
+        material, ledger = prepared(state_for())
+        for raw in ('{"version":5', '{"version":5,"version":5}', '{"x":NaN}', "[]", "已通过"):
+            with self.assertRaises(protocol.AnswerReviewError):
+                protocol.validate_review(raw, prepared=material, ledger=ledger, safety={}, calculation_requests=[])
 
-    def test_incomplete_numeric_and_missing_calculation_claim_fail(self):
-        state, value = self.calculation()
-        state["evidence_registry"][0]["metadata"]["numeric_complete"] = False
-        with self.assertRaises(protocol.AnswerReviewError):
-            validate(value, state, draft="结果 0.91827。")
-        state, value = self.calculation()
-        value["units"][0]["claims"] = ["formal_numeric_result"]
-        with self.assertRaises(protocol.AnswerReviewError):
-            validate(value, state, draft="结果 0.91827。")
+    def test_hashes_bind_review_to_exact_draft_and_evidence(self):
+        for change in ("draft", "source"):
+            material, ledger = prepared(state_for())
+            if change == "draft":
+                material["draft"] += "新增内容"
+            else:
+                ledger[1]["metadata"]["answer_fields"]["local_impact"] = "changed"
+            with self.assertRaises(protocol.AnswerReviewError):
+                protocol.validate_review(json.dumps(response()), prepared=material, ledger=ledger, safety={}, calculation_requests=[])
 
-    def test_invented_prefix_integer_or_exponent_cannot_borrow_true_number(self):
-        state, value = self.calculation()
-        for number in ("0.99999", "0.91", "1", "9.1827e-2"):
-            with self.subTest(number=number), self.assertRaises(protocol.AnswerReviewError):
-                validate(value, state, draft=f"结果 {number}。")
+    def test_random_wrong_rows_cannot_be_borrowed(self):
+        rng = random.Random(501)
+        for _ in range(12):
+            code = f"FAULT-{rng.randrange(10000, 99999)}"
+            state = state_for(record_id=code)
+            self.assertEqual("full", validate(state=state, draft=code + DRAFT)["status"])
+            with self.assertRaises(protocol.AnswerReviewError):
+                validate(state=state, draft=code + "9 " + DRAFT)
+
+    def test_exact_api_codes_wildcards_and_markdown(self):
+        state = state_for(record_id="87654321**0001")
+        self.assertEqual("full", validate(state=state, draft="87654321**0001 " + DRAFT)["status"])
+        for text in ("87654321**001", "76543210**0001", "GetUnrecordedStatus"):
+            with self.assertRaises(protocol.AnswerReviewError):
+                validate(state=state, draft=text + " " + DRAFT)
+        for draft in ("**说明\nROW-731** " + DRAFT, "* 本轮\n    * **ROW-731** " + DRAFT,
+                      "**ROW-731 " + DRAFT + "**"):
+            self.assertEqual(draft, validate(draft=draft)["text"])
+
+    def test_provisional_and_model_only_allow_quoted_facts_not_formal_assertions(self):
+        for meta in ({"validation_status": "provisional"}, {"usage_scope": "model_content_only"}):
+            state = state_for("rbd")
+            state["evidence_registry"][0]["metadata"].update(meta)
+            ledger = {1: state["evidence_registry"][0]}
+            material = protocol.prepare_review(DRAFT, ledger=ledger, conversation={}, observations=[],
+                task={"original_question": "描述模型自身记载，不证明实际故障。"}, document_semantics="")
+            def review(value):
+                return protocol.validate_review(json.dumps(value), prepared=material, ledger=ledger,
+                    safety=state["safety_decision"], calculation_requests=[])
+            self.assertEqual("full", review(response())["status"])
+            for kind in protocol.FORMAL_CLAIMS:
+                with self.subTest(meta=meta, kind=kind), self.assertRaises(protocol.AnswerReviewError):
+                    review(response(formal_claims=[{"span_id": "p1", "kind": kind}]))
+
+    def test_unique_and_deterministic_permissions_are_code_owned(self):
+        for kind in ("current_unique_diagnosis", "formal_calculation", "formal_numeric_result"):
+            with self.assertRaises(protocol.AnswerReviewError):
+                validate(response(formal_claims=[{"span_id": "p1", "kind": kind}]))
+        state = state_for()
+        state["safety_decision"]["can_claim_unique"] = True
+        self.assertEqual("full", validate(response(formal_claims=[{"span_id": "p1", "kind": "current_unique_diagnosis"}]), state)["status"])
+        state["safety_decision"]["blocked_claims"] = ["unique_diagnosis"]
         with self.assertRaises(protocol.AnswerReviewError):
-            validate(response(check(claims=["formal_calculation"])))
+            validate(response(formal_claims=[{"span_id": "p1", "kind": "current_unique_diagnosis"}]), state)
+
+    def test_negative_semantic_findings_never_publish_as_quality_or_partial(self):
+        for reason in (
+            "将输入钳位错行解释为采样饱和", "混入邻居报码接口", "将FMECA事实冒称MFL",
+            "用历史恢复结果授权当前继续运行", "把未知阶段扩大为任何阶段停机",
+            "仅据结构数量证明主要可靠度贡献", "上轮案例条件与当前现象冲突",
+            "有字段却宣称资料没有", "把未确认跨表关系变成没有API",
+        ):
+            with self.subTest(reason=reason), self.assertRaises(protocol.AnswerReviewError):
+                validate(response(verdict="revise", issues=[issue(reason=reason)]))
+
+    def test_current_approved_ledger_filters_stale_wrong_revision_anchors(self):
+        state = state_for()
+        state["selected_conversation_anchors"] = [{"record_id": "ROW-999", "revision_id": "old"}]
+        self.assertNotIn("ROW-999", {v["record_id"] for v in prepared(state)[1].values()})
+        with self.assertRaises(protocol.AnswerReviewError):
+            validate(state=state, draft="ROW-999 " + DRAFT)
+        state["safety_decision"]["approved_evidence_ids"] = []
+        with self.assertRaises(protocol.AnswerReviewError):
+            validate(state=state)
 
 
 class AnswerEntryTests(unittest.TestCase):
-    def test_review_schema_can_close_request_local_source_handles(self):
-        schema = protocol.review_schema(["e1:/answer_fields/local_impact", "policy:safety"])
-        source_items = schema["properties"]["units"]["items"]["properties"]["sources"]["items"]
-        self.assertEqual(
-            ["e1:/answer_fields/local_impact", "policy:safety"],
-            source_items["enum"],
-        )
+    def test_unchanged_revision_stops_before_another_review_or_publication(self):
+        queue = asyncio.Queue()
+        call_count = []
+        outputs = iter([DRAFT, json.dumps(response(verdict='revise', issues=[issue(quote=DRAFT)])), DRAFT])
+        def output(*args, **kwargs):
+            call_count.append(args)
+            return next(outputs)
+        with patch.object(answer, '_with_answer_evidence_rerank', new=AsyncMock(side_effect=lambda s: s)), \
+             patch.object(answer.agent_model_role_service, 'apply_agent_llm_params',
+                          return_value={'provider': 'ollama', 'max_tokens': 4096}), \
+             patch.object(answer.llm_service, 'call_model', side_effect=output), \
+             patch.object(answer, '_generate_answer_response', new=AsyncMock(side_effect=lambda *a: output())), \
+             self.assertRaises(answer.AnswerGenerationError) as caught:
+            asyncio.run(answer.answer_node(state_for(), {'configurable': {'stream_queue': queue}}))
+        self.assertEqual('revision_unchanged', caught.exception.__cause__.code)
+        self.assertEqual(3, len(call_count))
+        self.assertTrue(queue.empty())
 
-    def test_normal_path_two_calls_with_smaller_separate_review_budget(self):
+    def test_revision_receives_review_basis_and_preserves_writer_thinking_policy(self):
+        bad = '输出完全丧失。[^1]'
+        finding = {**issue(quote=bad, reason='记录只说明更新时间滞后，应纠正完全丧失的断言。'),
+                   'citation_ids': [1]}
+        result, calls, _ = node_run(draft=bad, review=response(verdict='revise', issues=[finding]), revision=DRAFT)
+        revision_messages = calls[2].args[0]
+        feedback = json.loads(revision_messages[-1]['content'].split('\n', 1)[1])['feedback'][0]
+        self.assertEqual([1], feedback['citation_ids'])
+        self.assertEqual(['p1'], feedback['span_ids'])
+        self.assertEqual(finding['reason'], feedback['detail'])
+        self.assertEqual(bad, revision_messages[-2]['content'])
+        self.assertEqual([False, True, False, True], [call.args[1]['reasoning'] for call in calls])
+        self.assertEqual(DRAFT, result['final_answer'])
+
+    def test_only_review_enables_thinking_without_changing_output_budget(self):
+        from backend.core.llm_service import _ollama_runtime_payload
+        model = {"provider": "ollama", "model_name": "thinking-capable-fixture",
+                 "max_tokens": 4096, "num_ctx": 32768, "temperature": 0.2}
+        original = copy.deepcopy(model)
+        reviewed = answer._prepare_answer_review_model(model)
+        self.assertTrue(reviewed["reasoning"])
+        self.assertFalse(answer._prepare_answer_model(model)["reasoning"])
+        self.assertEqual(4096, reviewed["max_tokens"])
+        self.assertEqual(model, original)
+        payload = _ollama_runtime_payload([{"role": "user", "content": "fixed review"}], reviewed, stream=False)
+        self.assertTrue(payload["think"])
+        self.assertEqual(4096, payload["options"]["num_predict"])
+        self.assertEqual(protocol.review_schema(), payload["format"])
+
+    def test_one_revision_receives_both_checks_and_rechecks_new_citation_errors(self):
+        bad = 'OTHER-918 必然停止。[^1]'
+        review = response(verdict='revise', issues=[issue(quote=bad, reason='不支持必然停止')])
+        result, calls, _ = node_run(draft=bad, review=review, revision=DRAFT)
+        feedback = calls[2].args[0][-1]['content']
+        self.assertIn('不支持必然停止', feedback)
+        self.assertIn('这些引用未支持的精确身份：OTHER-918', feedback)
+        self.assertEqual(4, len(calls))
+        self.assertEqual(DRAFT, result['final_answer'])
+        queue = asyncio.Queue()
+        with self.assertRaises(answer.AnswerGenerationError):
+            node_run(draft=bad, review=review, revision='输出更新时间滞后。[^99]',
+                     config={'configurable': {'stream_queue': queue}})
+        self.assertTrue(queue.empty())
+
+    def test_normal_path_two_calls_unchanged_budget_and_text(self):
         result, calls, _ = node_run()
         self.assertEqual(2, len(calls))
-        self.assertEqual(TEXT + "[^1]", result["final_answer"])
-        self.assertEqual(1200, calls[0].args[1]["num_predict"])
-        self.assertEqual(4096, calls[1].args[1]["num_predict"])
-        self.assertEqual(4096, calls[1].args[1]["max_tokens"])
-        review_format = calls[1].args[1]["format"]
-        self.assertEqual(2, review_format["properties"]["version"]["enum"][0])
-        source_items = review_format["properties"]["units"]["items"]["properties"]["sources"]["items"]
-        self.assertIn(SOURCE, source_items["enum"])
+        self.assertEqual(DRAFT, result["final_answer"])
+        for call in calls:
+            self.assertEqual(4096, call.args[1]["max_tokens"])
+            self.assertEqual(4096, call.args[1]["num_predict"])
+        self.assertEqual([5], calls[1].args[1]["format"]["properties"]["version"]["enum"])
 
-    def test_feedback_drives_revision_and_new_text_is_reviewed(self):
-        feedback = response(check(sources=[], claims=[], issue="不能把延迟说成完全丧失；须解释证据界限。"))
-        result, calls, capture = node_run(review=feedback, draft="输出完全丧失。", revision=TEXT, observed=True)
+    def test_one_revision_is_fully_rechecked_and_private_replayable(self):
+        bad = "输出完全丧失。[^1]"
+        result, calls, capture = node_run(review=response(verdict="revise", issues=[issue(quote=bad)]),
+                                         draft=bad, revision=DRAFT, observed=True)
         self.assertEqual(4, len(calls))
-        self.assertIn("不能把延迟说成完全丧失", calls[2].args[0][0]["content"])
-        self.assertIn(TEXT, calls[3].args[0][0]["content"])
-        review_prompt = calls[3].args[0][0]["content"]
-        self.assertIn("previous_validation_feedback", review_prompt)
-        self.assertIn("不能把延迟说成完全丧失", review_prompt)
-        self.assertEqual(TEXT + "[^1]", result["final_answer"])
-        self.assertEqual(2, sum(s["stage"] == "review_proposal" for s in capture.stages))
+        self.assertEqual(DRAFT, result["final_answer"])
+        self.assertIn(DRAFT, calls[3].args[0][0]["content"])
+        self.assertEqual(2, len(capture.reviews))
+        for snapshot in capture.reviews:
+            self.assertTrue(replay(snapshot)["same_verdict"])
 
-    def test_revised_error_cannot_inherit_approval_or_trigger_unbounded_revision(self):
+    def test_second_failure_stops_no_third_draft_or_pruning(self):
         queue = asyncio.Queue()
-        feedback = response(check(issue="该事实无依据。"))
+        bad = response(verdict="revise", issues=[issue()])
         with self.assertRaises(answer.AnswerGenerationError):
-            node_run(review=feedback, revision="ROW-999 被确认。", second_review=response(),
-                     third_revision="ROW-998 仍未被当前证据支持。", third_review=response(),
-                     config={"configurable": {"stream_queue": queue}})
+            node_run(review=bad, revision=DRAFT, second_review=bad, config={"configurable": {"stream_queue": queue}})
         self.assertTrue(queue.empty())
+        self.assertEqual(2, answer.MAX_ANSWER_REVIEW_ATTEMPTS)
 
-    def test_unsafe_unit_pruned_with_explicit_partial_not_silent_drop(self):
-        value = response(check(), check(unit_id="u2", issue="结论无依据。"))
-        draft = TEXT + "\n其他结论。"
-        result, calls, capture = node_run(review=value, draft=draft, revision=draft,
-                                          second_review=value, third_revision=draft,
-                                          third_review=value)
-        # The critic-verified unit publishes; the rejected unit is
-        # deterministically pruned.  The release is partial with every goal
-        # unconfirmed, so the removal is visible — never a silent drop and
-        # never a full-answer pass-through of unchecked text.
-        self.assertEqual("partial", result["answer_completion_status"])
-        self.assertIn(TEXT, result["final_answer"])
-        self.assertNotIn("其他结论", result["final_answer"])
-        self.assertTrue(result["answer_unconfirmed_fields"])
-
-    def test_transport_timeout_not_retried_without_actionable_feedback(self):
-        with patch.object(answer, "_review_answer", new=AsyncMock(side_effect=asyncio.TimeoutError)) as review:
-            with self.assertRaises(answer.AnswerGenerationError):
-                node_run()
-        review.assert_awaited_once()
-
-    def test_total_deadline_also_bounds_transport(self):
-        async def slow(*args, **kwargs):
-            await asyncio.sleep(.05)
-            return TEXT
-        with patch.object(answer, "ANSWER_TOTAL_TIMEOUT_SECONDS", .01), patch.object(
-                answer, "_generate_answer_response", new=AsyncMock(side_effect=slow)) as writer:
-            with self.assertRaises(answer.AnswerGenerationError):
-                node_run()
-        self.assertLessEqual(writer.call_args.args[1]["timeout"], .01)
-
-    def test_cancel_propagates_without_publication(self):
+    def test_failed_review_cannot_publish_a_separate_unreviewed_clarification(self):
+        state = state_for()
+        from backend.agent.clarification_contract import make_clarification_identity, make_clarification_reason
+        state['clarification_reasons'] = [make_clarification_reason(kind='ambiguous_identity',
+            source_kind='binding', source_name='rbd_query_binding', identity=make_clarification_identity(doc_type='rbd'))]
+        bad = response(verdict='revise', issues=[issue()])
         queue = asyncio.Queue()
-        with patch.object(answer, "_review_answer", new=AsyncMock(side_effect=asyncio.CancelledError)):
-            with self.assertRaises(asyncio.CancelledError):
-                node_run(config={"configurable": {"stream_queue": queue}})
+        with self.assertRaises(answer.AnswerGenerationError):
+            node_run(state, bad, revision=DRAFT, second_review=bad, config={'configurable': {'stream_queue': queue}})
         self.assertTrue(queue.empty())
 
-    def test_observation_and_pure_publication_preserve_body(self):
-        plain, _, _ = node_run()
-        observed, _, captured = node_run(observed=True)
-        self.assertEqual(plain, observed)
-        stages = {s["stage"]: s["answer"] for s in captured.stages}
+    def test_permission_feedback_locates_the_actual_text_and_declared_scope(self):
+        with self.assertRaises(protocol.AnswerReviewError) as caught:
+            validate(response(formal_claims=[{'span_id': 'p1', 'kind': 'current_unique_diagnosis'}]))
+        self.assertEqual(DRAFT, caught.exception.feedback[0]['text'])
+        self.assertIn('current_unique_diagnosis', caught.exception.feedback[0]['detail'])
+
+    def test_invalid_review_is_system_error_not_writer_revision(self):
+        with patch.object(answer, "_review_answer", new=AsyncMock(side_effect=protocol.AnswerReviewError("invalid review JSON"))) as critic, \
+                patch.object(answer, "_generate_answer_response", new=AsyncMock(return_value=DRAFT)) as writer:
+            with self.assertRaises(answer.AnswerGenerationError):
+                node_run()
+        critic.assert_awaited_once()
+        writer.assert_awaited_once()
+
+    def test_nonessential_advice_cannot_trigger_revision(self):
+        result, calls, _ = node_run(review=response(issues=[issue("quality", reason="可补背景")]))
+        self.assertEqual(DRAFT, result["final_answer"])
+        self.assertEqual(2, len(calls))
+
+    def test_revision_is_latest_message_with_original_evidence_unchanged(self):
+        bad = '输出完全丧失。[^1]'
+        result, calls, _ = node_run(review=response(verdict="revise", issues=[issue(reason="修订定位依据")]),
+                                     draft=bad, revision=DRAFT)
+        initial = calls[0].args[0]
+        revised = calls[2].args[0]
+        self.assertEqual(['user', 'assistant', 'user'], [m['role'] for m in revised])
+        self.assertEqual(initial[0], revised[0])
+        self.assertEqual(bad, revised[1]['content'])
+        self.assertIn('修订定位依据', revised[-1]['content'])
+        self.assertNotIn(initial[0]['content'], revised[-1]['content'])
+        self.assertEqual(4, len(calls))
+        self.assertEqual(DRAFT, result['final_answer'])
+
+    def test_timeout_and_cancel_do_not_publish_or_retry(self):
+        for error in (asyncio.TimeoutError, asyncio.CancelledError):
+            queue = asyncio.Queue()
+            with patch.object(answer, "_review_answer", new=AsyncMock(side_effect=error)) as critic:
+                with self.assertRaises(asyncio.CancelledError if error is asyncio.CancelledError else answer.AnswerGenerationError):
+                    node_run(config={"configurable": {"stream_queue": queue}})
+            critic.assert_awaited_once()
+            self.assertTrue(queue.empty())
+
+    def test_total_deadline_is_not_reset_by_answer(self):
+        from backend.agent.model_runtime_policy import turn_budget
+        async def slow(*_args):
+            await asyncio.sleep(.05)
+            return DRAFT
+        with turn_budget(.01), patch.object(answer, "_generate_answer_response", new=AsyncMock(side_effect=slow)):
+            # Fixture setup can consume the deadline before node entry; both
+            # the entry timeout and wrapped in-node timeout must abort the turn.
+            with self.assertRaises((TimeoutError, answer.AnswerGenerationError)):
+                node_run()
+
+    def test_observation_pure_compaction_and_single_sse(self):
+        queue = asyncio.Queue()
+        result, _, capture = node_run(observed=True, config={"configurable": {"stream_queue": queue}})
+        stages = {s["stage"]: s["answer"] for s in capture.stages}
         self.assertEqual(stages["integrated_review"], stages["before_public_compaction"])
         self.assertEqual(stages["before_public_compaction"], stages["after_public_compaction"])
-
-    def test_verified_sse_published_once(self):
-        queue = asyncio.Queue()
-        with patch.object(answer, "_generate_answer_response", new=AsyncMock(return_value=TEXT)), patch.object(
-            answer.llm_service, "call_model", return_value=json.dumps(response())), patch.object(
-            answer.agent_model_role_service, "apply_agent_llm_params", return_value=None):
-            result = asyncio.run(answer.answer_node(state_for(), {"configurable": {"stream_queue": queue}}))
         self.assertEqual({"type": "answer_delta", "content": result["final_answer"]}, queue.get_nowait())
         self.assertTrue(queue.empty())
 
-    def test_all_modes_and_legacy_fields_share_one_entry(self):
+    def test_open_followup_and_history_reach_both_models(self):
+        state = state_for()
+        state.update(query="什么观察能推翻刚才的解释？", messages=[{"role": "assistant", "content": "之前只解释影响"}])
+        _, calls, _ = node_run(state)
+        for call in calls:
+            self.assertIn(state["query"], call.args[0][0]["content"])
+            self.assertIn("之前只解释影响", call.args[0][0]["content"])
+
+    def test_all_modes_and_legacy_labels_share_same_entry(self):
         for mode in ("fault_diagnosis", "architecture_knowledge", "exact_code_lookup", "maintenance_guidance", "knowledge_explanation"):
             state = state_for()
             state.update(answer_mode=mode, query_frame={"required_answer_fields": ["fault_cause", "history_steps"]})
@@ -509,35 +455,17 @@ class AnswerEntryTests(unittest.TestCase):
             self.assertEqual(2, len(calls))
             self.assertEqual([], result["delivered_answer_fields"])
 
-    def test_original_followup_and_history_reach_both_models(self):
-        state = state_for()
-        state["query"] = "什么观察能推翻刚才的解释？"
-        state["messages"] = [{"role": "assistant", "content": "前面只描述影响，没有判断原因。"}]
-        _, calls, _ = node_run(state)
-        for call in calls:
-            self.assertIn(state["query"], call.args[0][0]["content"])
-            self.assertIn(state["messages"][0]["content"], call.args[0][0]["content"])
-
-    def test_old_editors_and_body_salvage_stay_retired(self):
-        for name in ("_review_answer_target_completeness", "_review_answer_fault_completeness", "_review_answer_history",
-                     "_review_answer_calculations", "_repair_answer_citations", "_incremental_answer_fallback"):
-            self.assertFalse(hasattr(answer, name), name)
-
     def test_legacy_retrieval_keeps_verifiable_sources(self):
-        state = {"query": "说明此记录", "vector_results": [{"doc_id": "legacy", "content": TEXT}]}
-        result, _, _ = node_run(state, response(check(sources=["e1:/content"])))
+        result, _, _ = node_run({"query": "说明此记录", "vector_results": [{"doc_id": "legacy", "content": TEXT}]})
         self.assertEqual("legacy", result["citations"][0]["doc_id"])
 
-    def test_public_trace_never_contains_private_feedback(self):
+    def test_public_trace_contains_no_private_feedback(self):
         tracing.begin_turn("review-test", "问题")
         try:
-            node_run(review=response(check(issue="私有工程草稿不得进入公开 trace")), revision=TEXT)
+            node_run(review=response(verdict="revise", issues=[issue(reason="私有反馈不得公开")]),
+                     draft='输出完全丧失。[^1]', revision=DRAFT)
             events = tracing.peek().events
             self.assertEqual(["rejected", "accepted"], [e["outcome"] for e in events if e["type"] == "answer_review"])
-            self.assertNotIn("私有工程草稿", json.dumps(events, ensure_ascii=False))
+            self.assertNotIn("私有反馈", json.dumps(events, ensure_ascii=False))
         finally:
             tracing._current_trace.set(None)
-
-
-if __name__ == "__main__":
-    unittest.main()

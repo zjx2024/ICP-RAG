@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+from backend.agent.model_runtime_policy import remaining_seconds, TURN_TIMEOUT_SECONDS
+
 import asyncio
 import json
 import logging
@@ -45,10 +47,7 @@ def _positive_env_float(name: str, default: float) -> float:
         return default
 
 
-ADAPTIVE_TOOL_TIMEOUT_SECONDS = _positive_env_float(
-    "ICP_AGENT_ADAPTIVE_TOOL_TIMEOUT_SECONDS", 30.0
-)
-ADAPTIVE_TOOL_MAX_PREDICTION_TOKENS = 384
+ADAPTIVE_TOOL_TIMEOUT_SECONDS = TURN_TIMEOUT_SECONDS
 MAX_FOLLOWUP_QUERY_TOOLS = 5
 
 _TOOL_ORDER = (
@@ -696,12 +695,11 @@ def _prepare_model(model: Mapping[str, Any] | None) -> Dict[str, Any] | None:
     if not model:
         return None
     prepared = dict(model)
-    prepared["num_predict"] = ADAPTIVE_TOOL_MAX_PREDICTION_TOKENS
     if prepared.get("provider") == "ollama":
         prepared["reasoning"] = False
         prepared["temperature"] = 0.0
         prepared["format"] = "json"
-    from backend.agent.model_runtime_policy import bounded_model_transport
+    from backend.agent.model_runtime_policy import bounded_model_transport, remaining_seconds, TURN_TIMEOUT_SECONDS
     prepared["stream"] = False
     return bounded_model_transport(prepared, ADAPTIVE_TOOL_TIMEOUT_SECONDS)
 
@@ -1364,7 +1362,7 @@ async def adaptive_tool_route_node(state: Mapping[str, Any], config=None) -> Dic
                 [{"role": "user", "content": prompt}],
                 _model_for_state(state),
             ),
-            timeout=ADAPTIVE_TOOL_TIMEOUT_SECONDS,
+            timeout=remaining_seconds(),
         )
         parsed = _parse_json_object(response)
         if parsed is None:
