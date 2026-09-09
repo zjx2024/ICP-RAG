@@ -10,6 +10,7 @@ python-docx==1.1.2
 openpyxl==3.1.2
 xlrd==2.0.1
 pandas==2.1.4
+Pillow==12.3.0  # 测试生成 PNG 证据图（原先靠 pdfplumber 传递依赖，现显式声明）
 beautifulsoup4==4.12.2
 markdown==3.5.2
 markdown-it-py==4.2.0
