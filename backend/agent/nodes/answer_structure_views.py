@@ -134,7 +134,36 @@ def _rbd_authority_models(
 def _rbd_item_authority_is_valid(
     item: Mapping[str, Any], state: Mapping[str, Any]
 ) -> bool:
-    models = _rbd_authority_models(item, state)
+    # The evidence gate is the single authority adjudicator.  Re-running
+    # validate_rbd_authority here with a differently assembled models set
+    # produced the "gate approved, projection says no formal fields" split;
+    # the answer layer now consumes the gate's published verdict instead.
+    decision = state.get("safety_decision")
+    validation = (
+        decision.get("rbd_authority_validation")
+        if isinstance(decision, Mapping)
+        else None
+    )
+    if isinstance(validation, Mapping) and "required" in validation:
+        if not validation.get("valid"):
+            return False
+        if not validation.get("required"):
+            return True
+        item_revision = _normalize_business_id(
+            rbd_model_descriptor(item).get("revision_id")
+        )
+        return bool(
+            item_revision and item_revision in set(validation.get("revision_ids") or [])
+        )
+    # Fallback for direct callers without a gate verdict (unit tests, offline
+    # replay): revalidate with the same formal-authority models filter the gate
+    # uses, so both paths agree on the revision set.
+    models = [
+        value
+        for value in _rbd_authority_models(item, state)
+        if str(value.get("authority") or "") in _RBD_FORMAL_AUTHORITIES
+        and str(value.get("claim_type") or "") == "rbd_structure"
+    ]
     validation = validate_rbd_authority(
         state.get("rbd_query_binding"),
         models=models,

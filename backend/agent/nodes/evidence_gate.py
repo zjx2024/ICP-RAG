@@ -1586,6 +1586,9 @@ async def evidence_gate_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "revision_ids": list(
                 rbd_authority_validation.get("revision_ids") or []
             ),
+            # answer 投影据此区分"gate 未设限放行"与"required 且空 revision_ids"，
+            # 不再独立重算 authority，消除 gate/answer 两套 models 组装的分歧。
+            "required": bool(rbd_authority_required),
         },
         "questions": [],
     }

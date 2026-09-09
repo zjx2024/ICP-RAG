@@ -358,6 +358,54 @@ class RbdSuccessCriterionProjectionTests(unittest.TestCase):
         context = answer_module._format_context(_bound_state(evidence))
         self.assertNotIn(boundary, context)
 
+    def test_gate_not_required_verdict_keeps_formal_fields(self):
+        # gate 未设限（required=False）时 answer 必须信任其放行结论，
+        # 不得因独立重算把已批准结构降级为占位句（RBD-01 t1 根因）。
+        evidence = _evidence(relations=[_relation()])
+        state = _bound_state(evidence)
+        state["safety_decision"] = {
+            **state["safety_decision"],
+            "rbd_authority_validation": {
+                "valid": True, "reason": "", "revision_ids": [], "required": False,
+            },
+        }
+        fields = _source_answer_structure_views._rbd_structure_answer_fields_for_state(evidence, state)
+        self.assertEqual("输出端可达", fields.get("success_criterion"))
+        self.assertEqual(_relation()["statement"], fields.get("single_failure_boundary"))
+
+    def test_gate_invalid_verdict_degrades_projection(self):
+        evidence = _evidence(relations=[_relation()])
+        state = _bound_state(evidence)
+        state["safety_decision"] = {
+            **state["safety_decision"],
+            "rbd_authority_validation": {
+                "valid": False, "reason": "consumer_revision_mismatch",
+                "revision_ids": [], "required": True,
+            },
+        }
+        self.assertEqual(
+            {},
+            _source_answer_structure_views._rbd_structure_answer_fields_for_state(evidence, state),
+        )
+
+    def test_gate_required_verdict_reuses_revision_set(self):
+        evidence = _evidence(relations=[_relation()])
+        state = _bound_state(evidence)
+        revision = evidence["metadata"]["revision_id"]
+        state["safety_decision"] = {
+            **state["safety_decision"],
+            "rbd_authority_validation": {
+                "valid": True, "reason": "", "revision_ids": [revision], "required": True,
+            },
+        }
+        fields = _source_answer_structure_views._rbd_structure_answer_fields_for_state(evidence, state)
+        self.assertEqual("输出端可达", fields.get("success_criterion"))
+        state["safety_decision"]["rbd_authority_validation"]["revision_ids"] = ["other-revision"]
+        self.assertEqual(
+            {},
+            _source_answer_structure_views._rbd_structure_answer_fields_for_state(evidence, state),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
