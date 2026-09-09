@@ -403,21 +403,18 @@ class SmokeRunner:
         paths = _as_dict(openapi).get("paths")
         if not isinstance(paths, dict):
             raise SmokeError("OpenAPI document did not contain a paths object")
-        required_dify = {
-            "/api/v1/dify/server-info": "get",
-            "/api/v1/dify/retrieval": "post",
+        # Dify 与通用检索链路已退役；改为确认 ICP 前端依赖的任务监控路由仍挂载。
+        required_routes = {
+            "/api/v1/knowledge-bases/tasks/{task_id}/status": "get",
+            "/api/v1/knowledge-bases/tasks/{task_id}/cancel": "post",
         }
-        for path, method in required_dify.items():
+        for path, method in required_routes.items():
             operations = paths.get(path)
             if not isinstance(operations, dict) or method not in operations:
-                raise SmokeError(f"Dify route missing from OpenAPI: {method.upper()} {path}")
-        server_info = self.client.get("/api/v1/dify/server-info")
-        if not isinstance(server_info, dict) or not server_info.get("lan_ip"):
-            raise SmokeError("Dify server-info route returned an invalid payload")
-        checks["dify_routes"] = {
+                raise SmokeError(f"route missing from OpenAPI: {method.upper()} {path}")
+        checks["task_routes"] = {
             "ok": True,
-            "server_info_get": True,
-            "retrieval_post_registered": True,
+            "routes": sorted(required_routes),
         }
 
     def _check_readiness(self) -> Dict[str, Any]:

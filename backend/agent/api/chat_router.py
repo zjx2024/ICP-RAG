@@ -194,7 +194,6 @@ async def _stream_graph_events(graph, state, thread_id: str, agent_id: str,
                         })
 
                 elif node_name in (
-                    "vector_search", "kg_search", "sql_query",
                     "icp_diagnosis", "adaptive_retrieval", "graph_traversal",
                     "icp_calculation",
                 ):
@@ -300,16 +299,6 @@ async def _stream_graph_events(graph, state, thread_id: str, agent_id: str,
                         "blocked_evidence_ids": exposed_blocked,
                         "blocked_evidence_total": len(blocked),
                         "blocked_evidence_ids_truncated": len(exposed_blocked) < len(blocked),
-                    })
-
-                elif node_name == "reflect":
-                    await stream_queue.put({
-                        "type": "reflect",
-                        "need_more": update.get("need_more", False),
-                        "next_action": update.get("next_action", "done"),
-                        "reflection": update.get("reflection", ""),
-                        "result_summary": update.get("result_summary", ""),
-                        "tried_tools": update.get("tried_tools", []),
                     })
 
                 elif node_name in {"answer", "direct_response"}:

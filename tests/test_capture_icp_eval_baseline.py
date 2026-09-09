@@ -127,7 +127,7 @@ class CaptureIcpEvalBaselineTests(unittest.TestCase):
         self.assertNotIn("key-value", json.dumps(scrubbed))
         self.assertNotIn("token-value", json.dumps(scrubbed))
 
-    def test_application_probe_keeps_only_safe_document_and_dify_data(self):
+    def test_application_probe_keeps_only_safe_document_data(self):
         class FakeClient:
             def __init__(self, _base_url, _timeout_seconds):
                 pass
@@ -178,10 +178,10 @@ class CaptureIcpEvalBaselineTests(unittest.TestCase):
                     }
                 if path == "/openapi.json":
                     return 200, {
-                        "paths": {"/api/v1/dify/retrieval": {"post": {}}}
+                        "paths": {
+                            "/api/v1/knowledge-bases/tasks/{task_id}/status": {"get": {}}
+                        }
                     }
-                if path == "/api/v1/dify/server-info":
-                    return 200, {"lan_ip": "192.0.2.8", "token": "hidden"}
                 raise AssertionError(path)
 
         errors = []
@@ -201,14 +201,9 @@ class CaptureIcpEvalBaselineTests(unittest.TestCase):
         )
         self.assertEqual(2048, result["models"]["configuration"]["chat_model"]["max_tokens"])
         self.assertEqual(
-            {
-                "server_info_get": {"ok": True, "status_code": 200},
-                "retrieval_post_registered": True,
-                "response_body_retained": False,
-            },
-            result["dify"],
+            {"status_get_registered": True},
+            result["task_routes"],
         )
-        self.assertNotIn("192.0.2.8", json.dumps(result))
 
     def test_service_probe_failures_are_manifest_data(self):
         self._complete_local_tree()

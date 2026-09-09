@@ -2,7 +2,6 @@
 
 - ICP 专用 Agent：scope_router → plan → 定向检索 → 受限自适应补查/按需查图
   → FTA/RBD 确定性计算 → 证据门禁 → answer
-- 历史通用 Agent：保留 vector/kg/sql → reflect → answer 兼容路径
 
 ICP 会话历史已经由 PostgreSQL 消息表在每次请求时显式注入，因此专用图不再叠加
 LangGraph checkpoint 状态，避免上一轮的工具调用、候选和消息被 reducer 重复累积。
@@ -14,7 +13,6 @@ from langgraph.graph import StateGraph, END
 
 from backend.agent.state import AgentState
 from backend.agent.nodes.plan import plan_node, route_after_plan
-from backend.agent.nodes.reflect import reflect_node
 from backend.agent.nodes.answer import answer_node
 from backend.agent.nodes.direct_response import direct_response_node
 from backend.agent.nodes.evidence_gate import evidence_gate_node
@@ -32,90 +30,13 @@ from backend.agent.nodes.adaptive_tools import (
     route_after_adaptive_retrieval,
     route_after_adaptive_tools,
 )
-from backend.agent.tools.vector_search import vector_search_node
-from backend.agent.tools.kg_search import kg_search_node
-from backend.agent.tools.sql_query import sql_query_node
 from backend.agent.tools.icp_diagnosis import icp_diagnosis_node
 from backend.agent.tools.icp_calculation import icp_calculation_node
 from backend.agent.tools.graph_traversal import build_graph_traversal_node
-from backend.agent.checkpoint import get_checkpointer, get_store
 
 logger = logging.getLogger(__name__)
 
 _compiled_graphs: Dict[str, object] = {}
-
-ICP_TOOL_NAMES = {
-    "icp_diagnosis",
-    "function_locator",
-    "hybrid_search",
-    "hmc_query",
-    "fmeca_query",
-    "fta_query",
-    "fta_analyzer",
-    "rbd_query",
-    "rbd_calculator",
-    "mfl_query",
-    "fault_history_query",
-    "graph_traversal",
-    "fault_reasoning",
-}
-
-
-def _is_icp_agent(enabled_tools) -> bool:
-    return bool(ICP_TOOL_NAMES.intersection(set(enabled_tools or [])))
-
-
-def _route_by_intent(state: AgentState) -> str:
-    intent = state.get("intent", "hybrid")
-    original = (state.get("query") or "").lower()
-    rewritten = (state.get("rewritten_query") or "").lower()
-    combined = f"{original} {rewritten}"
-
-    want_images = any(kw in combined for kw in ("图片", "image", "照片", "截图", "看图"))
-    want_tables = any(kw in combined for kw in ("表格", "数据表", "参数表", "原始数据", "table"))
-    want_diag = any(kw in combined for kw in (
-        "为什么", "怎么回事", "原因", "导致", "由于", "造成", "故障", "如何解决", "怎么解决"
-    ))
-
-    if intent == "document":
-        tools = ["vector_search"]
-    elif intent == "graph":
-        tools = ["kg_search"]
-    elif intent == "table":
-        tools = ["sql_query"]
-    else:
-        tools = ["vector_search", "kg_search"]
-
-    if want_diag and "kg_search" not in tools:
-        tools.append("kg_search")
-    if (want_images or want_tables) and "sql_query" not in tools:
-        tools.append("sql_query")
-    return tools[0] if len(tools) == 1 else tools
-
-
-def _decide_next(state: AgentState) -> str:
-    next_action = state.get("next_action", "done")
-    iteration = state.get("iteration", 0)
-    # 迭代上限与 reflect_node 共用 state.max_reflections（默认 3），不再各自
-    # 硬编码常量：legacy 路由在最后一次循环之后进入 answer，因此阈值取
-    # max_reflections + 1（默认 3+1=4，与历史行为一致）。
-    max_reflections = int(state.get("max_reflections", 3) or 3)
-    if iteration >= max_reflections + 1:
-        return "answer"
-    return {
-        "retry_document": "vector_search",
-        "retry_graph": "kg_search",
-        "retry_table": "sql_query",
-    }.get(next_action, "answer")
-
-
-async def _compile_legacy(graph: StateGraph):
-    checkpointer = await get_checkpointer()
-    store = await get_store()
-    kwargs = {"checkpointer": checkpointer}
-    if store:
-        kwargs["store"] = store
-    return graph.compile(**kwargs)
 
 
 async def _build_icp_graph():
@@ -190,55 +111,9 @@ async def _build_icp_graph():
     return graph.compile()
 
 
-async def _build_legacy_graph(enabled_tools):
-    enabled_tools = enabled_tools or ["vector_search", "kg_search", "sql_query"]
-    graph = StateGraph(AgentState)
-    graph.add_node("plan", plan_node)
-    graph.add_node("reflect", reflect_node)
-    graph.add_node("answer", answer_node)
-
-    available_tools = []
-    if "vector_search" in enabled_tools:
-        graph.add_node("vector_search", vector_search_node)
-        available_tools.append("vector_search")
-    if "kg_search" in enabled_tools:
-        graph.add_node("kg_search", kg_search_node)
-        available_tools.append("kg_search")
-    if "sql_query" in enabled_tools:
-        graph.add_node("sql_query", sql_query_node)
-        available_tools.append("sql_query")
-
-    graph.set_entry_point("plan")
-    if not available_tools:
-        graph.add_edge("plan", "answer")
-    else:
-        route_map = {
-            "vector_search": "vector_search" if "vector_search" in available_tools else "reflect",
-            "kg_search": "kg_search" if "kg_search" in available_tools else "reflect",
-            "sql_query": "sql_query" if "sql_query" in available_tools else "reflect",
-        }
-        graph.add_conditional_edges("plan", _route_by_intent, route_map)
-        for tool in available_tools:
-            graph.add_edge(tool, "reflect")
-        graph.add_conditional_edges(
-            "reflect",
-            _decide_next,
-            {
-                "vector_search": "vector_search",
-                "kg_search": "kg_search",
-                "sql_query": "sql_query",
-                "answer": "answer",
-            },
-        )
-    graph.add_edge("answer", END)
-    return await _compile_legacy(graph)
-
-
 async def build_graph(enabled_tools=None):
-    enabled_tools = enabled_tools or ["icp_diagnosis"]
-    if _is_icp_agent(enabled_tools):
-        return await _build_icp_graph()
-    return await _build_legacy_graph(enabled_tools)
+    # 旧通用 Agent 路径（vector/kg/sql → reflect）已退役，所有会话统一走 ICP 专用图。
+    return await _build_icp_graph()
 
 
 async def get_compiled_graph(agent_id: str, enabled_tools=None):

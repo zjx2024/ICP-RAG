@@ -144,76 +144,6 @@ class DocxParser:
         marker_pattern = r"^(?:图|Figure|Fig\.)\s*" if img_or_table == "image" else r"^(?:表|Table)\s*"
         return text if len(text) < 100 and re.match(marker_pattern, text, re.IGNORECASE) else ""
 
-class TextParser:
-    def __init__(self, file_path: str):
-        self.file_path = file_path
-    
-    def load(self) -> bool:
-        try:
-            with open(self.file_path, 'r', encoding='utf-8') as f:
-                self.content = f.read()
-            return True
-        except Exception:
-            return False
-    
-    def parse_markdown_headers(self) -> Dict:
-        lines = self.content.split('\n')
-        blocks = {}
-        current_block = None
-        current_content = []
-        block_counter = 1
-        
-        for line in lines:
-            heading_match = re.match(r'^(#{1,6})\s+(.+)$', line)
-            if heading_match:
-                if current_block:
-                    blocks[current_block['key']] = {
-                        'block_id': current_block['key'],
-                        'title': current_block['title'],
-                        'level': current_block['level'],
-                        'text': '\n'.join(current_content),
-                        'images': [],
-                        'tables': []
-                    }
-                
-                level = len(heading_match.group(1))
-                title = heading_match.group(2).strip()
-                safe_title = re.sub(r'[^\w\u4e00-\u9fff]+', '_', title[:30])
-                block_key = f"h{level}_{block_counter:03d}_{safe_title}"
-                
-                current_block = {
-                    'key': block_key,
-                    'title': title,
-                    'level': level
-                }
-                current_content = []
-                block_counter += 1
-            else:
-                if line.strip():
-                    current_content.append(line.strip())
-        
-        if current_block:
-            blocks[current_block['key']] = {
-                'block_id': current_block['key'],
-                'title': current_block['title'],
-                'level': current_block['level'],
-                'text': '\n'.join(current_content),
-                'images': [],
-                'tables': []
-            }
-        
-        if not blocks:
-            blocks['fallback_001'] = {
-                'block_id': 'fallback_001',
-                'title': '文档内容',
-                'level': 1,
-                'text': self.content,
-                'images': [],
-                'tables': []
-            }
-        
-        return blocks
-
 class DocumentParser:
     def __init__(
         self, doc_path: str, doc_id: str, *, source_name: Optional[str] = None
@@ -222,28 +152,21 @@ class DocumentParser:
         self.doc_id = doc_id
         self.source_name = source_file_name(doc_path, source_name)
         self.file_ext = os.path.splitext(doc_path)[1].lower()
-        self.parser = None
-        
-        if self.file_ext == '.docx':
-            self.parser = DocxParser(doc_path)
-        else:
-            self.parser = TextParser(doc_path)
+        self.parser = DocxParser(doc_path) if self.file_ext == '.docx' else None
     
     def process(self) -> Dict:
-        if self.file_ext == '.docx':
-            if not self.parser.load():
-                return {"error": "文档加载失败"}
-            blocks = self._extract_blocks_by_heading_style()
-            blocks = self._extract_images_and_tables(blocks)
-            return {
-                "doc_id": self.doc_id,
-                "blocks": blocks,
-                "total_blocks": len(blocks)
-            }
-        else:
-            from .unified_parser import UnifiedParser
-            unified_parser = UnifiedParser(self.doc_path, self.doc_id)
-            return unified_parser.process()
+        if self.file_ext != '.docx':
+            # ICP 七类链路只对本解析器处理 .docx；其他格式由 document_ir 或专用解析器负责。
+            return {"error": f"DocumentParser 仅支持 .docx，收到 {self.file_ext or '无扩展名'}"}
+        if not self.parser.load():
+            return {"error": "文档加载失败"}
+        blocks = self._extract_blocks_by_heading_style()
+        blocks = self._extract_images_and_tables(blocks)
+        return {
+            "doc_id": self.doc_id,
+            "blocks": blocks,
+            "total_blocks": len(blocks)
+        }
     
     def _extract_blocks_by_heading_style(self) -> Dict:
         all_paragraphs = list(self.parser.doc.paragraphs)

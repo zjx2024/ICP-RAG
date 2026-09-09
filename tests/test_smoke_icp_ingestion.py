@@ -82,12 +82,10 @@ class _FakeClient:
         if path == "/openapi.json":
             return {
                 "paths": {
-                    "/api/v1/dify/server-info": {"get": {}},
-                    "/api/v1/dify/retrieval": {"post": {}},
+                    "/api/v1/knowledge-bases/tasks/{task_id}/status": {"get": {}},
+                    "/api/v1/knowledge-bases/tasks/{task_id}/cancel": {"post": {}},
                 }
             }
-        if path == "/api/v1/dify/server-info":
-            return {"lan_ip": "127.0.0.1", "source": "test"}
         prefix = "/api/v1/document-types/"
         if path.startswith(prefix) and path.endswith("/documents"):
             doc_type = path[len(prefix) : -len("/documents")]

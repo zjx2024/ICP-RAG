@@ -161,7 +161,7 @@ class AgentDB:
                         description       TEXT,
                         system_prompt     TEXT NOT NULL DEFAULT '',
                         kb_id             VARCHAR(36),
-                        enabled_tools     JSONB DEFAULT '["vector_search","kg_search","sql_query"]',
+                        enabled_tools     JSONB DEFAULT '["icp_diagnosis"]',
                         temperature       FLOAT DEFAULT 0.7,
                         top_p             FLOAT DEFAULT 0.9,
                         max_tokens        INTEGER DEFAULT 2048,
@@ -324,7 +324,7 @@ class AgentDB:
                      streaming: bool = True, memory_enabled: bool = True,
                      kg_top_k: int = 5, sql_limit: int = 5) -> Dict:
         agent_id = str(uuid.uuid4())
-        tools_json = json.dumps(enabled_tools or ["vector_search", "kg_search", "sql_query"], ensure_ascii=False)
+        tools_json = json.dumps(enabled_tools or ["icp_diagnosis"], ensure_ascii=False)
         # 多知识库：kb_ids 优先（主库取第一个，兼容 agent_configs.kb_id 旧字段）
         if isinstance(kb_ids, str):
             kb_ids = [kb_ids]

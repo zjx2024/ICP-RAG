@@ -779,18 +779,14 @@ def _probe_application(
 
     openapi_ok, openapi, _ = _safe_get(client, "/openapi.json", errors, "application")
     paths = openapi.get("paths") if isinstance(openapi, Mapping) else None
-    retrieval_registered = bool(
+    # Dify 与通用检索链路已退役；改探 ICP 前端依赖的任务监控路由。
+    task_routes_registered = bool(
         isinstance(paths, Mapping)
-        and isinstance(paths.get("/api/v1/dify/retrieval"), Mapping)
-        and "post" in paths["/api/v1/dify/retrieval"]
+        and isinstance(paths.get("/api/v1/knowledge-bases/tasks/{task_id}/status"), Mapping)
+        and "get" in paths["/api/v1/knowledge-bases/tasks/{task_id}/status"]
     )
-    dify_ok, _dify_payload, dify_status = _safe_get(
-        client, "/api/v1/dify/server-info", errors, "application"
-    )
-    result["dify"] = {
-        "server_info_get": {"ok": dify_ok, "status_code": dify_status},
-        "retrieval_post_registered": openapi_ok and retrieval_registered,
-        "response_body_retained": False,
+    result["task_routes"] = {
+        "status_get_registered": openapi_ok and task_routes_registered,
     }
     return result
 

@@ -33,16 +33,6 @@ def get_tool_nodes(enabled_tools: List[str]) -> Dict[str, Callable]:
     ):
         from backend.agent.tools.icp_diagnosis import icp_diagnosis_node
         nodes["icp_diagnosis"] = icp_diagnosis_node
-
-    if "vector_search" in enabled_tools:
-        from backend.agent.tools.vector_search import vector_search_node
-        nodes["vector_search"] = vector_search_node
-    if "kg_search" in enabled_tools:
-        from backend.agent.tools.kg_search import kg_search_node
-        nodes["kg_search"] = kg_search_node
-    if "sql_query" in enabled_tools:
-        from backend.agent.tools.sql_query import sql_query_node
-        nodes["sql_query"] = sql_query_node
     return nodes
 
 
