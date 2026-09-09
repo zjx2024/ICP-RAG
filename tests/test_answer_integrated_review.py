@@ -254,6 +254,89 @@ class WholeAnswerReviewTests(unittest.TestCase):
         with self.assertRaises(protocol.AnswerReviewError):
             validate(response(formal_claims=[{"span_id": "p1", "kind": "current_unique_diagnosis"}]), state)
 
+    def test_cutset_heading_borrows_deterministic_credential_from_explanation_line(self):
+        # FTA-02: the reviewer tags a bare lead-in and a list heading as
+        # formal_calculation, but the deterministic credential legitimately sits
+        # on the explanation line below. The heading must not die for placement.
+        from backend.agent.contracts import make_evidence
+        structure = make_evidence(
+            source_kind="postgres", authority="validated_relation", evidence_level="L2_CORROBORATED",
+            claim_type="fta_structure", doc_type="fta", doc_id="doc-fta", record_id="FTA-SYN-005",
+            source_ref="fta.docx#t=1", title="FTA-SYN-005", content="AND/OR 门结构")
+        calculation = make_evidence(
+            source_kind="calculation", authority="deterministic_derivation", evidence_level="L2_CORROBORATED",
+            claim_type="fta_calculation", doc_type="fta", doc_id="doc-fta", record_id="FTA-SYN-005",
+            source_ref="fta.docx#calc=1", title="最小割集", content="确定性割集推导",
+            metadata={"calculation": {"minimal_cut_sets": [["EVENT-A"], ["EVENT-B"]]}, "numeric_complete": False})
+        ledger = {1: structure, 2: calculation}
+        draft = ("基于已验证结构，最小割集计算结果如下：\n\n"
+                 "**最小割集列表（共 2 个）：**\n\n"
+                 "1. EVENT-A\n2. EVENT-B\n\n"
+                 "该结果由已校验 AND/OR 门结构确定性推导[^2]。")
+        material = protocol.prepare_review(draft, ledger=ledger, conversation={}, observations=[],
+            task={"original_question": "计算最小割集，缺参部分标出，不补造数字。"}, document_semantics="")
+
+        def review(value, requests):
+            return protocol.validate_review(json.dumps(value), prepared=material, ledger=ledger,
+                safety={"can_claim_unique": False}, calculation_requests=requests)
+
+        # Lead-in (p1) and heading (p2) both borrow the [^2] credential.
+        self.assertEqual("full", review(response(
+            formal_claims=[{"span_id": "p1", "kind": "formal_calculation"},
+                           {"span_id": "p2", "kind": "formal_calculation"}]), ["fta_cut_sets"])["status"])
+        # No authorized deterministic credential => the heading stays rejected.
+        with self.assertRaises(protocol.AnswerReviewError):
+            review(response(formal_claims=[{"span_id": "p1", "kind": "formal_calculation"}]), [])
+        # The exemption is cut-set arithmetic: a mislabelled numeric_result over
+        # the same cut-set credential also borrows it. Unique diagnoses and a
+        # numeric claim over a probability-bearing credential keep requiring a
+        # same-span citation.
+        with self.assertRaises(protocol.AnswerReviewError):
+            review(response(formal_claims=[{"span_id": "p1", "kind": "current_unique_diagnosis"}]), ["fta_cut_sets"])
+        self.assertEqual("full", review(
+            response(formal_claims=[{"span_id": "p1", "kind": "formal_numeric_result"}]),
+            ["fta_cut_sets"])["status"])
+        calculation["metadata"]["calculation"]["top_event_probability"] = 0.19
+        with self.assertRaises(protocol.AnswerReviewError):
+            review(response(formal_claims=[{"span_id": "p1", "kind": "formal_numeric_result"}]), ["fta_cut_sets"])
+        del calculation["metadata"]["calculation"]["top_event_probability"]
+        # A provisional credential never endorses a bare heading.
+        calculation["metadata"]["validation_status"] = "provisional"
+        with self.assertRaises(protocol.AnswerReviewError):
+            review(response(formal_claims=[{"span_id": "p1", "kind": "formal_calculation"}]), ["fta_cut_sets"])
+
+    def test_cutset_count_mislabelled_numeric_does_not_demand_probability_permission(self):
+        # A reviewer may tag "共 9 个最小割集" as formal_numeric_result although
+        # the protocol reserves that for probability/reliability values. The
+        # count is deterministic arithmetic on cut sets and stays authorized
+        # under fta_cut_sets, while a real probability result keeps demanding
+        # fta_probability.
+        from backend.agent.contracts import make_evidence
+        cutset = make_evidence(
+            source_kind="calculation", authority="deterministic_derivation", evidence_level="L2_CORROBORATED",
+            claim_type="fta_calculation", doc_type="fta", doc_id="doc-fta", record_id="FTA-SYN-005",
+            source_ref="fta.docx#calc=1", title="最小割集", content="确定性割集推导",
+            metadata={"calculation": {"results": {"minimal_cut_sets": [["EVENT-A"]],
+                                                 "minimal_cut_set_count": 1}},
+                      "numeric_complete": False})
+        ledger = {1: cutset}
+        draft = "该故障树共有 1 个最小割集。[^1]"
+        material = protocol.prepare_review(draft, ledger=ledger, conversation={}, observations=[],
+            task={"original_question": "计算最小割集。"}, document_semantics="")
+
+        def review(value, requests):
+            return protocol.validate_review(json.dumps(value), prepared=material, ledger=ledger,
+                safety={"can_claim_unique": False}, calculation_requests=requests)
+
+        self.assertEqual("full", review(
+            response(formal_claims=[{"span_id": "p1", "kind": "formal_numeric_result"}]),
+            ["fta_cut_sets"])["status"])
+        # A credential carrying a probability value still needs its permission.
+        cutset["metadata"]["calculation"]["results"]["top_event_probability"] = 0.19
+        with self.assertRaises(protocol.AnswerReviewError):
+            review(response(formal_claims=[{"span_id": "p1", "kind": "formal_numeric_result"}]),
+                   ["fta_cut_sets"])
+
     def test_negative_semantic_findings_never_publish_as_quality_or_partial(self):
         for reason in (
             "将输入钳位错行解释为采样饱和", "混入邻居报码接口", "将FMECA事实冒称MFL",

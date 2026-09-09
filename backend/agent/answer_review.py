@@ -125,11 +125,64 @@ def review_schema():
     })
 
 
+def _calculation_endorsements(spans, ledger, calculation_requests):
+    """Citation numbers that back a cut-set heading elsewhere in this answer.
+
+    A reviewer may tag a bare lead-in or list heading as formal_calculation even
+    though the deterministic credential sits on the explanation line just below
+    it.  Only citations that already resolve to an authorized, validated
+    deterministic derivation qualify; this never promotes an uncited or
+    provisional source, so numeric/diagnosis claims stay strictly local.
+    """
+    permissions = {"fta": {"fta_probability", "fta_cut_sets"}, "rbd": {"rbd_reliability"}}
+    requested = set(calculation_requests)
+    endorsed = set()
+    for span in spans:
+        for number in span["citation_ids"]:
+            if number in endorsed or number not in ledger:
+                continue
+            item = ledger[number]
+            if item.get("authority") != "deterministic_derivation":
+                continue
+            if {item.get("review_status"), (item.get("metadata") or {}).get("validation_status")} \
+                    & {"provisional", "quarantined"}:
+                continue
+            if (item.get("metadata") or {}).get("usage_scope") == "model_content_only":
+                continue
+            if permissions.get(item.get("doc_type"), set()) & requested:
+                endorsed.add(number)
+    return endorsed
+
+
+def _cut_set_only_evidence(item) -> bool:
+    """The credential carries only cut sets, no probability/reliability number.
+
+    A reviewer occasionally tags a cut-set count sentence as
+    formal_numeric_result. The protocol says cut sets are formal_calculation;
+    the count is not a probability value, so it must not demand the
+    fta_probability permission that the user never granted.
+    """
+    results = ((item.get("metadata") or {}).get("calculation") or {}).get("results") or {}
+    numeric_keys = set(results) - {"minimal_cut_sets", "minimal_cut_set_count"}
+    return item.get("doc_type") == "fta" and not numeric_keys
+
+
 def _check_formal_claim(claim, draft, spans, ledger, safety, calculation_requests):
     kind = claim["kind"]
     owned = [span for i, span in enumerate(spans, 1) if claim["span_id"] == f"p{i}"]
     _require(bool(owned), "invalid formal claim coordinates")
     numbers = {n for span in owned for n in span["citation_ids"]}
+    if not numbers and kind in {"formal_calculation", "formal_numeric_result"}:
+        # Cut-set lists are formal_calculation (occasionally mislabelled
+        # numeric_result); a heading line legitimately carries no inline
+        # marker while the credential sits on the next line. The numeric
+        # fallback still demands a cut-set-only credential below, so a real
+        # probability claim without a local citation stays rejected.
+        numbers = _calculation_endorsements(spans, ledger, calculation_requests)
+        if kind == "formal_numeric_result" and not any(
+            _cut_set_only_evidence(ledger[n]) for n in numbers if n in ledger
+        ):
+            numbers = set()
     _require(bool(numbers), "formal claim without evidence")
     _require(all(n in ledger for n in numbers), "unknown formal claim citation")
     blocked = set(safety.get("blocked_claims") or [])
@@ -150,7 +203,7 @@ def _check_formal_claim(claim, draft, spans, ledger, safety, calculation_request
         for item in derived:
             permissions = {"fta": {"fta_probability", "fta_cut_sets"}, "rbd": {"rbd_reliability"}}.get(item.get("doc_type"), set())
             _require(bool(permissions & set(calculation_requests)), "calculation not authorized")
-            if kind == "formal_numeric_result":
+            if kind == "formal_numeric_result" and not _cut_set_only_evidence(item):
                 permission = {"fta": "fta_probability", "rbd": "rbd_reliability"}.get(item.get("doc_type"))
                 _require(permission in calculation_requests, "numeric result not authorized")
                 _require((item.get("metadata") or {}).get("numeric_complete") is not False, "incomplete numeric calculation")

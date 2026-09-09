@@ -92,6 +92,50 @@ class AuthorOwnedCitationsTests(unittest.TestCase):
         with self.assertRaises(CitationBindingError):
             self.check('顶事件概率0.19[^7]', ledger={7: item}, requests=['fta_cut_sets'])
 
+    def test_cut_set_table_row_index_is_not_an_engineering_value(self):
+        # FTA-02: a cut-set table repeats "| 1 |", "| 2 |" ... as row numbers.
+        # Only a consecutive 1..N index column is presentation; a lone leading
+        # integer stays a real value and is still checked.
+        item = calculation('TREE-79', .91)
+        item['doc_type'] = 'fta'
+        item['metadata']['numeric_complete'] = False
+        item['metadata']['calculation']['results'] = {'minimal_cut_sets': [['A路间歇停机'], ['风扇堵转']],
+                                                      'minimal_cut_set_count': 2}
+        table = ('| 序号 | 最小割集 | 门结构 |\n| --- | --- | --- |\n'
+                 '| 1 | **A路间歇停机** | 顶事件 OR 门直接输入 [^7]\n'
+                 '| 2 | **风扇堵转** | 顶事件 OR 门直接输入 [^7]')
+        self.check(table, ledger={7: item}, requests=['fta_cut_sets'])
+        # A real mismatch inside the table is still caught.
+        with self.assertRaises(CitationBindingError):
+            self.check(table.replace('顶事件 OR 门直接输入 [^7]', '概率 0.77 [^7]', 1),
+                       ledger={7: item}, requests=['fta_cut_sets'])
+        # A single table row's leading integer is not a consecutive index.
+        with self.assertRaises(CitationBindingError):
+            self.check('| 3 | 概率 0.77 | 结果 [^7]', ledger={7: item}, requests=['fta_cut_sets'])
+        # Non-table prose keeps every literal.
+        with self.assertRaises(CitationBindingError):
+            self.check('第 3 个割集为 0.77[^7]', ledger={7: item}, requests=['fta_cut_sets'])
+
+    def test_cut_set_list_derived_counts_are_supported(self):
+        # FTA-02: "8 of the 9 cut sets are single-event" counts the cited
+        # credential's own list; that arithmetic needs no stored result field.
+        item = calculation('TREE-79', .91)
+        item['doc_type'] = 'fta'
+        item['metadata']['numeric_complete'] = False
+        item['metadata']['calculation']['results'] = {
+            'minimal_cut_sets': [['A路间歇停机'], ['B路间歇停机'], ['风扇堵转'],
+                                 ['温控闭环失效', '转速反馈丢失']],
+            'minimal_cut_set_count': 4}
+        self.check('最小割集共 4 个，其中 3 个为单事件割集[^7]',
+                   ledger={7: item}, requests=['fta_cut_sets'])
+        # A count that matches neither the stored nor any derived count fails.
+        with self.assertRaises(CitationBindingError):
+            self.check('最小割集共 4 个，其中 2 个为单事件割集[^7]',
+                       ledger={7: item}, requests=['fta_cut_sets'])
+        # Derived counts do not leak into probability authority.
+        with self.assertRaises(CitationBindingError):
+            self.check('概率 3[^7]', ledger={7: item}, requests=['fta_probability'])
+
     def test_distinct_revisions_do_not_share_result_values(self):
         ledger = copy.deepcopy(self.ledger)
         ledger[13]['record_id'] = ledger[7]['record_id']

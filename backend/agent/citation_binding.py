@@ -217,6 +217,57 @@ def _numeric_values(text: str) -> set[Decimal]:
     return {Decimal(value) for value in re.findall(_NUMERIC_LITERAL, text)}
 
 
+_INDEX_CELL = re.compile(r"\s*\|\s*(\d+)\s*\|")
+
+
+def _indexed_row_numbers(draft: str) -> set[int]:
+    """Leading integers that form a consecutive 1..N row index across the draft.
+
+    A cut-set table repeats "| 1 |", "| 2 |" ... as row numbers; the rendered
+    identity keeps those bare integers, which would otherwise be compared
+    against the calculation's result values. A lone or non-consecutive leading
+    integer stays a real value and is still checked.
+    """
+    rows = [int(m.group(1)) for line in draft.splitlines() if (m := _INDEX_CELL.match(line))]
+    return set(range(1, len(rows) + 1)) if len(rows) >= 2 and rows == list(range(1, len(rows) + 1)) else set()
+
+
+def _span_numeric_values(span: Mapping, index_numbers: set[int]) -> set[Decimal]:
+    """Numbers a cited span actually asserts, ignoring presentation artifacts."""
+    visible = span["identity_text"]
+    match = _INDEX_CELL.match(span["text"] or "")
+    if match and int(match.group(1)) in index_numbers:
+        # Rendered identity may or may not keep the pipes around the index.
+        visible = re.sub(r"^\s*\|?\s*\d+\s*\|?", "", visible, count=1)
+    return _numeric_values(visible)
+
+
+def _cut_set_derived_counts(fields: Mapping) -> set[Decimal]:
+    """Counts derivable from the cut-set list itself, not stored as results.
+
+    A writer may legitimately state "8 of the 9 cut sets are single-event" or
+    "1 second-order cut set": counting the listed sets and their orders is
+    deterministic arithmetic on the cited credential, so those counts are
+    supported even though only minimal_cut_set_count is an explicit result.
+    """
+    order_of: dict[int, int] = {}
+    for path in fields:
+        m = re.match(r"/calculation/results/minimal_cut_sets/(\d+)/(\d+)$", path)
+        if m:
+            set_index, size = int(m.group(1)), 1
+            if int(m.group(2)) + 1 > size:
+                size = int(m.group(2)) + 1
+            if size > order_of.get(set_index, 0):
+                order_of[set_index] = size
+    counts = {Decimal(len(order_of))} if order_of else set()
+    by_order: dict[int, int] = {}
+    for size in order_of.values():
+        by_order[size] = by_order.get(size, 0) + 1
+    if len(by_order) > 1:
+        counts |= {Decimal(n) for n in by_order.values()}
+    return counts
+
+
 def _calculation_values(item: Mapping, *, parameters_only=False, cut_sets_only=False) -> set[Decimal]:
     from backend.agent.evidence_display import _number
 
@@ -231,6 +282,8 @@ def _calculation_values(item: Mapping, *, parameters_only=False, cut_sets_only=F
     values = set().union(*(_numeric_values(value) for path, value in fields.items()
                           if path.startswith("/calculation/parameters/")
                           or (not parameters_only and path in paths)))
+    if cut_sets_only:
+        values |= _cut_set_derived_counts(fields)
     return values | {Decimal(_number(value)) for value in values if _number(value)}
 
 
@@ -242,6 +295,7 @@ def inspect_record_citations(draft: str, ledger: Mapping[int, Mapping], *,
     qualification and formal-claim permission are separate semantic boundaries.
     """
     spans = citation_spans(draft)
+    index_numbers = _indexed_row_numbers(draft)
     errors = []
     for span in spans:
         def reject(message, *, unsupported_identities=()):
@@ -269,7 +323,7 @@ def inspect_record_citations(draft: str, ledger: Mapping[int, Mapping], *,
             if ({item.get("review_status"), meta.get("validation_status")} & {"provisional", "quarantined"}
                     or meta.get("usage_scope") == "model_content_only"):
                 reject("calculation evidence not formally validated")
-        numbers = _numeric_values(visible)
+        numbers = _span_numeric_values(span, index_numbers)
         if not derived or not numbers:
             continue
         cut_sets_only = all(item.get("doc_type") == "fta" for item in derived) and "fta_probability" not in calculation_requests
@@ -287,7 +341,9 @@ def inspect_record_citations(draft: str, ledger: Mapping[int, Mapping], *,
                 continue
             reject("ambiguous numeric ownership: cite each result at its own text span")
             continue
-        if not numbers <= _calculation_values(derived[0]):
+        # The single credential owns the values; under cut-sets-only authority
+        # it also owns the counts derivable from its own cut-set list.
+        if not numbers <= _calculation_values(derived[0], cut_sets_only=cut_sets_only):
             reject("numeric value not supported by this calculation")
     return spans, errors
 

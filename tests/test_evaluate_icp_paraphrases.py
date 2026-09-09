@@ -676,6 +676,41 @@ class EvaluateIcpParaphrasesTest(unittest.TestCase):
         self.assertEqual("error", judgement["status"])
         self.assertIn("judge unavailable", judgement["error"])
 
+    def test_clarification_turn_judge_protocol_error_is_not_evaluated(self):
+        # ROUTER-02: a 14-char clarification states no engineering fact, so the
+        # judge protocol ("a passed positive check needs an answer quote") has
+        # nothing to quote. That is harness noise, not a product failure.
+        class ProtocolJudge:
+            def evaluate(self, **_kwargs):
+                # The real judge raises this from its grounded validation when
+                # a passed positive check carries no answer quote.
+                raise evaluator.ApiError("语义 Judge relevance/要求澄清对象 通过维度缺少答案原话支持")
+
+        criteria = [{"id": "relevance", "criterion": "首轮无对象代词应澄清。"}]
+        results, judgement = evaluator._evaluate_semantic_criteria(
+            criteria, judge=ProtocolJudge(), question="它又不正常了。", prior_turns=(),
+            answer="请问您指的是哪个模块或系统？", scope_routes=["clarification"],
+        )
+        self.assertTrue(results[0]["passed"])
+        self.assertEqual("not_evaluated", judgement["status"])
+        self.assertIn("缺少答案原话支持", judgement["error"])
+
+        # A knowledge_base turn keeps failing closed on the same protocol error.
+        results, judgement = evaluator._evaluate_semantic_criteria(
+            criteria, judge=ProtocolJudge(), question="它怎么了？", prior_turns=(),
+            answer="一段陈述事实的回答。", scope_routes=["knowledge_base"],
+        )
+        self.assertFalse(results[0]["passed"])
+        self.assertEqual("error", judgement["status"])
+
+        # An empty clarification answer is never excused.
+        results, judgement = evaluator._evaluate_semantic_criteria(
+            criteria, judge=ProtocolJudge(), question="它又不正常了。", prior_turns=(),
+            answer="", scope_routes=["clarification"],
+        )
+        self.assertFalse(results[0]["passed"])
+        self.assertEqual("error", judgement["status"])
+
     def test_scope_route_assertions_are_evaluated_from_public_stage_events(self):
         results = self._by_name(
             self._evaluate(

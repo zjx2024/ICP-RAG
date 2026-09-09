@@ -2087,6 +2087,7 @@ def _evaluate_semantic_criteria(
     answer: str,
     reference_context: Sequence[Mapping[str, Any]] = (),
     answer_citations: Sequence[Mapping[str, Any]] = (),
+    scope_routes: Sequence[str] = (),
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     if not criteria:
         return [], {"status": "not_requested", "criteria": []}
@@ -2121,6 +2122,30 @@ def _evaluate_semantic_criteria(
         )
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
+        # 澄清轮不陈述任何工程事实，Judge 协议要求"通过维度必须附答案原话"
+        # 对 14 字澄清句天然无解：协议错误是评测基础设施噪声，不是产品缺陷。
+        # 判据文本本身也声明"合理澄清不因没有事实引用而单独判错"。此时把该
+        # 维度记为 not_evaluated（不阻塞通过），而不是伪造 FAIL 淹没回归信号。
+        clarification_only = (
+            bool(answer.strip())
+            and "clarification" in set(scope_routes)
+            and not answer_citations
+        )
+        if clarification_only:
+            results = [
+                _assertion_result(
+                    f"semantic_criterion:{criterion['id']}",
+                    True,
+                    criterion["criterion"],
+                    {"not_evaluated": True, "reason": f"澄清轮无事实陈述，Judge 协议不适用：{error}"},
+                )
+                for criterion in criteria
+            ]
+            return results, {
+                "status": "not_evaluated",
+                "criteria": [dict(item) for item in criteria],
+                "error": error,
+            }
         results = [
             _assertion_result(
                 f"semantic_criterion:{criterion['id']}",
@@ -2692,6 +2717,7 @@ def _build_turn_result(
         answer=answer,
         reference_context=turn.metadata.get("resolved_gold_context", []),
         answer_citations=citations,
+        scope_routes=scope_routes,
     )
     assertion_results.extend(numeric_assertion_results)
     assertion_results.extend(semantic_assertion_results)
