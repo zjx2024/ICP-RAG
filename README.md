@@ -1,5 +1,11 @@
 # ICP-RAG：ICP 故障诊断知识库与智能体
 
+![CI](https://github.com/zjx2024/ICP-RAG/actions/workflows/ci.yml/badge.svg)
+![Python](https://img.shields.io/badge/Python-3.10+-blue)
+![License](https://img.shields.io/badge/License-MIT-green)
+
+> 七类文档差异化解析 · LangGraph 五阶段编排 · OpenSearch BM25/BGE-M3 双路召回 + 加权 RRF + 全候选重排 · FTA/RBD 确定性计算 · 答案全程带来源
+
 ICP-RAG 是面向 ICP 航空电子系统的专用故障知识平台。系统接收七类 Word、Excel 和工程图文档，按文档类型执行差异化预处理，将结构化事实、检索投影、图关系和原始证据统一提供给故障诊断智能体。
 
 > **安全说明**：系统输出属于知识检索与辅助诊断结果，不替代适用构型、有效版本的正式维修手册、放行程序和人工复核。合成测试数据不得作为实际航空维修依据。
@@ -18,23 +24,16 @@ ICP-RAG 是面向 ICP 航空电子系统的专用故障知识平台。系统接�
 
 ## 2. 系统架构
 
-```text
-Word / Excel / 图片
-        │
-        ├─ 七类专用解析器
-        │    ├─ 多级表头与表格记录
-        │    ├─ 章节/段落/案例结构
-        │    └─ FTA、RBD、系统架构图像理解
-        │
-        ├──────────────┬────────────────┬────────────────┐
-        ▼              ▼                ▼                ▼
- PostgreSQL         OpenSearch     ArtifactStore      HugeGraph
- 权威结构数据       BM25 + 向量索引    LocalFS 原文/证据   图关系投影
-        └──────────────┴────────────────┴────────────────┘
-                               │
-                               ▼
-                ICP 故障诊断 LangGraph
- 范围路由 → 对话对象/信息目标 → 受限工具规划 → 多源检索 → 证据门禁 → LLM整理答案
+```mermaid
+flowchart TB
+    A[Word / Excel / 图片] --> B[七类专用解析器]
+    B --> C[PostgreSQL 权威结构数据]
+    B --> D[OpenSearch BM25 + BGE-M3 向量]
+    B --> E[ArtifactStore 原文/证据]
+    B --> F[HugeGraph 图关系投影]
+    C & D & E & F --> G[ICP 故障诊断 LangGraph]
+    G --> H[范围路由 → 对话对象 → 受限工具规划]
+    H --> I[多源检索 → 证据门禁 → 带来源答案]
 ```
 
 数据库职责：
